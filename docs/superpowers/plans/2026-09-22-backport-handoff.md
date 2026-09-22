@@ -697,6 +697,7 @@ cd /work/repo/console && go test -race -count=1 ./...
 | `node --test console/web_test.cjs`（本机） | 30 tests / 30 pass / 0 fail |
 | `docker compose … config --quiet` / `git diff --check`（本机） | rc=0 / 干净 |
 | `python -m unittest discover -s scripts`（本机） | `Ran 43` → 4 failures + 26 errors，**全部环境性**（`WinError 1314` 无 symlink 特权、无 `os.mkfifo`、temp 目录 ACL、`WSL execvpe(/bin/bash)`、NTFS 无执行位），POSIX 语义侧由容器路径承担 |
+| **交付尖点复跑**（HEAD `7c94f61`，同一配方） | `prepare` rc=0、`go test ./...` 20 包全 ok、`vet` 无输出、`-race` 5 包全 ok、`console -race` ok；`identity` 仍 `4f6b50a4…`（文档提交不动补丁栈指纹）；`base.sh` 修正版在这一跑里生效，容器内 `upstream/*.sh` 执行位 `-rwxr-xr-x` |
 
 红→绿证据链与 T1/T2/T3 逐条判据见 `docs/superpowers/verification/2026-09-22-backport-verification.md`；
 与本文档的偏差集中在 `docs/superpowers/plans/2026-09-22-backport-progress.md` §3 的 Δ1–Δ9。

@@ -27,8 +27,10 @@ C1  0466671 security: backport WAF IP-level fail-fast breaker and usage sentinel
     extensions/internal/upstream/credential_race_test.go    (93 行)
     extensions/internal/upstream/wafip_classify_test.go     (61 行)
 
-C2  对交接清单本身的修订（两份 09-22 规划文档入仓 + 就地注记）
-C3  patches/README.md 0006 行 + 移除条件；T0 分析文档；验证记录；本进度文件
+C2  6e5a18a docs(backport): 任务书三份规划文档入仓，登记本轮实测修订
+    （§12.3 sed 配方修正、§12.3b 改动后实测与新坑 A/B、spec 324→360 与 Q5 注记）
+C3  7c94f61 docs(backport): 补 0006 补丁说明、T0 复析、验证记录与进度文件
+C3+ （本次）交付尖点复跑记录：同一配方在 7c94f61 全绿，identity 不变
 ```
 
 `upstream/`、`upstream.lock` 零改动；既有 0001–0005 语义未动。

@@ -68,6 +68,13 @@ vet: internal/server/wafip_test.go:125:8: h.wafIP undefined (type *Handler has n
 
 ## 4. 绿态（HEAD `0466671`，6 个补丁全部 `git apply --check` 通过）
 
+> **交付尖点复跑**：C2/C3 只动文档之后，同一配方在 **HEAD `7c94f61`** 完整重跑一次
+> （`prepare_rc=0`、`go test ./...` 20 包全 ok、`vet` 无输出、
+> `-race` auth 1.027s / pool 1.284s / upstream 1.562s / server 2.027s / scheduler 3.027s 全 ok、
+> `console -race` ok 1.178s），`identity` 仍是 `4f6b50a4…`——文档提交不改补丁栈指纹。
+> 修复后的 `base.sh`（apk 源改写用 `#` 分隔 + `\?`）也在这一跑里得到验证：
+> 容器内 `upstream/*.sh` 执行位为 `-rwxr-xr-x`，摘要门照常通过。
+
 定向判据（任务书编号）：
 
 ```text
