@@ -1,0 +1,121 @@
+diff --git a/internal/server/handler.go b/internal/server/handler.go
+index aa70948..5979398 100644
+--- a/internal/server/handler.go
++++ b/internal/server/handler.go
+@@ -67,6 +67,7 @@ type Handler struct {
+ 	cfg     Config
+ 	mux     *http.ServeMux
+ 	degrade degradeGate
++	wafIP   wafIPGate // WAF IP 级熔断状态机，零值可用
+ }
+ 
+ // NewHandler 构建 handler。
+@@ -615,6 +616,11 @@ func (h *Handler) chatCompletions(w http.ResponseWriter, r *http.Request) {
+ 			}
+ 			lastErr = &upstream.Error{Kind: kind, Status: status, Msg: string(respBody)}
+ 			h.applyErrorPolicy(acct.UID, kind, string(respBody), bareModel)
++			// WAF IP 级熔断：本号把判定窗内的不同 UID 数推到阈值 → 判为出口 IP 被拦，
++			// 立即终止轮转（放大倍数 1），不再拿同一出口 IP 去打第三个号。
++			if kind == upstream.ErrWafBlock && h.wafIP.noteWaf(acct.UID) {
++				break
++			}
+ 			fail(acct.UID)
+ 			continue
+ 		}
+@@ -630,12 +636,15 @@ func (h *Handler) chatCompletions(w http.ResponseWriter, r *http.Request) {
+ 			stats := newChatStatsReaderSince(rc, st.start)
+ 			_ = upstream.Stream(w, stats)
+ 			st.ttfb = stats.TTFB()
+-			st.toks, _ = stats.Tokens()
++			toks, hasUsage := stats.Tokens()
++			if hasUsage {
++				st.toks = toks
++			}
+ 			// 成本账本：末帧 usage 带 credit 与 token 总数时记录实测单价，
+ 			// 供下次选号把免费/便宜的号排在前面。
+ 			if credit, ok := stats.Credit(); ok {
+ 				h.cfg.Pool.NoteModelCost(acct.UID, bareModel, credit, stats.TotalTokens())
+-			} else if _, hasUsage := stats.Tokens(); hasUsage {
++			} else if hasUsage {
+ 				// R9(c) 防护观测：usage 存在但 credit 缺失（如 global SSE 末帧未带 credit）。
+ 				// 不算合法成本观测（缺失≠0），仅记一条 WARN 协助排障，绝不写入账本。
+ 				log.Printf("WARN: [server] stream usage without credit uid=%s model=%s (no cost observation)", logfmt.UID8(acct.UID), bareModel)
+@@ -684,6 +693,13 @@ func (h *Handler) chatCompletions(w http.ResponseWriter, r *http.Request) {
+ 		case upstream.ErrBadParams:
+ 			// 白名单透传：保留上游 11101 原文（客户端参数错误，帮助用户定位）。
+ 			msg = "upstream rejected request params: " + ue.Msg
++		case upstream.ErrWafBlock:
++			// IP 级熔断激活时给可读的本地文案（未激活仍是通用 503：单个裸 403 不足以
++			// 证明出口 IP 被拦，且本仓不回移账号级 WAF 软冷却）。
++			if h.wafIP.active() {
++				code = "waf_ip_blocked"
++				msg = "waf ip-level block: upstream firewall is blocking the gateway IP, rotation stopped; retry after the block window expires"
++			}
+ 		}
+ 	}
+ 	writeOpenAIError(w, status, code, msg)
+diff --git a/internal/upstream/client.go b/internal/upstream/client.go
+index b2d6555..36811a3 100644
+--- a/internal/upstream/client.go
++++ b/internal/upstream/client.go
+@@ -33,6 +33,7 @@ const (
+ 	ErrContentBlocked                // 内容策略拦截（400 + 审核文案）→ 不罚账号，走降级重试
+ 	ErrBadParams                     // 请求体解析失败（400 + Unmarshal chat params failed / 11101）→ 不罚账号，仍轮转
+ 	ErrAccountFault                  // 账号级授权/配额故障（11140 request illegal / 14017 trial not activated）→ 冷却轮换，不无限重试
++	ErrWafBlock                      // 403 + 无业务信封体（WAF 拦截页/空体/纯文本）→ IP 级熔断的计数输入
+ 	ErrClient                        // 其他 4xx / 业务错误
+ )
+ 
+@@ -54,6 +55,8 @@ func (k ErrKind) String() string {
+ 		return "bad_params"
+ 	case ErrAccountFault:
+ 		return "account_fault"
++	case ErrWafBlock:
++		return "waf_block"
+ 	case ErrClient:
+ 		return "client"
+ 	default:
+@@ -289,6 +292,21 @@ func ParseSoftRateReset(body string) (time.Time, bool) {
+ 	return t, true
+ }
+ 
++// hasBusinessEnvelope 报告错误 body 是否携带上游业务信封形态（含 `"code":` 或
++// `"msg":` 字段名）。WAF 判定（IsWafBlocked）用「无业务信封」区分 APISIX 拦截页
++// （HTML/空体/纯文本）与上游业务层 403（带 code/msg 信封，走既有分类链）。
++// 故意不解析 JSON：信封存在性只需字段名命中——畸形 body 只要含 `"msg":` 字样仍按
++// 业务响应保守处理，宁漏判 WAF 也不误罚业务 403（后者各有权威分类）。
++func hasBusinessEnvelope(body string) bool {
++	return strings.Contains(body, `"code":`) || strings.Contains(body, `"msg":`)
++}
++
++// IsWafBlocked 报告 403 响应是否为 WAF 拦截形态：HTTP 403 且 body 无业务信封。
++// 只做形态判定，不重复关键词逻辑；带信封的 403 由 Classify 上层各规则先行分类。
++func IsWafBlocked(status int, body string) bool {
++	return status == http.StatusForbidden && !hasBusinessEnvelope(body)
++}
++
+ // Classify 按 HTTP 状态码 + body 判定错误类别。
+ //
+ // 判定顺序自「严」到「宽」，每层的先后都有语义依据：
+@@ -310,6 +328,10 @@ func ParseSoftRateReset(body string) (time.Time, bool) {
+ //     结果同为 soft_rate，与下一层一致。
+ //  5. status==429 —— body 无文案时的兜底识别。
+ //  6. 404 / 5xx / 其他 4xx —— 与限流无关的常规分类。
++//  7. IsWafBlocked —— 403 且 body 无业务信封。判在 5xx 之后、通用 4xx 兜底之前：
++//     内容策略/参数错误/业务码各层只认带文案的 body，WAF 拦截页与空体永远不会命中
++//     它们的 marker，落 ErrClient 兜底的代价是「只换号不罚」且继续把同一出口 IP 打
++//     满一轮——必须在兜底前分流，供 server 侧 IP 级熔断计数（见 wafip.go）。
+ func Classify(status int, body string) ErrKind {
+ 	if status == http.StatusPaymentRequired {
+ 		return ErrHardCredit
+@@ -336,6 +358,10 @@ func Classify(status int, body string) ErrKind {
+ 	if status >= 500 {
+ 		return ErrServer
+ 	}
++	// WAF 形态 403（无业务信封）：不是账号错误，是出口 IP 被拦（判定顺序第 7 条）。
++	if IsWafBlocked(status, body) {
++		return ErrWafBlock
++	}
+ 	// 内容策略拦截（HTTP 400 + 审核文案）：判在通用 ErrClient 之前。
+ 	// 这是误报信号，不罚账号，由网关降级重试处理（见 handler.applyErrorPolicy）。
+ 	// 请求体解析失败（HTTP 400 + Unmarshal chat params failed / code 11101）：
