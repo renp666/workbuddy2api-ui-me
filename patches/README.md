@@ -4,7 +4,7 @@ Baseline: Sliverkiss/workbuddy2api commit
 `c576b489fa22e3c156e960ee6336c4e653a0d95c`. Apply only through
 `python3 scripts/overlay.py prepare --output ABS_NEW_DIRECTORY`; never edit
 `upstream/`. New source and tests live in `extensions/`, not in these patches.
-`series` is the explicit application order: 0001, 0002, 0003, 0004, 0005.
+`series` is the explicit application order: 0001, 0002, 0003, 0004, 0005, 0006.
 For a deliberate upstream candidate, run
 `python3 scripts/overlay.py update --ref COMMIT_OR_TAG`; it keeps the current
 snapshot and lock until the candidate passes `scripts/check.sh` and isolated
@@ -18,6 +18,7 @@ committing the resulting `upstream/` and `upstream.lock` changes.
 | 0003-core-wiring | `cmd/server/main.go`: early initialization before LoadDir, late wrapper after existing dependencies/context, wrapped config-not-found handling through errors.Is; opt-in Scheduled callback captures the local Runner before scheduler.New, then initializes history/Runner before scheduler.Run. `cmd/login/main.go`: reuse OAuth client, strict complete-account validation and pending classification. No admin implementation enters the original public Handler. | `go test ./cmd/server ./cmd/login ./internal/bridge ./internal/oauth`; `go test -race ./internal/taskrun ./internal/scheduler ./internal/bridge ./cmd/server` |
 | 0004-scheduler-observation | `internal/scheduler/{scheduler,travel,school}.go`: optional scheduled callback, Beijing-time scheduling, short-lived per-instance observations and context-bound scripts using private CN snapshots. `scripts/{school_open_day_2026,task_runner}.py`: fixed structured events at existing result branches, preserving activity algorithms and limits. `scripts/task_common.py`: close the existing read-only auth handle. | `go test ./internal/scheduler`, `go test -race ./internal/scheduler`, `python3 -m unittest discover -s scripts -p test_task_events.py -v` |
 | 0005-regression-tests | `internal/server/handler_test.go`: ledger reset time can be omitted when it equals until; accept either representation but retain the one-second timing assertion. `internal/scheduler/school_test.go`: existing fixed-command/dispatch tests use a valid CN pool and context/output-aware fake; empty pools no longer launch a child. Production ledger format is unchanged. | `go test ./internal/server -run TestStatusRateLimitedModelsLedger`, scheduler tests and full suite |
+| 0006-waf-ip-failfast-and-usage-sentinel | `internal/upstream/client.go`: `ErrWafBlock` (`waf_block`) plus `IsWafBlocked`/`hasBusinessEnvelope`, evaluated after the 5xx layer so a 403 that still carries a business envelope keeps its existing kind. `internal/server/handler.go`: breaker state field, rotation stopped on the threshold hit, and a local readable message only when the upstream body is empty; the streaming log row keeps the `-1` token sentinel when the tail frame has no usage (merged from the usage-sentinel task to keep one patch per handoff decision). The `wafIPGate` state machine itself is an extension file, not part of this patch. Account-level WAF soft cooldown and rotation backoff remain out of scope, so WAF 403 does not cool an account here. | `go test ./internal/upstream ./internal/server` (includes `TestWafIPGate*`, `TestChatWaf*`, `TestClassifyWaf*`, `TestChatLogsStreamRowNoUsageShowsDash`), `go test -race ./internal/server ./internal/upstream` |
 
 Remove each patch only when the pinned upstream supplies the corresponding
 behavior and the named regression tests pass without that patch. For 0003,
@@ -33,6 +34,14 @@ fields are collected. Go TravelClaim cannot distinguish omitted reward from
 zero, so both remain null. Ordinary script output is replaced with a bounded
 omission summary; no process-wide logger is captured. The original auth loader
 must remain read-only (the extension test rejects write access).
+
+Remove 0006 when the pinned upstream supplies the `ErrWafBlock` classification,
+the IP-level fail-fast breaker and the streaming usage sentinel, and those named
+tests pass with the patch dropped while `extensions/internal/server/wafip.go`
+moves into the upstream tree. Half-applying it is not an option: the breaker
+counts on `ErrWafBlock`, so the classification and the rotation break share one
+removal condition. Dropping the patch changes only the observable behaviour
+named in its tests and does not touch 0001-0005.
 
 Task 2 wiring handoff: `initializeCore(*Config) error` validates opt-in
 `WB2A_BRIDGE_KEY` and creates account/state directories before loading accounts.
