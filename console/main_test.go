@@ -157,3 +157,27 @@ func TestEnvironmentConfigWithoutKeyFilePreservesSourceMode(t *testing.T) {
 		t.Fatalf("source environment mode changed: %+v", cfg)
 	}
 }
+
+func TestPlainHTTPExposureGuard(t *testing.T) {
+	for _, tc := range []struct {
+		name, listen, origin string
+		require              bool
+		warn, fatal          bool
+	}{
+		{"published without a tls origin", ":7863", "", false, true, false},
+		{"published behind an https origin", ":7863", "https://console.test", false, false, false},
+		{"loopback only", "127.0.0.1:7863", "", false, false, false},
+		{"ipv6 loopback only", "[::1]:7863", "", false, false, false},
+		{"declared plain origin", ":7863", "http://console.test", false, true, false},
+		{"unspecified host is not loopback", "0.0.0.0:7863", "", false, true, false},
+		{"require https fails closed", ":7863", "", true, true, true},
+		{"require https accepts an https origin", ":7863", "https://console.test", true, false, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			warn, err := httpsExposure(tc.listen, tc.origin, tc.require)
+			if (warn != "") != tc.warn || (err != nil) != tc.fatal {
+				t.Errorf("listen=%q origin=%q require=%v: warn=%q err=%v, want warn=%v fatal=%v", tc.listen, tc.origin, tc.require, warn, err, tc.warn, tc.fatal)
+			}
+		})
+	}
+}

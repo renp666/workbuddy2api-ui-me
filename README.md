@@ -158,13 +158,22 @@ environment:
 ## 使用边界
 
 - **保护密钥**：console 启动日志会显示管理密钥，不显示 API 或内部通信密钥。不要公开分享日志或含真实密钥的 YAML。
-- **公网使用 HTTPS**：通过反向代理连接 console，并在 console 的 `environment` 中添加 `WB2A_PUBLIC_ORIGIN: "https://你的域名"`，不要带路径。
+- **公网使用 HTTPS**：通过反向代理连接 console，并在 console 的 `environment` 中添加 `WB2A_PUBLIC_ORIGIN: "https://你的域名"`，不要带路径。console 自身只提供 HTTP：非回环监听且没有声明 HTTPS 地址时启动日志会给出一条警告，需要硬性保证时设置 `WB2A_REQUIRE_HTTPS: "1"`，不满足条件直接拒绝启动。声明了 HTTPS 地址时响应会带上 HSTS，明文部署不会。
+- **反代后的登录限速**：管理登录按直连地址计数，经反向代理时所有访客会共用同一份额度。需要按访客分别限速时，把代理所在网段写入 `WB2A_TRUSTED_PROXY_CIDRS`（逗号分隔 CIDR），仅该网段提供的 `X-Forwarded-For` 会被采信。不要填 `0.0.0.0/0`：那等于信任所有直连对端，只在 console 仅经可信代理可达时才安全。
 - **积分仅供观察**：待确认不等于零，余额差额不等于奖励；仅将上游明确返回的奖励展示为已确认。
 - **遵守平台规则**：仅使用本人授权账号，不向未授权用户开放，不绕过平台验证。模型、额度、活动及服务可用性受上游规则影响。
 
 ## 开发与来源
 
-本项目基于 [Sliverkiss/workbuddy2api](https://github.com/Sliverkiss/workbuddy2api)，在保留上游来源和许可的基础上增加独立 Web 控制台及 Docker 部署能力。
+本项目的血缘分三层，报告问题或对比安全修复时请先分清改的是哪一层：
+
+| 层 | 仓库 | 职责 |
+| --- | --- | --- |
+| 原作者 | [Sliverkiss/workbuddy2api](https://github.com/Sliverkiss/workbuddy2api) | 账号池、调度器、上游客户端与 WAF/IP 级防护 |
+| 二创 | [baiyea/workbuddy2api-ui](https://github.com/baiyea/workbuddy2api-ui) | 增加独立 Web 控制台、内部桥接、Anthropic 文本适配与 Docker 部署 |
+| 本仓 | 本仓库 | 在二创基础上做安全加固与仓库卫生修正 |
+
+上游业务层以源码快照方式引入（见 [upstream.lock](upstream.lock)）。快照基点落后原作者 `master` 约 214 个提交，因此原作者后续新增的安全加固（WAF IP 级熔断、管理端点、会话 ID 签名等）**不在本仓**。这是快照策略的已知取舍，需要时按 [AGENTS.md](AGENTS.md) 的上游更新流程对齐。
 
 架构、开发、测试、上游更新和镜像发布说明见 [AGENTS.md](AGENTS.md)。源码构建入口保留在 [docker-compose.build.yaml](docker-compose.build.yaml)。
 

@@ -5,9 +5,11 @@ import (
 	"errors"
 	"io"
 	"log"
+	"net"
 	"net/http"
 	"net/url"
 	"os"
+	"strings"
 	"time"
 )
 
@@ -92,13 +94,30 @@ func configFromEnv() (Config, string, error) {
 	}
 	keyFile := os.Getenv("WB2A_KEY_FILE")
 	if keyFile == "" {
-		return Config{CoreURL: target, AdminKey: os.Getenv("WB2A_ADMIN_KEY"), APIKey: os.Getenv("WB2A_API_KEY"), BridgeKey: os.Getenv("WB2A_BRIDGE_KEY"), PublicOrigin: os.Getenv("WB2A_PUBLIC_ORIGIN")}, listen, nil
+		return Config{CoreURL: target, AdminKey: os.Getenv("WB2A_ADMIN_KEY"), APIKey: os.Getenv("WB2A_API_KEY"), BridgeKey: os.Getenv("WB2A_BRIDGE_KEY"), PublicOrigin: os.Getenv("WB2A_PUBLIC_ORIGIN"), TrustedProxyCIDRs: os.Getenv("WB2A_TRUSTED_PROXY_CIDRS"), RequireHTTPS: os.Getenv("WB2A_REQUIRE_HTTPS") == "1"}, listen, nil
 	}
 	keys, err := readDeploymentKeys(keyFile, 30*time.Second, os.Getenv("WB2A_ADMIN_KEY"), os.Getenv("WB2A_API_KEY"))
 	if err != nil {
 		return Config{}, "", err
 	}
-	return Config{CoreURL: target, AdminKey: keys.AdminKey, APIKey: keys.APIKey, BridgeKey: keys.BridgeKey, PublicOrigin: os.Getenv("WB2A_PUBLIC_ORIGIN")}, listen, nil
+	return Config{CoreURL: target, AdminKey: keys.AdminKey, APIKey: keys.APIKey, BridgeKey: keys.BridgeKey, PublicOrigin: os.Getenv("WB2A_PUBLIC_ORIGIN"), TrustedProxyCIDRs: os.Getenv("WB2A_TRUSTED_PROXY_CIDRS"), RequireHTTPS: os.Getenv("WB2A_REQUIRE_HTTPS") == "1"}, listen, nil
+}
+func httpsExposure(listen, publicOrigin string, requireHTTPS bool) (string, error) {
+	host := listen
+	if split, _, err := net.SplitHostPort(listen); err == nil {
+		host = split
+	}
+	if ip := net.ParseIP(host); ip != nil && ip.IsLoopback() {
+		return "", nil
+	}
+	if strings.HasPrefix(publicOrigin, "https://") {
+		return "", nil
+	}
+	const plain = "console 只在明文 HTTP 上监听，且监听地址不是回环，管理密钥与会话 Cookie 会随请求明文传输"
+	if requireHTTPS {
+		return plain, errors.New(plain + "；WB2A_REQUIRE_HTTPS 已开启，拒绝启动。请改为回环监听或把 WB2A_PUBLIC_ORIGIN 设为 https://你的域名")
+	}
+	return plain + "。公网暴露前请在反向代理终止 TLS 并把 WB2A_PUBLIC_ORIGIN 设为 https://你的域名", nil
 }
 func main() {
 	cfg, listen, err := configFromEnv()
@@ -109,8 +128,15 @@ func main() {
 	if err != nil {
 		log.Fatal(err)
 	}
+	warning, err := httpsExposure(listen, cfg.PublicOrigin, cfg.RequireHTTPS)
+	if err != nil {
+		log.Fatal(err)
+	}
 	log.Printf("[console] 管理密钥（仅交给管理员）: %s", cfg.AdminKey)
 	server := &http.Server{Addr: listen, Handler: h, ReadHeaderTimeout: 10 * time.Second, IdleTimeout: 60 * time.Second}
 	log.Printf("console listening on %s", listen)
+	if warning != "" {
+		log.Printf("[console] 警告：%s", warning)
+	}
 	log.Fatal(server.ListenAndServe())
 }

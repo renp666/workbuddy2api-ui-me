@@ -11,6 +11,7 @@ import (
 	"errors"
 	"io"
 	"io/fs"
+	"log"
 	"net"
 	"net/http"
 	"net/url"
@@ -28,6 +29,10 @@ type Config struct {
 	APIKey       string // Only exposed by the authenticated, CSRF-protected access endpoint.
 	BridgeKey    string
 	PublicOrigin string
+	// TrustedProxyCIDRs lists proxies allowed to name the client in X-Forwarded-For.
+	// It is consumed by the login limiter only; same-origin and CSRF checks keep using the connection peer.
+	TrustedProxyCIDRs string
+	RequireHTTPS      bool
 }
 type adminSession struct {
 	csrf, owner string
@@ -48,6 +53,9 @@ type server struct {
 	sessions map[string]*adminSession
 	limits   map[string]loginLimit
 	client   *http.Client
+	trusted  []*net.IPNet
+	// httpsEnabled is derived from PublicOrigin and only gates HSTS; it is not an auth check.
+	httpsEnabled bool
 }
 
 func NewServer(cfg Config) (http.Handler, error) {
@@ -64,7 +72,22 @@ func NewServer(cfg Config) (http.Handler, error) {
 	target.Path = ""
 	cfg.CoreURL = &target
 	cfg.PublicOrigin = strings.TrimRight(cfg.PublicOrigin, "/")
-	h := &server{cfg: cfg, mux: http.NewServeMux(), sessions: map[string]*adminSession{}, limits: map[string]loginLimit{}, client: &http.Client{Timeout: 3 * time.Second, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}}
+	var trusted []*net.IPNet
+	for _, raw := range strings.Split(cfg.TrustedProxyCIDRs, ",") {
+		raw = strings.TrimSpace(raw)
+		if raw == "" {
+			continue
+		}
+		_, network, err := net.ParseCIDR(raw)
+		if err != nil {
+			return nil, errors.New("WB2A_TRUSTED_PROXY_CIDRS 须是逗号分隔的 CIDR 列表")
+		}
+		if ones, bits := network.Mask.Size(); ones == 0 && bits > 0 {
+			log.Printf("[console] 警告：WB2A_TRUSTED_PROXY_CIDRS 含 %s，等于信任所有直连对端，X-Forwarded-For 可被任意伪造；仅当 console 只经可信代理可达时才是安全的", network.String())
+		}
+		trusted = append(trusted, network)
+	}
+	h := &server{cfg: cfg, mux: http.NewServeMux(), sessions: map[string]*adminSession{}, limits: map[string]loginLimit{}, client: &http.Client{Timeout: 3 * time.Second, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}, trusted: trusted, httpsEnabled: strings.HasPrefix(cfg.PublicOrigin, "https://")}
 	assets, err := fs.Sub(webFiles, "web")
 	if err != nil {
 		return nil, err
@@ -132,6 +155,11 @@ func (h *server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Referrer-Policy", "no-referrer")
 	w.Header().Set("X-Content-Type-Options", "nosniff")
 	w.Header().Set("Cache-Control", "no-store")
+	// HSTS only when this deployment is actually reachable over HTTPS; declaring it on a
+	// plaintext origin would pin browsers against a scheme the deployment does not serve.
+	if h.httpsEnabled {
+		w.Header().Set("Strict-Transport-Security", "max-age=31536000")
+	}
 	// Reject ambiguous encodings before ServeMux can clean or redirect them.
 	if r.URL.EscapedPath() != r.URL.Path || strings.ContainsAny(r.URL.Path, "%\\") || strings.Contains(r.URL.Path, "//") {
 		adminError(w, 400, "请求路径无效")
@@ -240,15 +268,43 @@ func (h *server) withAdmin(next http.HandlerFunc) http.HandlerFunc {
 		next(w, r.WithContext(context.WithValue(r.Context(), sessionContextKey{}, session)))
 	}
 }
+func (h *server) loginKey(r *http.Request) string {
+	ip, _, err := net.SplitHostPort(r.RemoteAddr)
+	if err != nil {
+		ip = r.RemoteAddr
+	}
+	peer := net.ParseIP(ip)
+	if peer == nil || len(h.trusted) == 0 {
+		return ip
+	}
+	trusted := false
+	for _, network := range h.trusted {
+		if network.Contains(peer) {
+			trusted = true
+			break
+		}
+	}
+	// A single header is the only shape a reversing proxy appends to; repeated headers leave the last hop ambiguous.
+	forwarded := r.Header.Values("X-Forwarded-For")
+	if !trusted || len(forwarded) != 1 {
+		return ip
+	}
+	entry := forwarded[0]
+	if comma := strings.LastIndexByte(entry, ','); comma >= 0 {
+		entry = entry[comma+1:]
+	}
+	client := net.ParseIP(strings.TrimSpace(entry))
+	if client == nil {
+		return ip
+	}
+	return client.String()
+}
 func (h *server) adminLogin(w http.ResponseWriter, r *http.Request) {
 	if !h.sameOrigin(r) {
 		adminError(w, 403, "请求来源无效")
 		return
 	}
-	ip, _, err := net.SplitHostPort(r.RemoteAddr)
-	if err != nil {
-		ip = r.RemoteAddr
-	}
+	ip := h.loginKey(r)
 	h.mu.Lock()
 	h.cleanupLocked()
 	lim := h.limits[ip]

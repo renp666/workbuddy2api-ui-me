@@ -536,3 +536,18 @@ test('access curl quotes JSON model strings without executing shell metacharacte
   assert.equal(JSON.parse(quoted.replace(/'\\''/g,"'")).model,model);
   assert.ok(quoted.includes("'\\''"));
 });
+
+test('server-provided task and flow ids cannot reshape the admin request path',async()=>{
+  const urls=[];
+  const {ctx,get}=taskFixture(url=>{urls.push(url);return new Promise(()=>{});});
+  const hostile='../../owners/other/tasks';
+  vm.runInContext(`taskState.items=[{id:${JSON.stringify(hostile)},enabled:true,hours:[],timezone:'Asia/Shanghai',next_at:null}]`,ctx);
+  vm.runInContext('triggerTask(taskState.items[0].id)',ctx);
+  await Promise.resolve();
+  vm.runInContext(`flowID=${JSON.stringify(hostile)};pollFlow()`,ctx);
+  get('region').value='cn';
+  get('region-form').handlers.submit({preventDefault(){},submitter:{disabled:false}});
+  const encoded=encodeURIComponent(hostile);
+  assert.deepEqual(urls.filter(url=>url.startsWith('/admin/tasks/')),[`/admin/tasks/${encoded}/runs`]);
+  assert.deepEqual(urls.filter(url=>url.startsWith('/admin/oauth/')),[`/admin/oauth/${encoded}/poll`,`/admin/oauth/${encoded}/region`]);
+});

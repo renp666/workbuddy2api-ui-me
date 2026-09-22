@@ -58,6 +58,14 @@ console（独立 Go 服务，内嵌 HTML/CSS/JavaScript）
 
 唯一上游为 `https://github.com/Sliverkiss/workbuddy2api`。实际版本以 `upstream.lock` 为准，不在多份文档中重复写死 commit。
 
+本仓是三层血缘的第三层，排障和评估安全面时必须分清改的是哪一层：
+
+1. `Sliverkiss/workbuddy2api`（原作者）—— 账号池、调度器、上游客户端与 WAF/IP 级防护。
+2. `baiyea/workbuddy2api-ui`（二创）—— 在原作者基础上增加 `console/`（网页控制台）、`patches/`、`extensions/`（桥接、Anthropic 适配、任务记录）与容器化部署。
+3. 本仓（三创）—— 只改 `console/`、文档与仓库卫生，不动上游业务层。
+
+`upstream/` 是**历史快照**，不等于原作者当前 `master`：快照基点比原作者 `master` 落后约 214 个提交，因此原作者后续的安全加固（如 `internal/server/wafip.go` 的 WAF IP 级熔断、`internal/server/admin.go`、`internal/session/*` 的会话 ID 签名、以及多处数据竞争修复）**不在本仓**。这是快照策略的已知取舍，不是本次改动引入的回归；要对齐需走下面的上游更新流程。评估「本仓有没有某个安全修复」时，先确认它在哪一层。
+
 `scripts/overlay.py prepare` 的步骤：校验源码摘要 → 复制快照到新目录 → 复制扩展文件 → 按 `patches/series` 执行 `git apply --check` 并应用补丁。不会改写 `upstream/`。
 
 1. 新文件和测试放到 `extensions/` 的对应相对路径；不能通过扩展覆盖已有上游文件。
@@ -111,7 +119,7 @@ node --test console/web_test.cjs
 
 公共 `/v1/messages` 使用同一个模型 API Key（`x-api-key`）和固定 `anthropic-version: 2023-06-01`。`New(next, apiKey, maxBodyBytes)` 仅截获该路径，其他 OpenAI 路径不变；未知用量保持 `null`，不得伪造零或宣称完整 Claude Code 兼容。
 
-网页 `POST /admin/messages` 沿用管理会话、同源、CSRF 和退出取消，代理至带 owner 的 `/internal/v1/messages`。请求 envelope 为 `{conversation_id, request}`；ID 限 `[A-Za-z0-9_-]{1,128}`，request 为完整 Anthropic 文本请求，不加私有字段。bridge 有界读取并验证 envelope，通过 `WithConversation` 注入可信上下文，由 adapter 写入 OpenAI `conversationId`；不接受公共私有头伪造会话。体积限制沿用 `server.max_body_mb`，包含管理 envelope。
+网页 `POST /admin/messages` 沿用管理会话、同源、CSRF 和退出取消，代理至 `/internal/v1/messages`（console 仍会附上会话 owner 头，但 bridge 对该路径只校验 owner 格式，真正的 owner 绑定只存在于 OAuth 流程接口；同一部署内多账号共用 `conversationId` 是预期行为，不要把它当成隔离边界去加补丁）。请求 envelope 为 `{conversation_id, request}`；ID 限 `[A-Za-z0-9_-]{1,128}`，request 为完整 Anthropic 文本请求，不加私有字段。bridge 有界读取并验证 envelope，通过 `WithConversation` 注入可信上下文，由 adapter 写入 OpenAI `conversationId`；不接受公共私有头伪造会话。`server.max_body_mb` 限制的是请求体（含管理 envelope）；非流式响应体另有 `adapter.go` 内置的 32 MiB 上限，两者不是同一个开关。
 
 SDK 仅用于隔离测试，不进入镜像或生产依赖。使用 Python 3.12 临时虚拟环境安装 `anthropic==0.67.0 httpx==0.28.1` 后执行：
 
@@ -154,7 +162,7 @@ WB2A_BROWSER_PREVIEW=1 go -C console test -run '^TestAdminBrowserPreview$' -v -t
 
 管理和桥接密钥至少 32 字节，API Key 非空，三者不同；非法配置应失败，不静默替换。按产品要求，console 启动日志显示有效管理密钥，但禁止输出 API/桥接密钥。不创建或回写 `.env`，不修改宿主或其他容器的环境变量。
 
-维护 `.gitignore`、`.dockerignore` 的边界，不提交或打包真实密钥、配置、账号、备份、`runtime/`。公网代理需在 console 的 `environment` 指定 `WB2A_PUBLIC_ORIGIN` 为完整 HTTPS origin（不带路径）；不得关闭同源、CSRF、会话归属或桥接认证。
+维护 `.gitignore`、`.dockerignore` 的边界，不提交或打包真实密钥、配置、账号、备份、`runtime/`。仓库使用 `.gitattributes` 固定 `eol=lf`：工作区可能是 CRLF（Windows `core.autocrlf=true`），但索引与提交一律 LF，新增文件不要混入裸 LF 片段。公网代理需在 console 的 `environment` 指定 `WB2A_PUBLIC_ORIGIN` 为完整 HTTPS origin（不带路径）；不得关闭同源、CSRF、会话归属或桥接认证。console 只在明文 HTTP 上监听：非回环监听且未声明 HTTPS origin 时启动会打一条警告，`WB2A_REQUIRE_HTTPS=1` 才把该情形改成拒绝启动（默认关闭）。仅在声明了 HTTPS origin 时下发 `Strict-Transport-Security`，明文部署不下发以免把浏览器钉死在本进程不提供的方案上。登录限速按连接对端分桶，反代后会把所有来源塌缩成一个桶；只有 `WB2A_TRUSTED_PROXY_CIDRS`（逗号分隔 CIDR，非法即启动失败）列出直连代理时，才取该请求单个 `X-Forwarded-For` 的最右段作为客户端地址，其余判定一律仍用直连对端；配置成 `0.0.0.0/0` 或 `::/0` 等于信任全部直连对端，启动会打警告，仅当 console 只经可信代理可达时才安全。
 
 需要自定义业务配置时，保存到 `runtime/wb2api/config.json`，通过显式只读挂载启动：
 

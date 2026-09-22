@@ -185,3 +185,97 @@ func TestConfigRejectsUnsafeTargetsAndOrigins(t *testing.T) {
 		t.Error("target changed through caller's pointer")
 	}
 }
+
+func TestLoginLimitKeysClientsThroughTrustedProxy(t *testing.T) {
+	forward := func(h http.Handler, peer, forwarded, key string) int {
+		r := httptest.NewRequest("POST", "http://console.test/admin/login", strings.NewReader(`{"key":"`+key+`"}`))
+		r.Header.Set("Origin", "http://console.test")
+		r.RemoteAddr = peer + ":1234"
+		if forwarded != "" {
+			r.Header.Set("X-Forwarded-For", forwarded)
+		}
+		w := httptest.NewRecorder()
+		h.ServeHTTP(w, r)
+		return w.Code
+	}
+	newHandler := func(trusted string) (http.Handler, Config) {
+		t.Helper()
+		cfg := testConfig("http://127.0.0.1:1")
+		cfg.TrustedProxyCIDRs = trusted
+		h, err := NewServer(cfg)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return h, cfg
+	}
+	t.Run("trusted proxy isolates forwarded clients", func(t *testing.T) {
+		h, cfg := newHandler("192.0.2.0/24")
+		for i := 0; i < 10; i++ {
+			if code := forward(h, "192.0.2.1", "203.0.113.7", "wrong"); code != 401 {
+				t.Fatalf("attempt %d limited too early: %d", i+1, code)
+			}
+		}
+		if code := forward(h, "192.0.2.1", "203.0.113.7", cfg.AdminKey); code != 429 {
+			t.Fatalf("forwarded client limit not applied: %d", code)
+		}
+		if code := forward(h, "192.0.2.1", "198.51.100.9", cfg.AdminKey); code != 200 {
+			t.Fatalf("one client lockout spread to another behind the same proxy: %d", code)
+		}
+		if code := forward(h, "198.51.100.9", "203.0.113.7", cfg.AdminKey); code != 200 {
+			t.Fatalf("untrusted peer inherited a bucket named by its own header: %d", code)
+		}
+	})
+	for _, trusted := range []string{"", "198.51.100.0/24"} {
+		t.Run("untrusted peer ignores forwarded header", func(t *testing.T) {
+			h, cfg := newHandler(trusted)
+			for i := 0; i < 10; i++ {
+				if code := forward(h, "192.0.2.1", "203.0.113.7", "wrong"); code != 401 {
+					t.Fatalf("attempt %d limited without a trusted proxy: %d", i+1, code)
+				}
+			}
+			if code := forward(h, "192.0.2.1", "203.0.113.8", cfg.AdminKey); code != 429 {
+				t.Fatalf("X-Forwarded-For honoured with trusted=%q: %d", trusted, code)
+			}
+		})
+	}
+	t.Run("bare address is not a cidr", func(t *testing.T) {
+		bad := testConfig("http://127.0.0.1:1")
+		bad.TrustedProxyCIDRs = "192.0.2.1"
+		if _, err := NewServer(bad); err == nil {
+			t.Fatal("bare address accepted as a trusted proxy CIDR")
+		}
+	})
+}
+
+// HSTS must be sent only when the deployment declares an HTTPS origin; asserting it on a
+// plaintext origin would pin browsers against a scheme this process does not serve.
+func TestHSTSOnlyOnDeclaredHTTPSOrigin(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		origin string
+		want   bool
+	}{
+		{"https origin sends hsts", "https://console.test", true},
+		{"plain origin omits hsts", "http://console.test", false},
+		{"no origin omits hsts", "", false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := testConfig("http://127.0.0.1:1")
+			cfg.PublicOrigin = tc.origin
+			h, err := NewServer(cfg)
+			if err != nil {
+				t.Fatal(err)
+			}
+			r := httptest.NewRequest("GET", "http://console.test/livez", nil)
+			w := httptest.NewRecorder()
+			h.ServeHTTP(w, r)
+			got := w.Header().Get("Strict-Transport-Security")
+			if (got != "") != tc.want {
+				t.Fatalf("origin=%q: Strict-Transport-Security=%q, want present=%v", tc.origin, got, tc.want)
+			}
+			if tc.want && got != "max-age=31536000" {
+				t.Fatalf("unexpected hsts value: %q", got)
+			}
+		})
+	}
+}

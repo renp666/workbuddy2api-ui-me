@@ -147,7 +147,7 @@ async function triggerTask(taskID){
  const task=(taskState.items||[]).find(item=>item.id===taskID);if(taskStarting||taskState.active_run||!task||task.enabled===false)return;
  const generation=sessionGeneration;taskStarting=true;const requestID=taskIntents.get(taskID)||createTaskRequestID();taskIntents.set(taskID,requestID);renderTasks();notice('');
  try{
-  const run=await jsonAPI('tasks/'+taskID+'/runs',{request_id:requestID});if(generation!==sessionGeneration)return;taskIntents.delete(taskID);taskState.active_run=run;renderTaskDetail(run);await Promise.all([loadTaskState(),loadTaskHistory(true)]);
+  const run=await jsonAPI('tasks/'+encodeURIComponent(taskID)+'/runs',{request_id:requestID});if(generation!==sessionGeneration)return;taskIntents.delete(taskID);taskState.active_run=run;renderTaskDetail(run);await Promise.all([loadTaskState(),loadTaskHistory(true)]);
  }catch(error){if(generation!==sessionGeneration)return;if(error.status===409&&error.runID){taskIntents.delete(taskID);await loadTaskDetail(error.runID);await loadTaskState();}else notice(error.message+'；再次点击会沿用同一请求标识。');}
  finally{if(generation===sessionGeneration){taskStarting=false;renderTasks();}}
 }
@@ -203,7 +203,7 @@ function renderFlow(flow){
 }
 async function pollFlow(){
  const id=flowID;if(!id||!csrf)return;
- try{const flow=await jsonAPI(`oauth/${id}/poll`,{});if(id!==flowID)return;renderFlow(flow);
+ try{const flow=await jsonAPI(`oauth/${encodeURIComponent(id)}/poll`,{});if(id!==flowID)return;renderFlow(flow);
   if(flow.status==='complete'){await refreshStatus();await refreshModels();return;}
   if(flow.status==='failed'||flow.status==='needs_region')return;
   flowTimer=setTimeout(pollFlow,flow.status==='retry'?10000:2500);
@@ -212,7 +212,7 @@ async function pollFlow(){
 $('flow-retry').addEventListener('click',()=>{clearTimeout(flowTimer);pollFlow();});
 $('region-form').addEventListener('submit',async event=>{
  event.preventDefault();if(!$('region').value)return;const button=event.submitter;button.disabled=true;
- try{const flow=await jsonAPI(`oauth/${flowID}/region`,{region:$('region').value});renderFlow(flow);if(flow.status==='complete'){await refreshStatus();await refreshModels();}else if(flow.status==='retry'){flowTimer=setTimeout(pollFlow,10000);}}catch(e){notice(e.message);}finally{button.disabled=false;}
+ try{const flow=await jsonAPI(`oauth/${encodeURIComponent(flowID)}/region`,{region:$('region').value});renderFlow(flow);if(flow.status==='complete'){await refreshStatus();await refreshModels();}else if(flow.status==='retry'){flowTimer=setTimeout(pollFlow,10000);}}catch(e){notice(e.message);}finally{button.disabled=false;}
 });
 
 function message(role,text){
