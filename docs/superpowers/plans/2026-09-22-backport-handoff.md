@@ -102,6 +102,23 @@ T0 **不是**重复劳动，是**独立复核**。我的分析是单一分析者
   - `patches/0002`：在**所有**出站函数开头插入 `a = a.Snapshot()`，包括：
     `RefreshToken`、`ChatStream`、`FetchModels`、`billingMeterJSON`、`UserResourceDetailed`、`probeGlobalModels`、`ChatHeaders`、`BillingHeaders`、`RefreshHeaders`、`billingJSON`、`CheckinAll`、`RunActivityNow`、`RunKeepaliveNow`、`RunTravelNow`。
 
+    > **【2026-09-22 修正·D1】上面这个列表来自补丁 0002 的 `@@` 上下文头，按字面 grep 会落空。**
+    > 在物化树里实测的**实际插入点**是：
+    >
+    > | 实际插入点 | 说明 |
+    > | --- | --- |
+    > | `ChatStreamContext` | `ChatStream` 只是委托，快照在 Context 版 |
+    > | `billingJSONContext` / `billingMeterJSONContext` | 同上，各自由公开函数委托 |
+    > | `globalModelsOnce` | 不是 `probeGlobalModels`（后者只是入口） |
+    > | `growthJSON` | travel 域 |
+    > | `ChatHeaders` / `BillingHeaders` / `RefreshHeaders` / `FetchModels` | 与上表一致 |
+    > | `RefreshToken` | 用 `snapshot := a.Snapshot()`（不重绑定 `a`） |
+    > | scheduler 四处 | 内联 `a.Snapshot().Field` |
+    >
+    > 由 T0 实施方（Qoder）实测提出，需求方在容器内独立复核确认
+    > （见 `2026-09-22-v0-vs-me-analysis.md` D1）。
+    > **结论（竞争面已覆盖）不变，仅列名修正**；但后来者若照原列表验收会误判"补丁没做到位"。
+
 结论：**竞争面已经覆盖**。`ChatHeaders` 开头的 `a = a.Snapshot()` 锁一次拿到私有副本，后续所有字段直读都在副本上，等价于上游的加锁访问器。
 
 因此 T2 **不要**把上游 `AccessTokenValue()` 移植进来。那会与 `Snapshot()` 路线重复、造成双重实现。T2 只做两件事：

@@ -75,9 +75,16 @@
 
 | 上游提交 | 提供 | 本仓是否有 |
 | --- | --- | --- |
-| `76fafa6` | `upstream.ErrWafBlock` 分类 + `IsWafBlocked()` + `ParseRetryAfter()` + `Error.RetryAfter` 字段 | **无**（实测快照 `ErrKind` 只到 `ErrClient`，无 `ErrWafBlock`） |
-| `34405ca` | WAF 403 软冷却 + 轮转间指数退避，`applyErrorPolicy` 改由分类信封驱动 | **无** |
-| `8825c4c` | `internal/server/wafip.go` 状态机 + 在 `chatCompletions` 轮转循环插入调用 | **无** |
+| `76fafa6` | `upstream.ErrWafBlock` 分类 + `IsWafBlocked()` + `ParseRetryAfter()` + `Error.RetryAfter` 字段 | **无**（实测快照 `ErrKind` 只到 `ErrClient`，无 `ErrWafBlock`）。**回移时只取 `ErrWafBlock` + `IsWafBlocked`/`hasBusinessEnvelope`**，不带 `ParseRetryAfter`/`Error.RetryAfter` |
+| `34405ca` | WAF 403 软冷却 + 轮转间指数退避，`applyErrorPolicy` 改由分类信封驱动 | **无**。**有意不回移**：IP 级熔断的核心是「停止轮转以止损」，不需要账号级惩罚；见 §M1「最小化回移范围」 |
+| `8825c4c` | `internal/server/wafip.go` 状态机 + 在 `chatCompletions` 轮转循环插入调用 | **无**（回移，但 `wafip.go` 放 `extensions/`） |
+
+> **【2026-09-22 修正·§12.4-1】** 本表初版把 `34405ca` 列为必做依赖，且下方候选 A 写成「把三段链 `76fafa6`+`34405ca`+`8825c4c` 最小化回移」——
+> 与「只做 IP 级熔断、不做软冷却/退避」的决策**自相矛盾**。
+> 由 T0 实施方（Qoder）在 `2026-09-22-backport-handoff.md` §12.4 提出，需求方核实确认。
+> **以「最小集」为准**：`ErrWafBlock` + `IsWafBlocked` + `wafip.go` + 轮转 `break`，
+> 不含 `34405ca` 的账号级软冷却与 `rotateBackoff`。
+> 代价（已知取舍）：本仓 WAF 403 **不冷却账号**，仅 IP 级止损；该差异已写入补丁 0006 的测试注释。
 
 且插入点所在的 `applyErrorPolicy` **签名已变**：
 
@@ -244,7 +251,7 @@ git diff --check && git check-attr -a upstream/internal/server/wafip.go
 > **原配方作废**（两条都跑不通）：`-v "$(pwd -W):/src:ro"` 直挂 Windows 目录 → `source_digest` 仍不匹配（§12.1）且只读挂载写不出 `.build`；`go test -race ./...` 落在 `-w /src` → 仓库根不是 Go 模块，直接 `go.mod file not found`。
 >
 > **有效入口**：容器内 `git clone /host /work/repo` 后再 `prepare`，对物化目录执行 `-race`。完整 stage1–7 脚本与 HEAD `71fa504` 的基线结果见交接书 §12.3；本次实测 5 个关键包（auth/pool/upstream/server/scheduler）+ console 全 ok、无 DATA RACE。
-
+>
 > 镜像源配方来自 `2026-09-22-security-review-tracking.md` 第 6 节实测（`registry-1.docker.io` 本机超时，`docker.m.daocloud.io` 可拉）。
 
 ### 不做的验证（不得声称完成）
@@ -259,7 +266,9 @@ git diff --check && git check-attr -a upstream/internal/server/wafip.go
 
 实测结论：`wafip.go` **不能**作为纯 `extensions/` 新增实现，因为它必须同时（a）让 `upstream.ErrKind` 多出 `ErrWafBlock`（改上游既有文件），（b）在 `chatCompletions` 轮转循环内部插入 `break`（改上游既有文件）。两条都必然走 `patches/`。
 
-- **候选 A（推荐）**：新增 `patches/0006-waf-ip-failfast.patch`，把上游三段链（`76fafa6`+`34405ca`+`8825c4c`）**最小化**回移到本仓快照文本上。只带 WAF 一条链，不夹带 `/v1/stats`、admin 端点等无关改动。
+- **候选 A（推荐）**：新增 `patches/0006-waf-ip-failfast.patch`，**只回移 IP 级熔断的最小集**
+  （`ErrWafBlock` + `IsWafBlocked` + `wafip.go` + 轮转 `break`），**不带** `34405ca` 的账号级 WAF 软冷却/退避，也不夹带 `/v1/stats`、admin 端点等无关改动。
+  详见上文 §M1 修正注记与交接工单 §4.4。
 - **候选 B**：在 `extensions/` 内做等价状态机 + 用 `extensions/` 包住公共 Handler 实现 fail-fast。代价：仍要改 `ErrWafBlock`（否则无法从 `Classify` 拿到 WAF 信号），且包一层会与 `extensions/internal/bridge` 的既有包装顺序冲突。
 
 ### Q2 [需人工确认] M2 的路线
