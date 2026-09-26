@@ -44,6 +44,7 @@ console（独立 Go 服务，内嵌 HTML/CSS/JavaScript）
 | `extensions/internal/anthropic/` | Messages 文本请求、普通响应与增量 SSE 适配，传递取消与真实用量。 |
 | `extensions/internal/oauth/`、`extensions/internal/pool/` | 授权流程、账号热加载等扩展。 |
 | `extensions/internal/scheduler/`、`extensions/internal/taskrun/` | 任务目录、执行观察、单运行器和持久历史。 |
+| `extensions/internal/server/`、`extensions/internal/session/` | 安全回溯的扩展文件与竞态回归测试（`wafip.go`、`session_gc_race_test.go`），分别配套补丁 0006、0007。 |
 | `extensions/scripts/` | Python 任务结果事件与测试。 |
 | `patches/series`、`patches/README.md` | 补丁顺序、修改原因、验证方式和移除条件。 |
 | `console/main.go`、`console/server.go`、`console/proxy.go` | 配置、管理会话、路由与代理。 |
@@ -52,6 +53,7 @@ console（独立 Go 服务，内嵌 HTML/CSS/JavaScript）
 | `scripts/overlay.py` | 源码物化、补丁标识和上游更新。 |
 | `scripts/check.sh`、`scripts/acceptance.sh` | 本地检查和真实容器隔离验收。 |
 | `scripts/release.sh`、`scripts/release.py` | 时间戳镜像发布入口与实现。 |
+| `docs/superpowers/plans/`、`docs/superpowers/specs/` | 任务书、交接班记录与设计文档；进行中的安全回溯工作以此为准。 |
 | `docs/superpowers/verification/` | 验证记录、界面截图；模拟素材不代表真实上游结果。 |
 
 ## 上游与补丁机制
@@ -64,7 +66,7 @@ console（独立 Go 服务，内嵌 HTML/CSS/JavaScript）
 2. `baiyea/workbuddy2api-ui`（二创）—— 在原作者基础上增加 `console/`（网页控制台）、`patches/`、`extensions/`（桥接、Anthropic 适配、任务记录）与容器化部署。
 3. 本仓（三创）—— 只改 `console/`、文档与仓库卫生，不动上游业务层。
 
-`upstream/` 是**历史快照**，不等于原作者当前 `master`：快照基点比原作者 `master` 落后约 214 个提交，因此原作者后续的安全加固（如 `internal/server/wafip.go` 的 WAF IP 级熔断、`internal/server/admin.go`、`internal/session/*` 的会话 ID 签名、以及多处数据竞争修复）**不在本仓**。这是快照策略的已知取舍，不是本次改动引入的回归；要对齐需走下面的上游更新流程。评估「本仓有没有某个安全修复」时，先确认它在哪一层。
+`upstream/` 是**历史快照**，不等于原作者当前 `master`：快照基点比原作者 `master` 落后约 214 个提交，因此原作者后续的安全加固（如 `internal/server/wafip.go` 的 WAF IP 级熔断、`internal/server/admin.go`、`internal/session/*` 的会话 ID 签名、以及多处数据竞争修复）**不在本仓**。这是快照策略的已知取舍，不是本次改动引入的回归；要对齐需走下面的上游更新流程。评估「本仓有没有某个安全修复」时，先确认它在哪一层；其中 WAF 熔断分类与 session GC 停止竞态已通过补丁 0006、0007 定点回溯进本仓（配套扩展文件与移除条件见 `patches/README.md`），其余原作者加固仍不在。
 
 `scripts/overlay.py prepare` 的步骤：校验源码摘要 → 复制快照到新目录 → 复制扩展文件 → 按 `patches/series` 执行 `git apply --check` 并应用补丁。不会改写 `upstream/`。
 

@@ -36,3 +36,13 @@ backups/
 LOOP.md
 PLAN.md
 SPEC.md
+
+# Local dev helpers (production entry stays `docker compose up -d`; these are host-only)
+/start.bat
+/start-build.bat
+/stop.bat
+/restart.bat
+
+# Local tool artifacts
+/.mimosa/
+/rp_probe.txt
