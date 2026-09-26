@@ -14,7 +14,7 @@
 </main>
 <div id="console-view" class="shell" hidden>
  <aside class="sidebar"><div class="brand"><span class="brand-icon">W</span> WorkBuddy</div><p class="sidebar-label">WORKSPACE CONSOLE</p>
-  <nav aria-label="主要导航"><button data-view="overview" class="nav active">◫ <span>运行概览</span></button><button data-view="accounts" class="nav">◎ <span>账号管理</span></button><button data-view="tasks" class="nav">◷ <span>自动任务</span></button><button data-view="chat" class="nav">↗ <span>对话测试</span></button><button data-view="access" class="nav">⌘ <span>API 接入</span></button></nav>
+  <nav aria-label="主要导航"><button data-view="overview" class="nav active">◫ <span>运行概览</span></button><button data-view="accounts" class="nav">◎ <span>账号管理</span></button><button data-view="tasks" class="nav">◷ <span>自动任务</span></button><button data-view="usage" class="nav">≣ <span>调用统计</span></button><button data-view="chat" class="nav">↗ <span>对话测试</span></button><button data-view="access" class="nav">⌘ <span>API 接入</span></button></nav>
   <div class="sidebar-bottom"><span class="status-dot"></span> 自托管网关<button id="logout" class="quiet">退出登录</button></div>
  </aside>
  <main class="workspace"><header class="topbar"><span class="breadcrumb">控制台 <span>/</span> <span id="breadcrumb-name">运行概览</span></span><span class="badge" id="service-state">正在连接</span></header>
@@ -36,6 +36,11 @@
    <div class="section-title"><h2>最近执行记录</h2><span class="muted small">结果来自模拟或实际 core 的结构化观察</span></div>
    <div class="panel table-wrap"><table><thead><tr><th>任务</th><th>状态</th><th>开始时间</th><th>来源</th><th>操作</th></tr></thead><tbody id="task-history-body"></tbody></table><p id="task-history-empty" class="empty">还没有任务记录。</p></div><button id="task-more" class="secondary task-more" hidden>加载更早记录</button>
    <article id="task-detail" class="panel task-detail" hidden><div class="section-title"><h2 id="task-detail-title">执行详情</h2><button id="task-detail-close" class="quiet">关闭</button></div><p id="task-detail-meta" class="muted small"></p><pre id="task-accounts" class="task-accounts"></pre><h3>脱敏日志摘要</h3><pre id="task-log" class="task-log"></pre><p id="task-log-truncated" class="muted small" hidden>日志已按服务端上限截断。</p></article>
+  </section>
+  <section class="page" data-page="usage" hidden><div class="page-heading"><div><p class="eyebrow">USAGE</p><h1>调用统计</h1><p class="muted">每次成功调用的账号、模型、token 与积分扣费。积分只累计上游明确回报的扣费，未观测不记为零。</p></div><button id="usage-refresh" class="secondary">↻ 刷新统计</button></div>
+   <div class="metrics"><article><span>调用次数</span><strong id="usage-calls">—</strong><small>所选范围内成功调用</small></article><article><span>Tokens</span><strong id="usage-tokens">—</strong><small>输入 + 输出（已观测）</small></article><article><span>积分扣费</span><strong id="usage-credit">—</strong><small>usage.credit 实测值合计</small></article></div>
+   <div class="section-title"><h2>调用明细</h2><span class="muted small"><label for="usage-range">时间范围</label>&nbsp;<select id="usage-range"><option value="today" selected>今天</option><option value="yesterday">前一天</option><option value="week">本周</option><option value="month">本月</option></select></span></div>
+   <div class="panel table-wrap"><table><thead><tr><th>时间</th><th>账号</th><th>模型</th><th>方式</th><th>输入 tokens</th><th>输出 tokens</th><th>积分</th></tr></thead><tbody id="usage-body"></tbody></table><p id="usage-empty" class="empty">所选范围内还没有调用记录。</p><p id="usage-note" class="muted small" hidden></p></div>
   </section>
   <section class="page" data-page="chat" hidden><div class="page-heading"><div><p class="eyebrow">PLAYGROUND</p><h1>让模型回答一个问题</h1><p class="muted">真实请求经过同一账号池。对话只保留在当前页面，刷新即清空。</p></div><button id="clear-chat" class="secondary">清空对话</button></div>
    <div class="panel chat-panel"><div class="protocol-row"><div class="protocol-switch" role="group" aria-label="对话协议"><button id="chat-openai" data-protocol="openai" aria-pressed="true">OpenAI</button><button id="chat-anthropic" data-protocol="anthropic" aria-pressed="false">Anthropic · Beta 测试</button></div><span class="muted small">切换协议会清空当前对话</span></div>

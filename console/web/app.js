@@ -3,6 +3,7 @@ let csrf = '', modelList = [], accounts = [], history = [], conversation = newCo
 let page = 'overview', sessionGeneration = 0;
 let protocol = 'openai';
 let taskState = {items:[],active_run:null,latest_runs:[]}, taskHistory = [], taskBefore = null, taskStarting = false, taskPollTimer, taskRenderKey, detailController, detailGeneration = 0;
+let usageRange = 'today', usageGeneration = 0;
 let selectedTaskRun, historyGeneration = 0, historyLoading = false, taskHistoryKey;
 const taskIntents = new Map(), taskReads = new Set();
 function newConversation() { return `web-${Date.now()}-${Math.random().toString(36).slice(2)}`; }
@@ -26,7 +27,7 @@ function signedOut() {
  sessionGeneration++;
  csrf = ''; activeRequest?.abort(); clearTimeout(flowTimer); flowID = undefined; history = []; conversation = newConversation(); stopTaskReads(); taskIntents.clear(); taskState={items:[],active_run:null,latest_runs:[]};taskHistory=[];taskBefore=null;taskStarting=false;taskRenderKey=undefined;
  $('messages').replaceChildren();$('task-list').replaceChildren();$('task-history-body').replaceChildren();$('task-detail').hidden=true;$('task-accounts').textContent='';$('task-log').textContent=''; $('api-key').value = ''; $('api-key').type = 'password'; $('admin-key').value = ''; $('console-view').hidden = true; $('login-view').hidden = false;
- protocol='openai';$('prompt').value='';$('max-tokens').value='1024';$('usage').textContent='用量将在上游返回后显示';renderAccess();
+ protocol='openai';$('prompt').value='';$('max-tokens').value='1024';$('usage').textContent='用量将在上游返回后显示';usageGeneration++;renderAccess();
 }
 async function signedIn(session) {
  csrf = session.csrf; $('admin-key').value = ''; $('login-view').hidden = true; $('console-view').hidden = false;
@@ -38,9 +39,10 @@ function showPage(value) {
  page = value;
  document.querySelectorAll('[data-page]').forEach(el => el.hidden = el.dataset.page !== page);
  document.querySelectorAll('.nav').forEach(el => el.classList.toggle('active', el.dataset.view === page));
- $('breadcrumb-name').textContent = {overview:'运行概览',accounts:'账号管理',tasks:'自动任务',chat:'对话测试',access:'API 接入'}[page];
+ $('breadcrumb-name').textContent = {overview:'运行概览',accounts:'账号管理',tasks:'自动任务',usage:'调用统计',chat:'对话测试',access:'API 接入'}[page];
  if (page !== 'access') { $('api-key').value = ''; $('api-key').type = 'password'; }
  if (page === 'tasks') loadTaskPage();
+ if (page === 'usage') loadUsage();
 }
 document.querySelectorAll('[data-view]').forEach(button => button.addEventListener('click', () => showPage(button.dataset.view)));
 $('login-form').addEventListener('submit', async event => {
@@ -186,6 +188,34 @@ $('task-refresh').addEventListener('click',loadTaskPage);
 $('task-more').addEventListener('click',()=>loadTaskHistory(false));
 $('task-detail-close').addEventListener('click',()=>cancelTaskDetail(true));
 document.addEventListener?.('visibilitychange',()=>{if(document.hidden)stopTaskReads();else if(page==='tasks')pollTaskRun();});
+
+const usageModeNames={stream:'流式',sync:'同步'};
+function formatUsageTokens(value){return value<0?'—':String(value);}
+function formatUsageCredit(value){return value==null||value===undefined?'—':String(value);}
+function renderUsage(data){
+ const items=(data.items||[]).slice().reverse(),summary=data.summary||{calls:0,prompt_tokens:0,completion_tokens:0,credit:0,credit_missing:0,usage_missing:0};
+ $('usage-calls').textContent=String(summary.calls);
+ $('usage-tokens').textContent=String(summary.prompt_tokens+summary.completion_tokens);
+ $('usage-credit').textContent=String(summary.credit);
+ const notes=[];
+ if(summary.usage_missing)notes.push(`${summary.usage_missing} 条记录未回报 token 用量，明细按「—」展示`);
+ if(summary.credit_missing)notes.push(`${summary.credit_missing} 条记录未回报积分扣费，未计入合计`);
+ $('usage-note').textContent=notes.join('；');$('usage-note').hidden=!notes.length;
+ const body=$('usage-body');body.replaceChildren();$('usage-empty').hidden=items.length>0;
+ for(const e of items){
+  const tr=document.createElement('tr');
+  tr.append(cell(formatTaskTime(e.ts*1000)),cell(e.account||e.uid||'—'),cell(e.model||'—'),cell(usageModeNames[e.mode]||e.mode||'—'),cell(formatUsageTokens(e.prompt_tokens)),cell(formatUsageTokens(e.completion_tokens)),cell(formatUsageCredit(e.credit)));
+  body.append(tr);
+ }
+}
+async function loadUsage(){
+ if(!csrf)return;
+ const generation=usageGeneration;
+ try{const data=await jsonAPI('usage?range='+encodeURIComponent(usageRange));if(generation===usageGeneration)renderUsage(data);}
+ catch(error){if(generation===usageGeneration)notice(error.message);}
+}
+$('usage-range').addEventListener('change',event=>{usageRange=event.target.value;usageGeneration++;loadUsage();});
+$('usage-refresh').addEventListener('click',()=>{usageGeneration++;loadUsage();});
 
 $('add-account').addEventListener('submit',async event=>{
  event.preventDefault();clearTimeout(flowTimer);const button=event.submitter;button.disabled=true;notice('');

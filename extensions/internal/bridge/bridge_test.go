@@ -18,6 +18,7 @@ import (
 	"workbuddy2api/internal/anthropic"
 	"workbuddy2api/internal/scheduler"
 	"workbuddy2api/internal/taskrun"
+	"workbuddy2api/internal/usagelog"
 )
 
 const messagesRequest = `{"model":"cn:model","max_tokens":4,"messages":[{"role":"user","content":"hello"}]}`
@@ -351,5 +352,88 @@ func TestTaskBridgeCatalogLatestAndHistoryPagination(t *testing.T) {
 	detail := bridgeRequest(h, "GET", "/internal/v1/task-runs/run-c", "", "")
 	if detail.Code != 200 || !strings.Contains(detail.Body.String(), `"task_id":"activity"`) {
 		t.Fatalf("detail=%d %s", detail.Code, detail.Body)
+	}
+}
+
+// TestUsageRangeBounds 校验范围→[start,end) 的映射：周一起点、月一起点、昨日半开区间。
+func TestUsageRangeBounds(t *testing.T) {
+	// 2026-09-26 15:04 本地时间（周六）。
+	now := time.Date(2026, 9, 26, 15, 4, 30, 0, time.Local)
+	start, end, ok := usageRangeBounds("today", now)
+	if !ok || start != time.Date(2026, 9, 26, 0, 0, 0, 0, time.Local).Unix() || end != time.Date(2026, 9, 27, 0, 0, 0, 0, time.Local).Unix() {
+		t.Fatalf("today 边界错误：%d %d %v", start, end, ok)
+	}
+	start, end, _ = usageRangeBounds("yesterday", now)
+	if start != time.Date(2026, 9, 25, 0, 0, 0, 0, time.Local).Unix() || end != time.Date(2026, 9, 26, 0, 0, 0, 0, time.Local).Unix() {
+		t.Fatalf("yesterday 边界错误：%d %d", start, end)
+	}
+	start, end, _ = usageRangeBounds("week", now)
+	if time.Unix(start, 0).In(time.Local).Weekday() != time.Monday || start != time.Date(2026, 9, 21, 0, 0, 0, 0, time.Local).Unix() {
+		t.Fatalf("week 应从周一起：%d", start)
+	}
+	start, end, _ = usageRangeBounds("month", now)
+	if start != time.Date(2026, 9, 1, 0, 0, 0, 0, time.Local).Unix() {
+		t.Fatalf("month 应从月一起：%d", start)
+	}
+	if _, _, ok := usageRangeBounds("hour", now); ok {
+		t.Fatal("未知范围必须被拒绝")
+	}
+}
+
+// TestUsageEndpointValidatesAndSummarizes：参数校验、未接线 503、
+// 汇总只累计已知观测（缺失 credit 计数而非按零并入）。
+func TestUsageEndpointValidatesAndSummarizes(t *testing.T) {
+	none := New(context.Background(), Config{Key: testKey})
+	for _, tc := range []struct {
+		path string
+		want int
+	}{
+		{"/internal/v1/usage?range=today", 503},     // 未接线
+		{"/internal/v1/usage", 400},                 // 缺参数
+		{"/internal/v1/usage?range=today&x=1", 400}, // 多余参数
+		{"/internal/v1/usage?range=all", 400},       // 未知范围
+		{"/internal/v1/usage?range=", 400},          // 空范围
+	} {
+		w := bridgeRequest(none, "GET", tc.path, "", "")
+		if w.Code != tc.want {
+			t.Fatalf("%s status=%d want=%d body=%s", tc.path, w.Code, tc.want, w.Body)
+		}
+	}
+
+	dir := t.TempDir()
+	l, err := usagelog.Open(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now()
+	credit := 1.5
+	zero := 0.0
+	known := usagelog.Entry{TS: now.Add(-time.Minute).Unix(), UID: "u1", Account: "甲", Model: "cn:m", Mode: "stream", Prompt: 100, Completion: 200, Credit: &credit}
+	free := usagelog.Entry{TS: now.Add(-2 * time.Minute).Unix(), UID: "u2", Model: "cn:m", Mode: "sync", Prompt: 10, Completion: 20, Credit: &zero}
+	dark := usagelog.Entry{TS: now.Add(-3 * time.Minute).Unix(), UID: "u3", Model: "cn:m", Mode: "sync", Prompt: -1, Completion: -1}
+	for _, e := range []usagelog.Entry{known, free, dark} {
+		l.Record(e)
+	}
+	h := New(context.Background(), Config{Key: testKey, Usage: l})
+	w := bridgeRequest(h, "GET", "/internal/v1/usage?range=today", "", "")
+	if w.Code != 200 {
+		t.Fatalf("status=%d body=%s", w.Code, w.Body)
+	}
+	var got struct {
+		Items   []usagelog.Entry `json:"items"`
+		Summary usagelog.Summary `json:"summary"`
+		Range   string           `json:"range"`
+	}
+	if json.Unmarshal(w.Body.Bytes(), &got) != nil {
+		t.Fatalf("bad json: %s", w.Body.String())
+	}
+	if got.Range != "today" || len(got.Items) != 3 || got.Summary.Calls != 3 {
+		t.Fatalf("items/range/calls 不符：%s %d %+v", got.Range, len(got.Items), got.Summary)
+	}
+	if got.Summary.Prompt != 110 || got.Summary.Completion != 220 {
+		t.Fatalf("token 汇总错误：%+v", got.Summary)
+	}
+	if got.Summary.Credit != 1.5 || got.Summary.CreditMissing != 1 || got.Summary.UsageMissing != 1 {
+		t.Fatalf("缺失观测不得并入零值：%+v", got.Summary)
 	}
 }

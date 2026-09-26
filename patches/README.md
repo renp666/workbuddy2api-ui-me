@@ -4,7 +4,7 @@ Baseline: Sliverkiss/workbuddy2api commit
 `c576b489fa22e3c156e960ee6336c4e653a0d95c`. Apply only through
 `python3 scripts/overlay.py prepare --output ABS_NEW_DIRECTORY`; never edit
 `upstream/`. New source and tests live in `extensions/`, not in these patches.
-`series` is the explicit application order: 0001, 0002, 0003, 0004, 0005, 0006, 0007.
+`series` is the explicit application order: 0001, 0002, 0003, 0004, 0005, 0006, 0007, 0008.
 For a deliberate upstream candidate, run
 `python3 scripts/overlay.py update --ref COMMIT_OR_TAG`; it keeps the current
 snapshot and lock until the candidate passes `scripts/check.sh` and isolated
@@ -20,6 +20,7 @@ committing the resulting `upstream/` and `upstream.lock` changes.
 | 0005-regression-tests | `internal/server/handler_test.go`: ledger reset time can be omitted when it equals until; accept either representation but retain the one-second timing assertion. `internal/scheduler/school_test.go`: existing fixed-command/dispatch tests use a valid CN pool and context/output-aware fake; empty pools no longer launch a child. Production ledger format is unchanged. | `go test ./internal/server -run TestStatusRateLimitedModelsLedger`, scheduler tests and full suite |
 | 0006-waf-ip-failfast-and-usage-sentinel | `internal/upstream/client.go`: `ErrWafBlock` (`waf_block`) plus `IsWafBlocked`/`hasBusinessEnvelope`, evaluated after the 5xx layer so a 403 that still carries a business envelope keeps its existing kind. Same file also carries the upstream `145220d` backport merged into this patch: `Classify` checks `status==429` before `hardRule`, so a rate-limit body that happens to carry quota wording (`quota exceeded`/`额度不足`) classifies as `ErrSoftRate` instead of a next-04:00 `ErrHardCredit` cooldown; 402 still fires first and non-429 quota bodies keep the historical hard-credit kind (sessionDead/accountFault layers stay ahead of the 429 layer). `internal/server/handler.go`: breaker state field, rotation stopped on the threshold hit, and a local readable message only when the upstream body is empty; the streaming log row keeps the `-1` token sentinel when the tail frame has no usage (merged from the usage-sentinel task to keep one patch per handoff decision). The `wafIPGate` state machine itself is an extension file, not part of this patch. Account-level WAF soft cooldown and rotation backoff remain out of scope, so WAF 403 does not cool an account here. | `go test ./internal/upstream ./internal/server` (includes `TestWafIPGate*`, `TestChatWaf*`, `TestClassifyWaf*`, `TestClassify429*`, `TestClassifyNon429QuotaKeepsHardCredit`, `TestClassify402StillFirst`, `TestChatLogsStreamRowNoUsageShowsDash`), `go test -race ./internal/server ./internal/upstream` |
 | 0007-session-gc-stop-race | `internal/session/session.go`: `StartGC` captures the stop channel into a local `stop` and the GC goroutine selects on that local instead of re-reading the shared `r.stop` field each loop. Fixes the upstream `2b8dba0` backport: a `StopGC` write to `r.stop` (setting it to `nil` after `close`) raced with the goroutine's unlocked read, so a goroutine that observed `nil` turned its `case <-r.stop` into a nil channel that never fires and leaked one goroutine per Start/Stop cycle. `StopGC` is unchanged; the goroutine simply no longer touches the shared field. The regression test is an extension file (`extensions/internal/session/session_gc_race_test.go`), not part of this patch. | `go test -race ./internal/session` (includes `TestStopGCStopsGoroutine`, `TestStartGCIdempotentAndRestartable`); red state must show `DATA RACE` plus a goroutine-leak `baseline!=now` on the pre-patch tree |
+| 0008-call-usage-log | `internal/server/handler.go`: the two success paths (stream tail after the cost-ledger block, sync after `usageCreditTotal`) hand one `usagelog.RecordAuth` observation each — account, model, mode, prompt/completion tokens and explicit `usage.credit` — into the extension package `internal/usagelog` (`extensions/internal/usagelog/`, materialized copy), which appends per-day JSONL under the core data dir `usage/` and serves console queries through bridge `GET /internal/v1/usage`. Missing usage is a `-1` sentinel and missing credit stays absent (never zero); failed requests record nothing because rotation failures carry no usage observation. Wiring happens once in `wrapCore` (`extensions/cmd/server/extension.go`); with no ledger the calls are no-ops and the bridge endpoint returns 503. | `go test ./internal/usagelog ./internal/server ./internal/bridge` (includes `TestHandlerRecordsUsageLogForStreamAndSync`, `TestUsageEndpointValidatesAndSummarizes`, `TestUsageRangeBounds`), `go test -race ./internal/server ./internal/bridge` |
 
 Remove each patch only when the pinned upstream supplies the corresponding
 behavior and the named regression tests pass without that patch. For 0003,
@@ -53,6 +54,13 @@ local and the GC goroutine selects on that local (upstream `2b8dba0`), and
 `extensions/internal/session/session_gc_race_test.go` still holds. The patch is
 two lines of production code; its regression test is an extension file, so the
 removal check is the race test alone, independent of 0001-0006.
+
+Remove 0008 when the pinned upstream records a per-call usage observation
+(account, model, prompt/completion tokens, explicit credit) on both success
+paths with the same missing-vs-zero semantics, and the named tests pass with
+the patch dropped while `extensions/internal/usagelog/` moves into the upstream
+tree. Dropping it only stops call-statistics recording; the cost ledger and
+rotation behaviour from 0001-0007 are untouched.
 
 Task 2 wiring handoff: `initializeCore(*Config) error` validates opt-in
 `WB2A_BRIDGE_KEY` and creates account/state directories before loading accounts.

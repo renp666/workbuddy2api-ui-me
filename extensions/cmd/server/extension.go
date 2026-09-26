@@ -21,6 +21,7 @@ import (
 	"workbuddy2api/internal/scheduler"
 	"workbuddy2api/internal/taskrun"
 	"workbuddy2api/internal/upstream"
+	"workbuddy2api/internal/usagelog"
 )
 
 // Build metadata is supplied by the overlay image build using -ldflags -X.
@@ -287,11 +288,19 @@ func wrapCore(ctx context.Context, cfg *Config, p *pool.Pool, up *upstream.Clien
 	if err != nil {
 		return nil, err
 	}
+	// 调用统计账本：成功调用的用量观测按天落在数据目录 usage/ 下。
+	// 打不开只降级（不记录、查询回 503），不影响网关服务本身。
+	usage, usageErr := usagelog.Open(filepath.Join(filepath.Dir(cfg.StateFile), "usage"))
+	if usageErr != nil {
+		usage = nil
+		log.Print("usage_log_unavailable")
+	}
+	usagelog.Set(usage)
 	if key == "" {
 		return public, nil
 	}
 	public = anthropic.New(public, cfg.APIKey, int64(cfg.Server.MaxBodyMB)<<20)
-	internal := bridge.New(ctx, bridge.Config{Key: key, APIKey: cfg.APIKey, MaxBodyBytes: int64(cfg.Server.MaxBodyMB) << 20, AuthDir: cfg.AuthDir, UpstreamCommit: upstreamCommit, PatchIdentity: patchIdentity, GlobalEnabled: cfg.Global.Enabled, Pool: p, Upstream: up, Scheduler: sch, Tasks: tasks, History: history, TaskError: taskError, Public: public})
+	internal := bridge.New(ctx, bridge.Config{Key: key, APIKey: cfg.APIKey, MaxBodyBytes: int64(cfg.Server.MaxBodyMB) << 20, AuthDir: cfg.AuthDir, UpstreamCommit: upstreamCommit, PatchIdentity: patchIdentity, GlobalEnabled: cfg.Global.Enabled, Pool: p, Upstream: up, Scheduler: sch, Tasks: tasks, History: history, TaskError: taskError, Public: public, Usage: usage})
 	mux := http.NewServeMux()
 	mux.Handle("/internal/", internal)
 	mux.HandleFunc("GET /livez", func(w http.ResponseWriter, r *http.Request) {

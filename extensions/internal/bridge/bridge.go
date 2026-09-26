@@ -21,6 +21,7 @@ import (
 	"workbuddy2api/internal/scheduler"
 	"workbuddy2api/internal/taskrun"
 	"workbuddy2api/internal/upstream"
+	"workbuddy2api/internal/usagelog"
 )
 
 type Config struct {
@@ -38,6 +39,7 @@ type Config struct {
 	History        *taskrun.Store
 	TaskError      error
 	Public         http.Handler
+	Usage          *usagelog.Log
 }
 
 type handler struct {
@@ -70,6 +72,7 @@ func New(ctx context.Context, cfg Config) http.Handler {
 	h.mux.HandleFunc("POST /internal/v1/oauth/{id}/region", h.withOwner(h.completeRegion))
 	h.mux.HandleFunc("DELETE /internal/v1/owners/{owner}/flows", h.withOwner(h.cancelOwner))
 	h.mux.HandleFunc("GET /internal/v1/tasks", h.listTasks)
+	h.mux.HandleFunc("GET /internal/v1/usage", h.listUsage)
 	h.mux.HandleFunc("POST /internal/v1/tasks/{id}/runs", h.startTask)
 	h.mux.HandleFunc("GET /internal/v1/task-runs", h.listTaskRuns)
 	h.mux.HandleFunc("GET /internal/v1/task-runs/{id}", h.getTaskRun)
@@ -167,6 +170,50 @@ func (h *handler) taskUnavailable(w http.ResponseWriter, ready bool) bool {
 		return true
 	}
 	return false
+}
+
+// usageRangeBounds 把受支持的统计范围映射为 core 本地时区（部署 TZ）的
+// [start, end) Unix 秒；end 统一取次日零点，未来不存在记录，不影响结果。
+func usageRangeBounds(name string, now time.Time) (int64, int64, bool) {
+	day := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, now.Location())
+	tomorrow := day.AddDate(0, 0, 1).Unix()
+	switch name {
+	case "today":
+		return day.Unix(), tomorrow, true
+	case "yesterday":
+		return day.AddDate(0, 0, -1).Unix(), day.Unix(), true
+	case "week":
+		return day.AddDate(0, 0, -(int(day.Weekday())+6)%7).Unix(), tomorrow, true
+	case "month":
+		return time.Date(now.Year(), now.Month(), 1, 0, 0, 0, 0, now.Location()).Unix(), tomorrow, true
+	}
+	return 0, 0, false
+}
+
+// listUsage 返回时间范围内每次成功调用的用量观测与聚合；未知值保持缺失语义，
+// 由展示层区分「0 消耗」与「未观测」。
+func (h *handler) listUsage(w http.ResponseWriter, r *http.Request) {
+	query := r.URL.Query()
+	if len(query) != 1 || len(query["range"]) != 1 {
+		bridgeError(w, 400, "统计范围参数无效")
+		return
+	}
+	name := query.Get("range")
+	start, end, ok := usageRangeBounds(name, time.Now())
+	if !ok {
+		bridgeError(w, 400, "统计范围参数无效")
+		return
+	}
+	if h.cfg.Usage == nil {
+		bridgeError(w, 503, "调用统计暂不可用，请稍后重试")
+		return
+	}
+	items, err := h.cfg.Usage.Query(start, end)
+	if err != nil {
+		bridgeError(w, 503, "调用统计暂不可用，请稍后重试")
+		return
+	}
+	writeJSON(w, 200, map[string]any{"range": name, "items": items, "summary": usagelog.Summarize(items)})
 }
 
 func (h *handler) listTasks(w http.ResponseWriter, r *http.Request) {

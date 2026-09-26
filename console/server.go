@@ -133,6 +133,7 @@ func NewServer(cfg Config) (http.Handler, error) {
 		{"POST /admin/tasks/{id}/runs", "POST", "/internal/v1/tasks/{id}/runs"},
 		{"GET /admin/task-runs", "GET", "/internal/v1/task-runs"},
 		{"GET /admin/task-runs/{id}", "GET", "/internal/v1/task-runs/{id}"},
+		{"GET /admin/usage", "GET", "/internal/v1/usage"},
 	} {
 		h.mux.HandleFunc(route.pattern, h.withAdmin(h.management(route.method, route.path)))
 	}

@@ -1,0 +1,39 @@
+调用统计钩子（补丁 0008）：handler 两条成功路径（流式透传结束、非流式聚合完成）
+把本次调用的账号、模型、token 与 usage.credit 观测交给扩展 usagelog 落账，
+供管理台「调用统计」按时间范围查询。usagelog 是扩展新包（extensions/internal/usagelog/，
+经物化复制进树），接线见 extensions/cmd/server/extension.go 的 wrapCore——未接线时
+RecordAuth 为 no-op，源码模式与桥接模式的请求路径行为不变。失败请求不落账：
+usage/credit 观测只在成功响应上存在，轮转中的中间失败没有可记录的扣费观测。
+
+diff --git a/internal/server/handler.go b/internal/server/handler.go
+--- a/internal/server/handler.go
++++ b/internal/server/handler.go
+@@ -19,6 +19,7 @@
+ 	"workbuddy2api/internal/prompt"
+ 	"workbuddy2api/internal/session"
+ 	"workbuddy2api/internal/upstream"
++	"workbuddy2api/internal/usagelog"
+ )
+ 
+ // Config handler 依赖。
+@@ -649,6 +650,10 @@
+ 				// 不算合法成本观测（缺失≠0），仅记一条 WARN 协助排障，绝不写入账本。
+ 				log.Printf("WARN: [server] stream usage without credit uid=%s model=%s (no cost observation)", logfmt.UID8(acct.UID), bareModel)
+ 			}
++			// 调用统计（补丁 0008）：成功流式调用落一条用量观测，供管理台查询；
++			// 扩展 usagelog 未接线时为 no-op，不影响转发路径。
++			pt, ct, cr, hasCr := stats.usageSnapshot()
++			usagelog.RecordAuth(acct, bareModel, "stream", pt, ct, cr, hasCr)
+ 			rc.Close()
+ 			return
+ 		}
+@@ -667,6 +672,9 @@
+ 		if credit, total, ok := usageCreditTotal(resp); ok {
+ 			h.cfg.Pool.NoteModelCost(acct.UID, bareModel, credit, total)
+ 		}
++		// 调用统计（补丁 0008）：成功非流式调用落一条用量观测，供管理台查询。
++		pt, ct, cr, hasCr := usagelog.FromResponse(resp)
++		usagelog.RecordAuth(acct, bareModel, "sync", pt, ct, cr, hasCr)
+ 		return
+ 	}
+ 	// 末端错误规范化（疑点 5 修正）：不再把上游原始错误文本透传给用户——原始 body 可能

@@ -6,3 +6,4 @@
 0005-regression-tests.patch
 0006-waf-ip-failfast-and-usage-sentinel.patch
 0007-session-gc-stop-race.patch
+0008-call-usage-log.patch

@@ -59,6 +59,17 @@ test('task reward distinguishes unknown from confirmed zero', () => {
   assert.equal(vm.runInContext('formatTaskReward(5)',ctx),'5');
 });
 
+test('usage statistics distinguish unknown tokens and credit from zero', () => {
+  const {ctx}=logoutFixture(()=>new Promise(()=>{}));
+  assert.equal(vm.runInContext('formatUsageTokens(-1)',ctx),'—');
+  assert.equal(vm.runInContext('formatUsageTokens(0)',ctx),'0');
+  assert.equal(vm.runInContext('formatUsageTokens(123)',ctx),'123');
+  assert.equal(vm.runInContext('formatUsageCredit(null)',ctx),'—');
+  assert.equal(vm.runInContext('formatUsageCredit(undefined)',ctx),'—');
+  assert.equal(vm.runInContext('formatUsageCredit(0)',ctx),'0');
+  assert.equal(vm.runInContext('formatUsageCredit(1.5)',ctx),'1.5');
+});
+
 test('task request id uses secure random bytes when randomUUID is unavailable', () => {
   const {ctx}=logoutFixture(()=>new Promise(()=>{}));
   ctx.crypto={getRandomValues(bytes){for(let i=0;i<bytes.length;i++)bytes[i]=i;return bytes;}};

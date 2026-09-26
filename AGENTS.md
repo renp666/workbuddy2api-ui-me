@@ -44,7 +44,7 @@ console（独立 Go 服务，内嵌 HTML/CSS/JavaScript）
 | `extensions/internal/anthropic/` | Messages 文本请求、普通响应与增量 SSE 适配，传递取消与真实用量。 |
 | `extensions/internal/oauth/`、`extensions/internal/pool/` | 授权流程、账号热加载等扩展。 |
 | `extensions/internal/scheduler/`、`extensions/internal/taskrun/` | 任务目录、执行观察、单运行器和持久历史。 |
-| `extensions/internal/server/`、`extensions/internal/session/` | 安全回溯的扩展文件与竞态回归测试（`wafip.go`、`session_gc_race_test.go`），分别配套补丁 0006、0007。 |
+| `extensions/internal/server/`、`extensions/internal/session/`、`extensions/internal/usagelog/` | 补丁 0006-0008 配套的扩展文件与回归测试（`wafip.go`、`session_gc_race_test.go`、调用统计账本），移除条件见 `patches/README.md`。 |
 | `extensions/scripts/` | Python 任务结果事件与测试。 |
 | `patches/series`、`patches/README.md` | 补丁顺序、修改原因、验证方式和移除条件。 |
 | `console/main.go`、`console/server.go`、`console/proxy.go` | 配置、管理会话、路由与代理。 |

@@ -655,3 +655,27 @@ func TestLogoutFailureStillInvalidatesLocalSession(t *testing.T) {
 		t.Fatal("failed cleanup kept browser session live")
 	}
 }
+
+// TestUsageManagementMappingPreservesQuery：/admin/usage 映射到 core 的
+// /internal/v1/usage，查询参数原样透传；未登录会话在管理会话层被挡下。
+func TestUsageManagementMappingPreservesQuery(t *testing.T) {
+	h, _ := testConsole(t, func(w http.ResponseWriter, r *http.Request) {
+		if mockInfo(w, r) {
+			return
+		}
+		if r.URL.Path != "/internal/v1/usage" || r.URL.RawQuery != "range=week" {
+			t.Errorf("unexpected core request: %s?%s", r.URL.Path, r.URL.RawQuery)
+			w.WriteHeader(404)
+			return
+		}
+		fmt.Fprint(w, `{"range":"week","items":[],"summary":{"calls":0}}`)
+	})
+	cookie, csrf := login(t, h)
+	w := adminRequest(h, "GET", "/admin/usage?range=week", "", cookie, csrf)
+	if w.Code != 200 || !strings.Contains(w.Body.String(), `"range":"week"`) {
+		t.Fatalf("status=%d body=%s", w.Code, w.Body)
+	}
+	if w := adminRequest(h, "GET", "/admin/usage?range=week", "", nil, ""); w.Code != 401 {
+		t.Fatalf("unauthenticated status=%d", w.Code)
+	}
+}
