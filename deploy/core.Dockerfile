@@ -8,6 +8,9 @@ COPY patches ./patches
 COPY scripts/overlay.py ./scripts/overlay.py
 RUN python3 scripts/overlay.py prepare --output /build/core
 WORKDIR /build/core
+# 默认与 Go 自身默认一致；网络受限环境可通过 build args 覆盖为镜像源。
+ARG GOPROXY=https://proxy.golang.org,direct
+ENV GOPROXY=$GOPROXY
 RUN go mod download
 ARG TARGETOS
 ARG TARGETARCH

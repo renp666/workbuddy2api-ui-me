@@ -3,6 +3,9 @@ WORKDIR /source
 COPY console ./
 ARG TARGETOS
 ARG TARGETARCH
+# 默认与 Go 自身默认一致；网络受限环境可通过 build args 覆盖为镜像源。
+ARG GOPROXY=https://proxy.golang.org,direct
+ENV GOPROXY=$GOPROXY
 RUN go test ./... && CGO_ENABLED=0 GOOS=$TARGETOS GOARCH=$TARGETARCH go build -trimpath -ldflags="-s -w" -o /out/console .
 
 FROM alpine:3.20
