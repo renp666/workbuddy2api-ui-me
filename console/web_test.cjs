@@ -886,3 +886,91 @@ test('zcode dialog posts a glm model to the admin proxy and streams the answer',
   assert.match(get('zcode-usage').textContent,/输入 1 · 输出 2 · 总计 3/);
   assert.equal(vm.runInContext('activeRequest',ctx),undefined,'zcode request left controls locked');
 });
+
+function qoderFixture(qoderStatus) {
+  const response=body=>({ok:true,status:200,json:async()=>body});
+  const {ctx,get,opened}=taskFixture(url=>{
+    if(url==='/admin/session')return new Promise(()=>{});
+    if(url==='/admin/status')return response({total:0,healthy:0,cooling:0,disabled:0,accounts:[]});
+    if(url==='/admin/models')return response({data:[]});
+    if(url==='/admin/qoder')return response(qoderStatus);
+    throw new Error('unexpected '+url);
+  });
+  get('realm').querySelector=()=>({disabled:false});
+  return {ctx,get,opened};
+}
+
+test('qoder tab greys out and shows the disabled notice when the channel is off',async()=>{
+  const {ctx,get}=qoderFixture({enabled:false});
+  await vm.runInContext("signedIn({csrf:'c',global_enabled:true,zcode_enabled:false,qoder_enabled:false})",ctx);
+  assert.equal(get('nav-qoder').classList.toggled['nav-muted'],true,'disabled channel left the tab fully lit');
+  await vm.runInContext('loadQoder()',ctx);
+  assert.equal(get('qoder-disabled').hidden,false,'disabled notice stayed hidden');
+  assert.equal(get('qoder-content').hidden,true,'enabled content showed while disabled');
+});
+
+test('qoder tab renders status badge, model table and model select when reachable',async()=>{
+  const {ctx,get}=qoderFixture({enabled:true,reachable:true,model_count:2,models:[{id:'qoder-qwen3.8-max',realm:'qoder'},{id:'qoder-qwen3.8-pro',realm:'qoder'}]});
+  await vm.runInContext("signedIn({csrf:'c',global_enabled:true,zcode_enabled:false,qoder_enabled:true})",ctx);
+  assert.equal(get('nav-qoder').classList.toggled['nav-muted'],false,'enabled channel greyed the tab');
+  await vm.runInContext('loadQoder()',ctx);
+  assert.equal(get('qoder-disabled').hidden,true);
+  assert.equal(get('qoder-content').hidden,false);
+  assert.equal(get('qoder-status-badge').textContent,'在线');
+  assert.equal(get('qoder-models-body').children.length,2,'model table row count');
+  assert.deepEqual(get('qoder-model').children.map(option=>option.value),['qoder-qwen3.8-max','qoder-qwen3.8-pro']);
+});
+
+test('qoder tab reports an unreachable channel without hiding the panel',async()=>{
+  const {ctx,get}=qoderFixture({enabled:true,reachable:false,model_count:0,models:[]});
+  await vm.runInContext("signedIn({csrf:'c',global_enabled:true,zcode_enabled:false,qoder_enabled:true})",ctx);
+  await vm.runInContext('loadQoder()',ctx);
+  assert.equal(get('qoder-content').hidden,false);
+  assert.equal(get('qoder-status-badge').textContent,'不可达');
+  assert.equal(get('qoder-status-badge').className,'badge warn');
+});
+
+test('access model select merges qoder models and routes qoder go-chat to the qoder tab',async()=>{
+  const {ctx,get}=qoderFixture({enabled:true,reachable:true,model_count:1,models:[{id:'qoder-qwen3.8-max',realm:'qoder'}]});
+  vm.runInContext("modelList=[{id:'cn:workbuddy',realm:'cn'}]",ctx);
+  await vm.runInContext('loadQoder()',ctx);
+  assert.deepEqual(get('access-model').children.map(o=>o.value),['cn:workbuddy','qoder-qwen3.8-max'],'qoder model missing from access select');
+  assert.deepEqual(get('access-model').children.map(o=>o.textContent),['国内版 · cn:workbuddy','Qoder · qoder-qwen3.8-max']);
+  get('access-model').value='qoder-qwen3.8-max';vm.runInContext('renderAccess()',ctx);
+  assert.equal(get('copy-example').disabled,false,'qoder example stayed disabled');
+  assert.match(get('api-example').textContent,/qoder 通道/);
+  vm.runInContext("qoderModels=['qoder-qwen3.8-max']",ctx);
+  get('go-chat').handlers.click();
+  assert.equal(vm.runInContext('page',ctx),'qoder','qoder go-chat did not route to the qoder tab');
+});
+
+test('qoder dialog posts a qoder model to the admin proxy and streams the answer',async()=>{
+  const requests=[];
+  const {ctx,get}=qoderFixture({enabled:true,reachable:true,model_count:1,models:[{id:'qoder-qwen3.8-max',realm:'qoder'}]});
+  ctx.fetch=async(url,options={})=>{
+    if(url==='/admin/qoder/chat'){
+      requests.push({url,...options});
+      const chunks=[new TextEncoder().encode('data: '+JSON.stringify({choices:[{delta:{content:'Qoder'} }]})+'\n\n'),new TextEncoder().encode('data: '+JSON.stringify({choices:[{delta:{content:' answer'} }],usage:{prompt_tokens:3,completion_tokens:4,total_tokens:7}})+'\n\n'),new TextEncoder().encode('data: [DONE]\n\n')];
+      let index=0;
+      return {ok:true,status:200,body:{getReader:()=>({read:async()=>index<chunks.length?{value:chunks[index++],done:false}:{done:true}})}};
+    }
+    if(url==='/admin/status')return {ok:true,status:200,json:async()=>({total:0,healthy:0,cooling:0,disabled:0,accounts:[]})};
+    if(url==='/admin/models')return {ok:true,status:200,json:async()=>({data:[]})};
+    if(url==='/admin/qoder')return {ok:true,status:200,json:async()=>({enabled:true,reachable:true,model_count:1,models:[{id:'qoder-qwen3.8-max',realm:'qoder'}]})};
+    if(url==='/admin/session')return new Promise(()=>{});
+    throw new Error('unexpected '+url);
+  };
+  await vm.runInContext("signedIn({csrf:'c',global_enabled:true,zcode_enabled:false,qoder_enabled:true})",ctx);
+  await vm.runInContext('loadQoder()',ctx);
+  get('qoder-model').value='qoder-qwen3.8-max';
+  get('qoder-prompt').value='你好';
+  await get('qoder-form').handlers.submit({preventDefault(){}});
+  assert.equal(requests.length,1,'qoder dialog issued no request');
+  const body=JSON.parse(requests[0].body);
+  assert.equal(body.model,'qoder-qwen3.8-max');
+  assert.deepEqual(body.messages,[{role:'user',content:'你好'}]);
+  assert.equal(body.stream,true);
+  assert.match(vm.runInContext('qoderHistory[1].content',ctx),/Qoder answer/);
+  assert.match(get('qoder-usage').textContent,/输入 3 · 输出 4 · 总计 7/);
+  assert.equal(vm.runInContext('activeRequest',ctx),undefined,'qoder request left controls locked');
+});

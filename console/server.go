@@ -30,6 +30,10 @@ type Config struct {
 	// ZCodeControlURL is the zcode-proxy localhost control API (POST /control).
 	// nil keeps the Zcode tab read-only; set it to drive login/enable/disable/logout in-page.
 	ZCodeControlURL *url.URL
+	// QoderURL is the optional qoder-proxy upstream for qoder-* models; nil disables routing.
+	QoderURL *url.URL
+	// QoderKey replaces Authorization when forwarding to QoderURL.
+	QoderKey string
 	AdminKey string
 	APIKey   string // Only exposed by the authenticated, CSRF-protected access endpoint.
 	BridgeKey string
@@ -80,6 +84,9 @@ func NewServer(cfg Config) (http.Handler, error) {
 	if cfg.ZCodeControlURL != nil && !validOriginURL(cfg.ZCodeControlURL) {
 		return nil, errors.New("WB2A_ZCODE_CONTROL_URL 必须是无凭据、路径、查询和片段的 HTTP(S) 地址")
 	}
+	if cfg.QoderURL != nil && !validOriginURL(cfg.QoderURL) {
+		return nil, errors.New("WB2A_QODER_URL 必须是无凭据、路径、查询和片段的 HTTP(S) 地址")
+	}
 	if !ValidateAdminOrigin(cfg.PublicOrigin) {
 		return nil, errors.New("WB2A_PUBLIC_ORIGIN 必须是有效的 HTTP(S) origin")
 	}
@@ -93,6 +100,11 @@ func NewServer(cfg Config) (http.Handler, error) {
 		zcodeTarget := *cfg.ZCodeURL
 		zcodeTarget.Path = ""
 		cfg.ZCodeURL = &zcodeTarget
+	}
+	if cfg.QoderURL != nil {
+		qoderTarget := *cfg.QoderURL
+		qoderTarget.Path = ""
+		cfg.QoderURL = &qoderTarget
 	}
 	cfg.PublicOrigin = strings.TrimRight(cfg.PublicOrigin, "/")
 	var trusted []*net.IPNet
@@ -124,8 +136,8 @@ func NewServer(cfg Config) (http.Handler, error) {
 		writeJSON(w, 200, map[string]string{"service": "workbuddy2api-console", "status": "running"})
 	})
 	public := h.proxy(false)
-	if cfg.ZCodeURL != nil {
-		routed := h.publicRouter(public, h.zcodeProxy())
+	if cfg.ZCodeURL != nil || cfg.QoderURL != nil {
+		routed := h.publicRouter(public)
 		h.mux.Handle("/v1/", routed)
 	} else {
 		h.mux.Handle("/v1/", public)
@@ -139,7 +151,7 @@ func NewServer(cfg Config) (http.Handler, error) {
 			adminError(w, 503, err.Error())
 			return
 		}
-		writeJSON(w, 200, map[string]any{"csrf": sessionFrom(r).csrf, "global_enabled": info.GlobalEnabled, "zcode_enabled": cfg.ZCodeURL != nil})
+		writeJSON(w, 200, map[string]any{"csrf": sessionFrom(r).csrf, "global_enabled": info.GlobalEnabled, "zcode_enabled": cfg.ZCodeURL != nil, "qoder_enabled": cfg.QoderURL != nil})
 	}))
 	h.mux.HandleFunc("POST /admin/logout", h.withAdmin(h.adminLogout))
 	h.mux.HandleFunc("GET /admin/zcode", h.withAdmin(h.adminZcodeStatus))
@@ -149,6 +161,8 @@ func NewServer(cfg Config) (http.Handler, error) {
 	h.mux.HandleFunc("POST /admin/zcode/enable", h.withAdmin(h.adminZcodeEnable))
 	h.mux.HandleFunc("POST /admin/zcode/disable", h.withAdmin(h.adminZcodeDisable))
 	h.mux.HandleFunc("POST /admin/zcode/logout", h.withAdmin(h.adminZcodeLogout))
+	h.mux.HandleFunc("GET /admin/qoder", h.withAdmin(h.adminQoderStatus))
+	h.mux.HandleFunc("POST /admin/qoder/chat", h.withAdmin(h.adminQoderChat))
 	h.mux.HandleFunc("POST /admin/access", h.withAdmin(func(w http.ResponseWriter, r *http.Request) {
 		if _, err := h.coreInfo(r.Context()); err != nil {
 			adminError(w, 503, err.Error())

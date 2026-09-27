@@ -51,22 +51,63 @@ func (h *server) zcodeProxy() *httputil.ReverseProxy {
 }
 
 // publicRouter dispatches the public /v1/* surface: glm-* model chat/messages/responses requests
-// and the merged model list go to zcode-proxy, everything else stays on core.
-func (h *server) publicRouter(core, zcode *httputil.ReverseProxy) http.HandlerFunc {
+// go to zcode-proxy, qoder-* model requests go to qoder-proxy, everything else stays on core.
+func (h *server) publicRouter(core *httputil.ReverseProxy) http.HandlerFunc {
+	var zcode, qoder *httputil.ReverseProxy
+	if h.cfg.ZCodeURL != nil {
+		zcode = h.zcodeProxy()
+	}
+	if h.cfg.QoderURL != nil {
+		qoder = h.qoderProxy()
+	}
 	return func(w http.ResponseWriter, r *http.Request) {
 		switch r.Method + " " + r.URL.Path {
 		case "GET /v1/models":
 			h.mergedModels(w, r, core)
 			return
 		case "POST /v1/chat/completions", "POST /v1/messages", "POST /v1/responses":
-			route, handled := h.routesToZCode(w, r)
-			if handled {
+			// Buffer body once, inspect model field, restore for downstream.
+			body, err := io.ReadAll(io.LimitReader(r.Body, zcodeRouteBodyLimit+1))
+			if err != nil {
+				adminError(w, 400, "请求体读取失败")
 				return
 			}
-			if route {
+			if len(body) > zcodeRouteBodyLimit {
+				adminError(w, 413, "请求体超过 32 MiB 分流检查上限")
+				return
+			}
+			var envelope struct {
+				Model string `json:"model"`
+			}
+			if json.Unmarshal(body, &envelope) != nil {
+				r.Body = io.NopCloser(bytes.NewReader(body))
+				r.ContentLength = int64(len(body))
+				r.TransferEncoding = nil
+				core.ServeHTTP(w, r)
+				return
+			}
+			if zcode != nil && strings.HasPrefix(envelope.Model, zcodeModelPrefix) {
+				r.Body = io.NopCloser(bytes.NewReader(body))
+				r.ContentLength = int64(len(body))
+				r.TransferEncoding = nil
+				r.Header.Del("Content-Length")
 				zcode.ServeHTTP(w, r)
 				return
 			}
+			if qoder != nil && strings.HasPrefix(envelope.Model, qoderModelPrefix) {
+				modified := stripQoderModelPrefix(body)
+				r.Body = io.NopCloser(bytes.NewReader(modified))
+				r.ContentLength = int64(len(modified))
+				r.TransferEncoding = nil
+				r.Header.Del("Content-Length")
+				qoder.ServeHTTP(w, r)
+				return
+			}
+			r.Body = io.NopCloser(bytes.NewReader(body))
+			r.ContentLength = int64(len(body))
+			r.TransferEncoding = nil
+			core.ServeHTTP(w, r)
+			return
 		}
 		core.ServeHTTP(w, r)
 	}
@@ -165,36 +206,74 @@ func (h *server) mergedModels(w http.ResponseWriter, r *http.Request, core *http
 	if auth := r.Header.Get("Authorization"); auth != "" {
 		coreReq.Header.Set("Authorization", auth)
 	}
-	zcodeURL := *h.cfg.ZCodeURL
-	zcodeURL.Path = "/v1/models"
-	zcodeReq, err := http.NewRequestWithContext(r.Context(), "GET", zcodeURL.String(), nil)
-	if err != nil {
-		core.ServeHTTP(w, r)
-		return
-	}
-	if h.cfg.ZCodeKey != "" {
-		zcodeReq.Header.Set("Authorization", "Bearer "+h.cfg.ZCodeKey)
-	}
 	var (
-		wg        sync.WaitGroup
-		coreResp  upstreamResponse
-		zcodeRaw  []json.RawMessage
+		wg       sync.WaitGroup
+		coreResp upstreamResponse
+		zcodeRaw []json.RawMessage
+		qoderRaw []json.RawMessage
 		zcodePlan string
 	)
-	wg.Add(2)
+	wg.Add(1)
 	go func() {
 		defer wg.Done()
 		coreResp = h.fetchUpstream(coreReq)
 	}()
-	go func() {
-		defer wg.Done()
-		zcodeRaw, _ = h.fetchModels(zcodeReq)
-	}()
-	if h.cfg.ZCodeControlURL != nil {
+	if h.cfg.ZCodeURL != nil {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			zcodePlan = h.zcodePlan(r.Context())
+			zcodeURL := *h.cfg.ZCodeURL
+			zcodeURL.Path = "/v1/models"
+			zcodeReq, err := http.NewRequestWithContext(r.Context(), "GET", zcodeURL.String(), nil)
+			if err != nil {
+				return
+			}
+			if h.cfg.ZCodeKey != "" {
+				zcodeReq.Header.Set("Authorization", "Bearer "+h.cfg.ZCodeKey)
+			}
+			zcodeRaw, _ = h.fetchModels(zcodeReq)
+		}()
+		if h.cfg.ZCodeControlURL != nil {
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				zcodePlan = h.zcodePlan(r.Context())
+			}()
+		}
+	}
+	if h.cfg.QoderURL != nil {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			qoderURL := *h.cfg.QoderURL
+			qoderURL.Path = "/v1/models"
+			qoderReq, err := http.NewRequestWithContext(r.Context(), "GET", qoderURL.String(), nil)
+			if err != nil {
+				return
+			}
+			if h.cfg.QoderKey != "" {
+				qoderReq.Header.Set("Authorization", "Bearer "+h.cfg.QoderKey)
+			}
+			list, _ := h.fetchModels(qoderReq)
+			for _, item := range list {
+				// Add routing prefix so public /v1/models entries match the qoder-* dispatch.
+				var entry map[string]any
+				if json.Unmarshal(item, &entry) != nil || entry == nil {
+					continue
+				}
+				id, ok := entry["id"].(string)
+				if !ok || id == "" {
+					continue
+				}
+				if !strings.HasPrefix(id, qoderModelPrefix) {
+					entry["id"] = qoderModelPrefix + id
+				}
+				tagged, err := json.Marshal(entry)
+				if err != nil {
+					continue
+				}
+				qoderRaw = append(qoderRaw, tagModelRealm(tagged, "qoder"))
+			}
 		}()
 	}
 	wg.Wait()
@@ -212,18 +291,22 @@ func (h *server) mergedModels(w http.ResponseWriter, r *http.Request, core *http
 		w.Write(coreResp.body)
 		return
 	}
-	seen := make(map[string]bool, len(coreList)+len(zcodeRaw))
-	merged := make([]json.RawMessage, 0, len(coreList)+len(zcodeRaw))
-	for _, item := range append(append([]json.RawMessage{}, coreList...), zcodeRaw...) {
+	totalLen := len(coreList) + len(zcodeRaw) + len(qoderRaw)
+	seen := make(map[string]bool, totalLen)
+	merged := make([]json.RawMessage, 0, totalLen)
+	all := append(append([]json.RawMessage{}, coreList...), zcodeRaw...)
+	all = append(all, qoderRaw...)
+	for _, item := range all {
 		var entry struct {
-			ID string `json:"id"`
+			ID    string `json:"id"`
+			Realm string `json:"realm"`
 		}
 		if json.Unmarshal(item, &entry) != nil || entry.ID == "" || seen[entry.ID] {
 			continue
 		}
 		seen[entry.ID] = true
-		if strings.HasPrefix(entry.ID, zcodeModelPrefix) {
-			item = tagModelRealm(item, "glm") // glm-* 条目来自第三方上游，console 补归属标签
+		if entry.Realm == "" && strings.HasPrefix(entry.ID, zcodeModelPrefix) {
+			item = tagModelRealm(item, "glm")
 		}
 		merged = append(merged, item)
 	}

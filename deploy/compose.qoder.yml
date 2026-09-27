@@ -1,0 +1,29 @@
+# Optional Qoder CN sidecar: docker compose -f docker-compose.yml -f deploy/compose.qoder.yml up -d
+# Prerequisites:
+#   1. Set WB2A_QODER_PAT in your environment or .env file (from https://qoder.com.cn/account/integrations).
+# The container joins console's network namespace (network_mode: service:console): its proxy
+# is reachable from console at 127.0.0.1 only, never from the Compose network or the host.
+services:
+  qoder-proxy:
+    build:
+      context: .
+      dockerfile: deploy/qoder.Dockerfile
+    platform: linux/amd64
+    restart: unless-stopped
+    network_mode: service:console
+    environment:
+      TZ: Asia/Shanghai
+      PORT: "3000"
+      CLI_BACKEND: "cn"
+      QODERCN_PERSONAL_ACCESS_TOKEN: ${WB2A_QODER_PAT:-}
+      PROXY_API_KEY: ${WB2A_QODER_KEY:-}
+    volumes:
+      - ./runtime/qoder:/root/.qoderworkcn
+
+  console:
+    environment:
+      WB2A_QODER_URL: http://127.0.0.1:3000
+      WB2A_QODER_KEY: ${WB2A_QODER_KEY:-}
+    depends_on:
+      core:
+        condition: service_started

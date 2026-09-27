@@ -136,11 +136,31 @@ docker run --rm -it \
   run src/index.ts auth login bigmodel
 ```
 
+## 可选：接入 Qoder 国内版
+
+本部署还可以并列挂一个 [qoder-proxy](https://github.com/avaritiachaos/qoder-proxy) 容器，把你的 Qoder 国内版账号变成第四个模型来源。与 GLM 通道相同，启用后仍是同一个 `:7863` 出口：控制台 `/v1/models` 会合并显示 Qoder 模型（统一加 `qoder-` 前缀并标注 `realm: qoder`），客户端请求 `model` 以 `qoder-` 开头时由 console 自动转发给 qoder-proxy，其余模型仍走 WorkBuddy 账号池；本服务不管理 Qoder 账号，额度与登录状态由 qoder-proxy 自持。
+
+与 GLM 通道不同，Qoder 通道使用 **Personal Access Token（PAT）** 认证，没有登录/启停生命周期：在 qoder.com.cn 的「账号设置 → Integrations」页面创建 PAT，启动前通过环境变量传给容器即可，之后无需在控制台做任何授权操作。
+
+```bash
+# 方式一：临时环境变量
+export WB2A_QODER_PAT="<你的 PAT>"
+docker compose -f docker-compose.yml -f deploy/compose.qoder.yml up -d
+
+# 方式二：写进部署目录的 .env（Compose 自动读取）
+echo 'WB2A_QODER_PAT=<你的 PAT>' >> .env
+docker compose -f docker-compose.yml -f deploy/compose.qoder.yml up -d
+```
+
+qoder-proxy 容器与 console 共享网络命名空间，只监听 `127.0.0.1`，不对外暴露端口；CLI 凭据缓存在宿主 `runtime/qoder/` 下。console 到 qoder-proxy 的内部调用可用 `WB2A_QODER_KEY` 加一层密钥（两个服务的该值保持一致）；留空则不校验——由于代理只监听 console 网络命名空间内的回环地址，外部无法直连。
+
+之后客户端用法不变：`/v1/models` 里选 `qoder-*` 模型即可，OpenAI 与 Anthropic 两种协议都支持分流。控制台 **Qoder 页签**展示通道状态与模型列表，并可直接做流式对话测试；未叠加该 overlay 时页签置灰并提示未启用。不想要该通道时回到 `docker compose -f docker-compose.yml up -d` 启动即可，不影响原有服务。Qoder 通道的可用性、额度和模型行为由 qoder-proxy 与其上游决定，本仓未对其做真实上游验收。
+
 ## 配套 Web 控制台
 
 ### 对话测试
 
-选择 OpenAI 或 Anthropic 协议、模型并发送问题，直接检查模型响应与流式显示。Anthropic 模式可设置最大输出 tokens，默认 1024；切换协议会清空当前测试对话，生成中可停止。回答完成后用量行会显示本次服务请求的账号与平台（来自响应归属头），Zcode 页签的测试则标明 GLM 通道。真实部署中的测试会消耗账号额度；页面内的对话刷新后清空。
+选择 OpenAI 或 Anthropic 协议、模型并发送问题，直接检查模型响应与流式显示。Anthropic 模式可设置最大输出 tokens，默认 1024；切换协议会清空当前测试对话，生成中可停止。回答完成后用量行会显示本次服务请求的账号与平台（来自响应归属头），Zcode 与 Qoder 页签的测试则分别标明 GLM 与 Qoder 通道。真实部署中的测试会消耗账号额度；页面内的对话刷新后清空。
 
 ![对话测试页面：选择模型并查看流式回答](docs/superpowers/verification/2026-09-16-openai-chat-playground.jpg)
 
