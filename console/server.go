@@ -64,6 +64,10 @@ type server struct {
 	zcodeClient *http.Client
 	// httpsEnabled is derived from PublicOrigin and only gates HSTS; it is not an auth check.
 	httpsEnabled bool
+	// zcodeUserStopped 记录本运行周期内用户是否手动停用过 zcode 代理：
+	// 自动拉起协程在该标志为 true 时不再 startProxy，避免和管理员意图打架。
+	// 容器重启后内存归零，即恢复自动拉起。手动 enable 会清掉该标志。
+	zcodeUserStopped bool
 }
 
 func NewServer(cfg Config) (http.Handler, error) {
@@ -170,6 +174,9 @@ func NewServer(cfg Config) (http.Handler, error) {
 		{"POST /admin/unpin", "POST", "/internal/v1/unpin"},
 	} {
 		h.mux.HandleFunc(route.pattern, h.withAdmin(h.management(route.method, route.path)))
+	}
+	if cfg.ZCodeControlURL != nil {
+		go h.zcodeAutoStart()
 	}
 	return h, nil
 }

@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"log"
 	"net/http"
 	"time"
 )
@@ -163,6 +164,9 @@ func (h *server) adminZcodeEnable(w http.ResponseWriter, r *http.Request) {
 		adminError(w, 409, "GLM 控制端未配置")
 		return
 	}
+	h.mu.Lock()
+	h.zcodeUserStopped = false
+	h.mu.Unlock()
 	resp, err := h.zcodeControl(r.Context(), map[string]any{"cmd": "startProxy"})
 	if err != nil {
 		adminError(w, 503, "GLM 容器不可达")
@@ -196,6 +200,11 @@ func (h *server) adminZcodeDisable(w http.ResponseWriter, r *http.Request) {
 		adminError(w, 502, "GLM 通道停用失败")
 		return
 	}
+	// 用户主动停用：本运行周期不再自动拉起，避免与管理员意图冲突。
+	// 容器重启后内存清零即恢复自动拉起；重新点「启用」也会清除该标志。
+	h.mu.Lock()
+	h.zcodeUserStopped = true
+	h.mu.Unlock()
 	writeJSON(w, 200, map[string]any{"ok": true})
 }
 
@@ -242,4 +251,57 @@ func (h *server) zcodePlan(ctx context.Context) string {
 		return ""
 	}
 	return resp.Plan
+}
+
+// zcodeAutoStart is a low-frequency background loop (only when WB2A_ZCODE_CONTROL_URL is set)
+// that brings the zcode-proxy proxy up after container restarts. The third-party image's
+// android entry deliberately starts only the control listener, leaving the proxy stopped
+// ("proxy stopped — use startProxy command to start"), so a freshly recreated container
+// would otherwise stay grey until the admin opens the Zcode tab and clicks 启用.
+//
+// Conditions for an automatic startProxy:
+//   - control endpoint is reachable and reports logged_in == true (never auto-start before login,
+//     since startProxy returns not_logged_in and there is nothing to start without credentials);
+//   - proxy is not already running;
+//   - the admin has not manually clicked 停用 in this process lifetime (zcodeUserStopped).
+//
+// A manual 停用 sets zcodeUserStopped so the loop does not fight the admin; a manual 启用
+// clears it, and a container restart zeroes the memory flag so auto-start resumes. The loop
+// does not log on every idle tick to avoid noise — only successful starts are recorded.
+func (h *server) zcodeAutoStart() {
+	const interval = 15 * time.Second
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+	// Run immediately on startup so a ready container doesn't wait a full interval.
+	h.tryZcodeAutoStart(context.Background())
+	for range ticker.C {
+		h.tryZcodeAutoStart(context.Background())
+	}
+}
+
+func (h *server) tryZcodeAutoStart(ctx context.Context) {
+	h.mu.Lock()
+	stopped := h.zcodeUserStopped
+	h.mu.Unlock()
+	if stopped {
+		return
+	}
+	status, err := h.zcodeControl(ctx, map[string]any{"cmd": "status"})
+	if err != nil || !status.OK {
+		return // control 端未就绪，下一轮再试
+	}
+	if !status.LoggedIn {
+		return // 未登录绝不拉起
+	}
+	if status.ProxyPort > 0 {
+		return // 已在运行
+	}
+	resp, err := h.zcodeControl(ctx, map[string]any{"cmd": "startProxy"})
+	if err != nil {
+		return
+	}
+	if resp.OK {
+		log.Printf("[console] zcode 代理已自动拉起（provider=%s plan=%s）", resp.Provider, resp.Plan)
+	}
+	// already_running / not_logged_in 等非 ok 分支静默，下一轮由 status 重新判定。
 }
