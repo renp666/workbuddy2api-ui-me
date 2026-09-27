@@ -242,6 +242,7 @@ func New(next http.Handler, apiKey string, maxBodyBytes int64) http.Handler {
 			writeError(w, 502, failureMessage)
 			return
 		}
+		copyAttributionHeaders(w.Header(), capture.header)
 		stop := "end_turn"
 		if output.Choices[0].FinishReason == "length" {
 			stop = "max_tokens"
@@ -260,6 +261,19 @@ type responseBuffer struct {
 	ctx    context.Context
 	cancel context.CancelFunc
 	err    error
+}
+
+// attributionHeaders 是补丁 0009 账号归属头白名单：适配器成功路径重建响应时
+// 只从内层 core 响应复制这两个头（错误路径仍走 writeError，不复制——保持
+// 「错误不泄露账号语义」的原设计，见 TestUpstreamErrorsAreSanitizedWithoutForwardingHeaders）。
+var attributionHeaders = []string{"X-Account", "X-Account-Realm"}
+
+func copyAttributionHeaders(dst, src http.Header) {
+	for _, name := range attributionHeaders {
+		if vs := src.Values(name); len(vs) > 0 {
+			dst[name] = append([]string(nil), vs...)
+		}
+	}
 }
 
 func (w *responseBuffer) Header() http.Header { return w.header }

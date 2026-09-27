@@ -33,6 +33,7 @@ backups/
 .idea/
 .vscode/
 .agents/
+.trae/
 LOOP.md
 PLAN.md
 SPEC.md

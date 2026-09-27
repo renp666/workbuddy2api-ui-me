@@ -1,0 +1,38 @@
+# Optional GLM coding-plan sidecar: docker compose -f docker-compose.yml -f deploy/compose.zcode.yml up -d
+# Prerequisites (see README "接入 GLM 编码套餐"):
+#   1. copy deploy/zcode.config.yaml to runtime/zcode/config.yaml (binds the proxy to 127.0.0.1);
+#   2. log in and enable the channel from the console Zcode tab — no host-side CLI login needed.
+# The container joins console's network namespace (network_mode: service:console): its proxy and
+# localhost control API are reachable from console at 127.0.0.1 only, never from the Compose
+# network or the host. Console drives login/enable/disable/logout through the control API and
+# routes public /v1 requests whose model starts with "glm-" to the proxy. Everything else stays on core.
+services:
+  zcode-proxy:
+    image: ghcr.io/tridefender/zcode-proxy:4.7.0
+    platform: linux/amd64
+    restart: unless-stopped
+    # android entry keeps the process resident: proxy stopped until the Zcode tab enables it,
+    # and a missing credential never crash-loops the container.
+    command: ["bun", "run", "src/index.ts", "android"]
+    network_mode: service:console
+    environment:
+      TZ: Asia/Shanghai
+      ZCODE_PROXY_PORT: "8080"
+      ZCODE_CONTROL_PORT: "9090"
+      # Credentials, config.yaml and the persisted device id live under /data (host runtime/zcode/).
+      ZCODE_PROXY_STORE_DIR: /data
+      # 可选：加密凭据的口令。一旦设置必须保持不变，否则容器重建后凭据无法解密。
+      # ZCODE_PROXY_CREDENTIAL_SECRET: ""
+    volumes:
+      - ./runtime/zcode:/data
+
+  console:
+    environment:
+      WB2A_ZCODE_URL: http://127.0.0.1:8080
+      WB2A_ZCODE_CONTROL_URL: http://127.0.0.1:9090
+      # The proxy runs with auth.proxyApiKey: null (see deploy/zcode.config.yaml);
+      # the shared namespace hop stays unauthenticated on purpose.
+      WB2A_ZCODE_KEY: ""
+    depends_on:
+      core:
+        condition: service_started

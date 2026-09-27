@@ -327,6 +327,52 @@ func TestRealAggregateOutput(t *testing.T) {
 	}
 }
 
+// TestSuccessPathForwardsAttributionHeaders 补丁 0009：core 成功响应带
+// X-Account / X-Account-Realm 时，适配器重建响应只白名单复制这两个头；
+// 其他上游头（Set-Cookie 等）仍不透出。
+func TestSuccessPathForwardsAttributionHeaders(t *testing.T) {
+	next := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("X-Account", "alice")
+		w.Header().Set("X-Account-Realm", "global")
+		w.Header().Set("Set-Cookie", "secret-cookie")
+		io.WriteString(w, textResponse)
+	})
+	w := httptest.NewRecorder()
+	New(next, "fixture-api", 8<<20).ServeHTTP(w, request(textRequest))
+	if w.Code != 200 {
+		t.Fatalf("status=%d body=%s", w.Code, w.Body)
+	}
+	if got := w.Header().Get("X-Account"); got != "alice" {
+		t.Errorf("X-Account=%q want alice", got)
+	}
+	if got := w.Header().Get("X-Account-Realm"); got != "global" {
+		t.Errorf("X-Account-Realm=%q want global", got)
+	}
+	if got := w.Header().Get("Set-Cookie"); got != "" {
+		t.Errorf("Set-Cookie must not be forwarded, got %q", got)
+	}
+}
+
+// TestStreamSuccessPathForwardsAttributionHeaders 流式成功路径同样透出归属头。
+func TestStreamSuccessPathForwardsAttributionHeaders(t *testing.T) {
+	next := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("X-Account", "bob")
+		w.Header().Set("X-Account-Realm", "cn")
+		io.WriteString(w, firstText+stopFrame+doneFrame)
+	})
+	w := httptest.NewRecorder()
+	New(next, "fixture-api", 8<<20).ServeHTTP(w, request(streamRequest))
+	if w.Code != 200 {
+		t.Fatalf("status=%d body=%s", w.Code, w.Body)
+	}
+	if got := w.Header().Get("X-Account"); got != "bob" {
+		t.Errorf("stream X-Account=%q want bob", got)
+	}
+	if got := w.Header().Get("X-Account-Realm"); got != "cn" {
+		t.Errorf("stream X-Account-Realm=%q want cn", got)
+	}
+}
+
 func TestUpstreamErrorsAreSanitizedWithoutForwardingHeaders(t *testing.T) {
 	for _, status := range []int{302, 400, 401, 403, 404, 413, 429, 500, 502, 503} {
 		t.Run(http.StatusText(status), func(t *testing.T) {

@@ -120,6 +120,9 @@ func (s *streamWriter) begin() error {
 	s.dst.Header().Set("Content-Type", "text/event-stream")
 	s.dst.Header().Set("Cache-Control", "no-cache")
 	s.dst.Header().Set("X-Accel-Buffering", "no")
+	// 补丁 0009：core 在流式成功路径把归属头写在本 writer 的 header map 上，
+	// begin 是首个写出点，白名单复制到真实响应（错误路径不会走到 begin）。
+	copyAttributionHeaders(s.dst.Header(), s.header)
 	s.started = true
 	if err := s.emit("message_start", map[string]any{"message": map[string]any{
 		"id": s.id, "type": "message", "role": "assistant", "model": s.model,

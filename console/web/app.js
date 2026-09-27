@@ -4,6 +4,7 @@ let page = 'overview', sessionGeneration = 0;
 let protocol = 'openai';
 let taskState = {items:[],active_run:null,latest_runs:[]}, taskHistory = [], taskBefore = null, taskStarting = false, taskPollTimer, taskRenderKey, detailController, detailGeneration = 0;
 let usageRange = 'today', usageGeneration = 0;
+let zcodeModels = [], zcodeHistory = [], zcodeStatus = null, zcodePollTimer, zcodeBusy = false, zcodeAuthURL = '', zcodeLogoutArmed = false, zcodeProviderTouched = false, zcodePlanTouched = false, zcodeView = 'status', zcodeViewTouched = false, zcodeEnabled = false;
 let selectedTaskRun, historyGeneration = 0, historyLoading = false, taskHistoryKey;
 const taskIntents = new Map(), taskReads = new Set();
 function newConversation() { return `web-${Date.now()}-${Math.random().toString(36).slice(2)}`; }
@@ -28,21 +29,29 @@ function signedOut() {
  csrf = ''; activeRequest?.abort(); clearTimeout(flowTimer); flowID = undefined; history = []; conversation = newConversation(); stopTaskReads(); taskIntents.clear(); taskState={items:[],active_run:null,latest_runs:[]};taskHistory=[];taskBefore=null;taskStarting=false;taskRenderKey=undefined;
  $('messages').replaceChildren();$('task-list').replaceChildren();$('task-history-body').replaceChildren();$('task-detail').hidden=true;$('task-accounts').textContent='';$('task-log').textContent=''; $('api-key').value = ''; $('api-key').type = 'password'; $('admin-key').value = ''; $('console-view').hidden = true; $('login-view').hidden = false;
  protocol='openai';$('prompt').value='';$('max-tokens').value='1024';$('usage').textContent='用量将在上游返回后显示';usageGeneration++;renderAccess();
+ zcodeModels=[];zcodeHistory=[];zcodeStatus=null;zcodeAuthURL='';zcodeLogoutArmed=false;zcodeBusy=false;zcodeProviderTouched=false;zcodePlanTouched=false;zcodeView='status';zcodeViewTouched=false;zcodeEnabled=false;clearTimeout(zcodePollTimer);zcodePollTimer=undefined;$('zcode-model').replaceChildren();$('zcode-messages').replaceChildren();$('zcode-prompt').value='';$('zcode-usage').textContent='用量将在上游返回后显示';$('zcode-disabled').hidden=true;$('zcode-content').hidden=true;$('nav-zcode').classList.remove('nav-muted');
 }
 async function signedIn(session) {
  csrf = session.csrf; $('admin-key').value = ''; $('login-view').hidden = true; $('console-view').hidden = false;
  $('realm').querySelector('[value="global"]').disabled = !session.global_enabled;
+ $('nav-zcode').classList.toggle('nav-muted', !session.zcode_enabled);
+ zcodeEnabled = !!session.zcode_enabled;
  await refreshStatus(); await refreshModels();
 }
 function showPage(value) {
  if (page === 'tasks' && value !== 'tasks') stopTaskReads(true);
+ if (page === 'zcode' && value !== 'zcode') stopZcodePoll();
  page = value;
  document.querySelectorAll('[data-page]').forEach(el => el.hidden = el.dataset.page !== page);
  document.querySelectorAll('.nav').forEach(el => el.classList.toggle('active', el.dataset.view === page));
- $('breadcrumb-name').textContent = {overview:'运行概览',accounts:'账号管理',tasks:'自动任务',usage:'调用统计',chat:'对话测试',access:'API 接入'}[page];
+ $('breadcrumb-name').textContent = {overview:'运行概览',accounts:'账号管理',tasks:'自动任务',usage:'调用统计',chat:'对话测试',zcode:'Zcode 通道',access:'API 接入'}[page];
  if (page !== 'access') { $('api-key').value = ''; $('api-key').type = 'password'; }
  if (page === 'tasks') loadTaskPage();
  if (page === 'usage') loadUsage();
+ if (page === 'zcode') loadZcode();
+ // The access tab lists GLM channel models too; fetch the status once lazily
+ // so its select is complete even when the operator never opens the Zcode tab.
+ if (page === 'access' && zcodeEnabled && !zcodeStatus) loadZcode();
 }
 document.querySelectorAll('[data-view]').forEach(button => button.addEventListener('click', () => showPage(button.dataset.view)));
 $('login-form').addEventListener('submit', async event => {
@@ -69,14 +78,32 @@ function renderAccounts(data) {
  updateModelHint();
 }
 async function refreshStatus() { try { renderAccounts(await jsonAPI('status')); } catch(e) { notice(e.message); } }
+function realmLabel(realm) { return realm === 'global' ? '国际版' : realm === 'cn' ? '国内版' : realm === 'glm' ? 'GLM·智谱' : ''; }
+function modelRealm(model) { return model.realm || (model.id.startsWith('global:') ? 'global' : model.id.startsWith('glm-') ? 'glm' : 'cn'); }
+function modelOption(model) { const label = realmLabel(modelRealm(model)); const n = Array.isArray(model.accounts) ? model.accounts.length : 0; return `${label ? `${label} · ` : ''}${model.id}${n > 1 ? ` · ${n}账号` : ''}`; }
+// accessModelOptions feeds the API-access select: core models plus the GLM
+// channel models (the public /v1/models merges them, but /admin/models only
+// covers core), so the access tab shows every model a client can actually call.
+function accessModelOptions() {
+ const items = modelList.map(m => ({...m}));
+ for (const id of zcodeModels) if (id && !items.some(m => m.id === id)) items.push({id, realm: 'glm'});
+ return items;
+}
+function renderAccessModelSelect() {
+ const previous = $('access-model').value;
+ const items = accessModelOptions();
+ $('access-model').replaceChildren();
+ for (const model of items) $('access-model').append(new Option(modelOption(model), model.id));
+ $('access-model').value = items.some(m => m.id === previous) ? previous : $('model').value;
+}
 async function refreshModels() {
  try {
   const models=(await jsonAPI('models')).data||[];if(activeRequest)return;
-  const previous=$('model').value,previousAccess=$('access-model').value;modelList=models;$('model').replaceChildren();$('access-model').replaceChildren();
-  for (const model of modelList) { $('model').append(new Option(model.id,model.id));$('access-model').append(new Option(model.id,model.id)); }
+  const previous=$('model').value;modelList=models;$('model').replaceChildren();
+  for (const model of modelList) { $('model').append(new Option(modelOption(model),model.id)); }
   if (modelList.some(m=>m.id===previous)) $('model').value=previous;
   else {const available=modelList.find(m=>accounts.some(a=>m.id.startsWith(`${a.realm||'cn'}:`)));if(available)$('model').value=available.id;}
-  $('access-model').value=modelList.some(m=>m.id===previousAccess)?previousAccess:$('model').value;
+  renderAccessModelSelect();
   updateEfforts();renderAccess();
  } catch(e) { notice(e.message); }
 }
@@ -187,7 +214,7 @@ async function loadTaskDetail(id,scroll=true){
 $('task-refresh').addEventListener('click',loadTaskPage);
 $('task-more').addEventListener('click',()=>loadTaskHistory(false));
 $('task-detail-close').addEventListener('click',()=>cancelTaskDetail(true));
-document.addEventListener?.('visibilitychange',()=>{if(document.hidden)stopTaskReads();else if(page==='tasks')pollTaskRun();});
+document.addEventListener?.('visibilitychange',()=>{if(document.hidden)stopTaskReads();else if(page==='tasks')pollTaskRun();else if(page==='zcode'&&zcodeStatus&&zcodeStatus.control&&!zcodeStatus.logged_in)loadZcode();});
 
 const usageModeNames={stream:'流式',sync:'同步'};
 function formatUsageTokens(value){return value<0?'—':String(value);}
@@ -217,6 +244,170 @@ async function loadUsage(){
 $('usage-range').addEventListener('change',event=>{usageRange=event.target.value;usageGeneration++;loadUsage();});
 $('usage-refresh').addEventListener('click',()=>{usageGeneration++;loadUsage();});
 
+async function loadZcode(){
+ if(!csrf)return;
+ try{renderZcode(await jsonAPI('zcode'));}
+ catch(error){notice(error.message);}
+}
+function zcodePageVisible(){return page==='zcode'&&csrf&&!document.hidden;}
+function scheduleZcodePoll(){
+ clearTimeout(zcodePollTimer);zcodePollTimer=undefined;
+ if(zcodePageVisible()&&zcodeStatus&&zcodeStatus.control&&!zcodeStatus.logged_in)zcodePollTimer=setTimeout(loadZcode,3000);
+}
+function stopZcodePoll(){clearTimeout(zcodePollTimer);zcodePollTimer=undefined;}
+function renderZcode(status){
+ zcodeStatus=status;
+ const enabled=!!status.enabled;
+ $('zcode-disabled').hidden=enabled;
+ $('zcode-content').hidden=!enabled;
+ if(!enabled){stopZcodePoll();return;}
+ const control=!!status.control,loggedIn=!!status.logged_in,running=!!status.proxy_running;
+ if(control&&loggedIn)zcodeAuthURL='';
+ const badge=$('zcode-status-badge');
+ if(!control){
+  badge.textContent=status.reachable?'在线':'不可达';
+  badge.className='badge'+(status.reachable?'':' warn');
+  $('zcode-status-text').textContent=status.reachable?`zcode-proxy 可达 · ${status.model_count} 个 GLM 模型`:'zcode-proxy 当前不可达，请确认容器已启动。';
+ } else if(!loggedIn){
+  badge.textContent='未登录';badge.className='badge warn';
+  $('zcode-status-text').textContent='尚未保存 GLM 凭据，切换到「GLM 登录」完成登录后即可启用通道。';
+ } else if(running){
+  badge.textContent=status.reachable?'在线':'运行中 · 探测失败';
+  badge.className='badge'+(status.reachable?'':' warn');
+  $('zcode-status-text').textContent=status.reachable?`zcode-proxy 可达 · ${status.model_count} 个 GLM 模型`:'代理已启动，但模型探测失败，可能是上游凭据或额度异常。';
+ } else {
+  badge.textContent='已登录 · 未启用';badge.className='badge warn';
+  $('zcode-status-text').textContent='凭据已保存，点击「启用通道」开始服务。';
+ }
+ $('zcode-login-badge').textContent='未登录';
+ $('zcode-enable').hidden=!control||!loggedIn||running;
+ $('zcode-disable').hidden=!control||!running;
+ $('zcode-logout').hidden=!control||!loggedIn;
+ $('zcode-logout').textContent=zcodeLogoutArmed?'再次点击确认退出':'退出登录';
+ $('zcode-auth-row').hidden=!zcodeAuthURL;
+ if(zcodeAuthURL){$('zcode-auth-link').href=zcodeAuthURL;$('zcode-auth-link').textContent=zcodeAuthURL;}
+ $('zcode-login-hint').textContent=!control||loggedIn?'':zcodeAuthURL?'已在新标签页打开授权页面，完成授权后本页每 3 秒自动检查登录结果；若被拦截请用下方链接打开。':'选择服务商后点击「开始登录」，授权在智谱页面完成，凭据只保存在 GLM 容器内。';
+ if(!zcodeProviderTouched&&(status.provider==='zai'||status.provider==='bigmodel'))$('zcode-provider').value=status.provider;
+ const plan=(status.plan==='coding-plan'||status.plan==='start-plan')?status.plan:'';
+ if(!zcodePlanTouched&&plan)$('zcode-plan').value=plan;
+ $('zcode-config-form').hidden=!control||running;
+ const loginTab=control&&!loggedIn;
+ const dataTab=control?running:status.reachable;
+ if(loginTab&&!zcodeViewTouched)zcodeView='login';
+ if(zcodeView==='login'&&!loginTab)zcodeView='status';
+ if((zcodeView==='models'||zcodeView==='chat')&&!dataTab)zcodeView='status';
+ $('zcode-view-status').hidden=false;
+ $('zcode-view-login').hidden=!loginTab;
+ $('zcode-view-models').hidden=!dataTab;
+ $('zcode-view-chat').hidden=!dataTab;
+ for(const view of ['status','login','models','chat']){
+  $('zcode-view-'+view).classList.toggle('active',view===zcodeView);
+  $('zcode-pane-'+view).hidden=view!==zcodeView;
+ }
+ zcodeModels=(status.models||[]).map(item=>item.id).filter(Boolean);
+ // Keep the API-access select in sync: it lists GLM channel models too.
+ renderAccessModelSelect();renderAccess();
+ const previous=$('zcode-model').value;
+ $('zcode-model').replaceChildren();
+ for(const id of zcodeModels)$('zcode-model').append(new Option(id,id));
+ if(zcodeModels.includes(previous))$('zcode-model').value=previous;
+ $('zcode-models-body').replaceChildren();
+ for(const id of zcodeModels){const tr=document.createElement('tr');tr.append(cell(id));$('zcode-models-body').append(tr);}
+ $('zcode-models-empty').hidden=zcodeModels.length>0;
+ $('zcode-models-note').hidden=plan!=='start-plan';
+ $('zcode-model').disabled=!zcodeModels.length||!!activeRequest;
+ $('zcode-send').disabled=!zcodeModels.length||!!activeRequest;
+ zcodeActionControls();
+ scheduleZcodePoll();
+}
+function zcodeControls(){
+ for(const id of ['zcode-model','zcode-prompt','zcode-send'])$(id).disabled=!!activeRequest;
+ $('zcode-stop').hidden=!activeRequest;
+}
+function zcodeActionControls(){
+ for(const id of ['zcode-login-start','zcode-enable','zcode-disable','zcode-logout','zcode-refresh','zcode-config-apply'])$(id).disabled=zcodeBusy;
+}
+async function zcodeAction(path){
+ if(zcodeBusy)return;
+ const generation=sessionGeneration;zcodeBusy=true;zcodeActionControls();notice('');
+ try{
+  await jsonAPI(path,{});
+  if(generation!==sessionGeneration)return;
+  zcodeAuthURL='';zcodeLogoutArmed=false;
+  await loadZcode();
+ }catch(error){if(generation===sessionGeneration)notice(error.message);}
+ finally{if(generation===sessionGeneration){zcodeBusy=false;zcodeActionControls();}}
+}
+$('zcode-refresh').addEventListener('click',loadZcode);
+for(const view of ['status','login','models','chat'])$('zcode-view-'+view).addEventListener('click',()=>{zcodeViewTouched=true;setZcodeView(view);});
+function setZcodeView(view){zcodeView=view;if(zcodeStatus)renderZcode(zcodeStatus);}
+$('zcode-provider').addEventListener('change',()=>{zcodeProviderTouched=true;});
+$('zcode-login-form').addEventListener('submit',async event=>{
+ event.preventDefault();if(zcodeBusy)return;
+ const generation=sessionGeneration;zcodeBusy=true;zcodeActionControls();notice('');
+ zcodeProviderTouched=true;
+ let authWindow=null;
+ try{authWindow=window.open('about:blank','_blank','noopener');}catch(_){authWindow=null;}
+ try{
+  const result=await jsonAPI('zcode/login',{provider:$('zcode-provider').value});
+  if(generation!==sessionGeneration){try{authWindow?.close();}catch(_){}return;}
+  zcodeAuthURL=result.authorize_url||'';
+  if(zcodeAuthURL){
+   if(authWindow&&!authWindow.closed)authWindow.location.href=zcodeAuthURL;
+   else try{window.open(zcodeAuthURL,'_blank','noopener');}catch(_){}
+  }
+  renderZcode(zcodeStatus);
+ }catch(error){
+  try{authWindow?.close();}catch(_){}
+  if(generation===sessionGeneration)notice(error.message);
+ }
+ finally{if(generation===sessionGeneration){zcodeBusy=false;zcodeActionControls();}}
+});
+$('zcode-enable').addEventListener('click',()=>zcodeAction('zcode/enable'));
+$('zcode-plan').addEventListener('change',()=>{zcodePlanTouched=true;});
+$('zcode-config-form').addEventListener('submit',async event=>{
+ event.preventDefault();if(zcodeBusy)return;
+ const generation=sessionGeneration;zcodeBusy=true;zcodeActionControls();notice('');
+ try{
+  await jsonAPI('zcode/config',{plan:$('zcode-plan').value});
+  if(generation!==sessionGeneration)return;
+  zcodePlanTouched=false;
+  await loadZcode();
+ }catch(error){if(generation===sessionGeneration)notice(error.message);}
+ finally{if(generation===sessionGeneration){zcodeBusy=false;zcodeActionControls();}}
+});
+$('zcode-disable').addEventListener('click',()=>zcodeAction('zcode/disable'));
+$('zcode-logout').addEventListener('click',()=>{
+ if(!zcodeLogoutArmed){zcodeLogoutArmed=true;$('zcode-logout').textContent='再次点击确认退出';return;}
+ zcodeLogoutArmed=false;zcodeAction('zcode/logout');
+});
+$('zcode-stop').addEventListener('click',()=>activeRequest?.abort());
+$('zcode-form').addEventListener('submit',async event=>{
+ event.preventDefault();if(activeRequest)return;const text=$('zcode-prompt').value.trim();if(!text||!$('zcode-model').value)return;
+ const generation=sessionGeneration;
+ notice('');message('user',text,$('zcode-messages'));$('zcode-prompt').value='';const answer=message('assistant','正在等待模型…',$('zcode-messages'));
+ const controller=new AbortController();activeRequest=controller;zcodeControls();
+ let content='',usage,finished=false;const outgoing=[...zcodeHistory,{role:'user',content:text}];
+ try{
+  const response=await api('zcode/chat',{model:$('zcode-model').value,messages:outgoing,stream:true},controller.signal);
+  if(!response.ok){const err=await response.json();throw new Error(err.error?.message||err.error||`HTTP ${response.status}`);}
+  const reader=response.body.getReader(),decoder=new TextDecoder();let buffer='';
+  const processFrame=frame=>{
+   const payload=frame.split('\n').filter(l=>l.startsWith('data:')).map(l=>l.slice(5).trimStart()).join('\n');if(!payload)return;
+   if(payload==='[DONE]'){finished=true;return;}
+   const part=JSON.parse(payload);if(part.error)throw new Error(part.error.message||'上游流式响应发生错误');
+   content+=part.choices?.[0]?.delta?.content||'';answer.content.textContent=content||'模型正在思考…';
+   if(part.usage)usage=part.usage;
+  };
+  while(true){const{value,done}=await reader.read();if(controller.signal.aborted){const error=new Error('已停止生成');error.name='AbortError';throw error;}buffer+=done?decoder.decode():decoder.decode(value,{stream:true});buffer=buffer.replace(/\r\n/g,'\n');let split;while((split=buffer.indexOf('\n\n'))>=0){processFrame(buffer.slice(0,split));buffer=buffer.slice(split+2);}if(done){if(buffer.trim())processFrame(buffer);break;}}
+  if(!finished)throw new Error('响应提前中断，可重新发送问题');
+  if(!content)answer.content.textContent='模型未返回文本内容。';
+  zcodeHistory=[...outgoing,{role:'assistant',content}];
+  $('zcode-usage').textContent=(usage?`输入 ${usage.prompt_tokens??'—'} · 输出 ${usage.completion_tokens??'—'} · 总计 ${usage.total_tokens??'—'} tokens`:'上游未返回用量')+' · 本次通道：GLM（智谱）';
+ }catch(e){if(generation===sessionGeneration){const msg=e.name==='AbortError'?'已停止生成':e.message;answer.content.textContent=(content?content+'\n\n':'')+msg;$('zcode-usage').textContent=msg;}}
+ finally{controller.abort();activeRequest=undefined;zcodeControls();}
+});
+
 $('add-account').addEventListener('submit',async event=>{
  event.preventDefault();clearTimeout(flowTimer);const button=event.submitter;button.disabled=true;notice('');
  const popup=window.open('about:blank','_blank');if(popup)popup.opener=null;
@@ -245,10 +436,10 @@ $('region-form').addEventListener('submit',async event=>{
  try{const flow=await jsonAPI(`oauth/${encodeURIComponent(flowID)}/region`,{region:$('region').value});renderFlow(flow);if(flow.status==='complete'){await refreshStatus();await refreshModels();}else if(flow.status==='retry'){flowTimer=setTimeout(pollFlow,10000);}}catch(e){notice(e.message);}finally{button.disabled=false;}
 });
 
-function message(role,text){
- $('messages').querySelector('.chat-empty')?.remove();const el=document.createElement('div');el.className='message '+role;
+function message(role,text,container){
+ container=container||$('messages');container.querySelector('.chat-empty')?.remove();const el=document.createElement('div');el.className='message '+role;
  const label=document.createElement('span');label.className='role';label.textContent=role==='user'?'你':'ASSISTANT';const content=document.createElement('div');content.textContent=text;
- el.append(label,content);$('messages').append(el);el.scrollIntoView({block:'nearest'});return{el,content};
+ el.append(label,content);container.append(el);el.scrollIntoView({block:'nearest'});return{el,content};
 }
 function clearChat(){history=[];conversation=newConversation();$('messages').replaceChildren();$('usage').textContent='用量将在上游返回后显示';}
 function setProtocol(value){
@@ -265,18 +456,20 @@ function renderAccess(){
  $('api-auth').textContent=anthropic?'x-api-key · anthropic-version: 2023-06-01':'Authorization: Bearer <API Key>';
  $('protocol-support').textContent=anthropic?'Anthropic · Beta 测试 · 文本兼容':'OpenAI · Chat Completions';
  $('protocol-note').textContent=anthropic?'Base URL 使用站点根地址，SDK 会追加 /v1/messages。支持文本、多轮和流式回答；暂不支持图片、工具、thinking，也不承诺 Claude Code 兼容。':'Base URL 包含 /v1，使用兼容 Chat Completions 的客户端连接。';
- const available=modelList.some(item=>item.id===model);
+ const available=accessModelOptions().some(item=>item.id===model);
  $('copy-example').disabled=!available||!!activeRequest;$('go-chat').disabled=!available||!!activeRequest;
  if(!available){$('api-example').textContent='暂无可选模型，请先刷新模型列表。';return;}
+ const isGlm=model.startsWith('glm-');
+ if(anthropic&&isGlm){$('copy-example').disabled=true;$('api-example').textContent='GLM 通道仅支持 OpenAI 协议（/v1/chat/completions），请切换协议后复制示例。';return;}
  const body={model,...(anthropic?{max_tokens:1024}:{}),messages:[{role:'user',content:'你好'}],stream:true};
  const auth=anthropic?'  -H "x-api-key: <你的 API Key>" \\\n  -H "anthropic-version: 2023-06-01"':'  -H "Authorization: Bearer <你的 API Key>"';
  const json=JSON.stringify(body,null,2).replace(/'/g,"'\\''");
- $('api-example').textContent=`curl ${$('api-endpoint').value} \\\n${auth} \\\n  -H "Content-Type: application/json" \\\n  -d '${json}'`;
+ $('api-example').textContent=(isGlm?'# GLM 模型经 zcode 通道转发（按 glm- 前缀分流），账号为容器登录态\ncurl ':(anthropic?'':'# 成功响应头 X-Account / X-Account-Realm 标明本次服务的账号与平台\ncurl '))+$('api-endpoint').value+` \\\n${auth} \\\n  -H "Content-Type: application/json" \\\n  -d '${json}'`;
 }
 document.querySelectorAll('[data-protocol]').forEach(button=>button.addEventListener('click',()=>setProtocol(button.dataset.protocol)));
 $('access-model').addEventListener('change',renderAccess);
 $('copy-example').addEventListener('click',async()=>{if($('copy-example').disabled)return;try{await navigator.clipboard.writeText($('api-example').textContent);notice('调用示例已复制，请替换 API Key 占位符');}catch{notice('浏览器不允许自动复制，请手动复制下方示例');}});
-$('go-chat').addEventListener('click',()=>{if(activeRequest||$('go-chat').disabled)return;$('model').value=$('access-model').value;updateEfforts();showPage('chat');});
+$('go-chat').addEventListener('click',()=>{if(activeRequest||$('go-chat').disabled)return;const model=$('access-model').value;if(model.startsWith('glm-')){if(zcodeModels.includes(model))$('zcode-model').value=model;showPage('zcode');return;}$('model').value=model;updateEfforts();showPage('chat');});
 function chatControls(){
  for(const id of ['model','access-model','clear-chat','send-chat','max-tokens'])$(id).disabled=!!activeRequest;
  $('stop-chat').hidden=!activeRequest;
@@ -284,6 +477,17 @@ function chatControls(){
 }
 $('clear-chat').addEventListener('click',()=>{if(activeRequest)return;clearChat();});
 $('stop-chat').addEventListener('click',()=>activeRequest?.abort());
+// accountNote reads the attribution headers core attaches to successful chat
+// responses (X-Account / X-Account-Realm) so the operator can see which pooled
+// account and which platform served the request. Headers are absent on error
+// paths and non-core upstreams, so it degrades to an empty string.
+function accountNote(response) {
+ const account = response.headers?.get?.('X-Account') || '';
+ const realm = response.headers?.get?.('X-Account-Realm') || '';
+ if (!account && !realm) return '';
+ const platform = realm === 'global' ? '国际版' : realm === 'cn' ? '国内版' : realm;
+ return ` · 本次账号：${account || '—'}${platform ? `（${platform}）` : ''}`;
+}
 $('chat-form').addEventListener('submit',async event=>{
  event.preventDefault();if(activeRequest)return;const text=$('prompt').value.trim();if(!text)return;
  const requestProtocol=protocol,generation=sessionGeneration;
@@ -296,6 +500,7 @@ $('chat-form').addEventListener('submit',async event=>{
   const anthropicBody={model:$('model').value,max_tokens:Number($('max-tokens').value),messages:outgoing,stream:true};
   const response=requestProtocol==='anthropic'?await api('messages',{conversation_id:conversation,request:anthropicBody},controller.signal):await api('chat',body,controller.signal);
   if(!response.ok){const err=await response.json();throw new Error(err.error?.message||err.error||`HTTP ${response.status}`);}
+  const attribution=accountNote(response);
   const reader=response.body.getReader(),decoder=new TextDecoder();let buffer='';
   const processFrame=frame=>{
    const payload=frame.split('\n').filter(l=>l.startsWith('data:')).map(l=>l.slice(5).trimStart()).join('\n');if(!payload)return;
@@ -320,7 +525,7 @@ $('chat-form').addEventListener('submit',async event=>{
   if(!finished)throw new Error('响应提前中断，可重新发送问题');
   if(!content&&!tools.size)answer.content.textContent='模型未返回文本内容。';
   history=[...outgoing,{role:'assistant',content:content||(requestProtocol==='openai'?'[本轮返回了工具调用，控制台未执行工具]':'')}];
-  $('usage').textContent=requestProtocol==='anthropic'?(usage?.input_tokens!=null||usage?.output_tokens!=null?`输入 ${usage.input_tokens??'—'} · 输出 ${usage.output_tokens??'—'} tokens`:'上游未返回用量'):(usage?`输入 ${usage.prompt_tokens??'—'} · 输出 ${usage.completion_tokens??'—'} · 总计 ${usage.total_tokens??'—'} tokens`:'上游未返回用量');
+  $('usage').textContent=(requestProtocol==='anthropic'?(usage?.input_tokens!=null||usage?.output_tokens!=null?`输入 ${usage.input_tokens??'—'} · 输出 ${usage.output_tokens??'—'} tokens`:'上游未返回用量'):(usage?`输入 ${usage.prompt_tokens??'—'} · 输出 ${usage.completion_tokens??'—'} · 总计 ${usage.total_tokens??'—'} tokens`:'上游未返回用量'))+attribution;
  }catch(e){if(generation===sessionGeneration){const msg=e.name==='AbortError'?'已停止生成':e.message;answer.content.textContent=(content?content+'\n\n':'')+msg;$('usage').textContent=msg;}}
  finally{controller.abort();activeRequest=undefined;chatControls();updateEfforts();if(generation===sessionGeneration)refreshStatus();}
 });

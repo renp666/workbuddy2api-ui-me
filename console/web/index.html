@@ -14,7 +14,7 @@
 </main>
 <div id="console-view" class="shell" hidden>
  <aside class="sidebar"><div class="brand"><span class="brand-icon">W</span> WorkBuddy</div><p class="sidebar-label">WORKSPACE CONSOLE</p>
-  <nav aria-label="主要导航"><button data-view="overview" class="nav active">◫ <span>运行概览</span></button><button data-view="accounts" class="nav">◎ <span>账号管理</span></button><button data-view="tasks" class="nav">◷ <span>自动任务</span></button><button data-view="usage" class="nav">≣ <span>调用统计</span></button><button data-view="chat" class="nav">↗ <span>对话测试</span></button><button data-view="access" class="nav">⌘ <span>API 接入</span></button></nav>
+  <nav aria-label="主要导航"><button data-view="overview" class="nav active">◫ <span>运行概览</span></button><button data-view="accounts" class="nav">◎ <span>账号管理</span></button><button data-view="tasks" class="nav">◷ <span>自动任务</span></button><button data-view="usage" class="nav">≣ <span>调用统计</span></button><button data-view="chat" class="nav">↗ <span>对话测试</span></button><button data-view="zcode" class="nav" id="nav-zcode">◈ <span>Zcode</span></button><button data-view="access" class="nav">⌘ <span>API 接入</span></button></nav>
   <div class="sidebar-bottom"><span class="status-dot"></span> 自托管网关<button id="logout" class="quiet">退出登录</button></div>
  </aside>
  <main class="workspace"><header class="topbar"><span class="breadcrumb">控制台 <span>/</span> <span id="breadcrumb-name">运行概览</span></span><span class="badge" id="service-state">正在连接</span></header>
@@ -46,6 +46,34 @@
    <div class="panel chat-panel"><div class="protocol-row"><div class="protocol-switch" role="group" aria-label="对话协议"><button id="chat-openai" data-protocol="openai" aria-pressed="true">OpenAI</button><button id="chat-anthropic" data-protocol="anthropic" aria-pressed="false">Anthropic · Beta 测试</button></div><span class="muted small">切换协议会清空当前对话</span></div>
    <div class="chat-settings"><label for="model">模型</label><select id="model"></select><label id="effort-label" for="effort">推理档位</label><select id="effort"><option value="">默认</option></select><label id="max-tokens-label" for="max-tokens" hidden>最大输出 tokens</label><input id="max-tokens" type="number" value="1024" min="1" step="1" hidden></div><p id="model-hint" class="muted small"></p><div id="messages" class="messages" aria-live="polite"><div class="chat-empty">你好，想先问些什么？<small>选择模型后，在下方输入你的问题。</small></div></div>
    <form id="chat-form"><label class="sr-only" for="prompt">你的问题</label><textarea id="prompt" rows="3" placeholder="输入一个问题…" required></textarea><div class="composer-footer"><span id="usage" class="muted small" role="status" aria-live="polite">用量将在上游返回后显示</span><button id="stop-chat" class="secondary" type="button" hidden>停止生成</button><button id="send-chat" class="primary" type="submit">发送 ↑</button></div></form></div>
+  </section>
+  <section class="page" data-page="zcode" hidden><div class="page-heading"><div><p class="eyebrow">GLM CHANNEL</p><h1>Zcode 通道</h1><p class="muted">可选的智谱 GLM 编码套餐旁路。账号、额度与登录由 zcode-proxy 自持，本控制台只负责查看与测试。</p></div><button id="zcode-refresh" class="secondary">↻ 刷新状态</button></div>
+   <p id="zcode-disabled" class="empty" hidden>GLM 通道未启用。在部署目录用 <code>deploy/compose.zcode.yml</code> overlay 启动后，这里会显示通道状态、模型列表与对话测试。</p>
+   <div id="zcode-content" hidden>
+    <div class="zcode-tabs" role="tablist" aria-label="Zcode 子页"><button id="zcode-view-status" class="zcode-tab active" role="tab" type="button">◫ 通道状态</button><button id="zcode-view-login" class="zcode-tab" role="tab" type="button" hidden>⇆ GLM 登录</button><button id="zcode-view-models" class="zcode-tab" role="tab" type="button" hidden>☰ GLM 模型</button><button id="zcode-view-chat" class="zcode-tab" role="tab" type="button" hidden>↗ 对话测试</button></div>
+    <div id="zcode-pane-status">
+    <article class="panel"><div class="section-title"><h2>通道状态</h2><span class="badge" id="zcode-status-badge">未知</span></div><p id="zcode-status-text" class="muted small" role="status" aria-live="polite">正在读取通道状态…</p>
+     <div class="inline-form"><button id="zcode-enable" class="primary" type="button" hidden>启用通道</button><button id="zcode-disable" class="secondary" type="button" hidden>停用通道</button><button id="zcode-logout" class="quiet" type="button" hidden>退出登录</button></div>
+     <form id="zcode-config-form" class="inline-form" hidden><label for="zcode-plan">套餐档位</label><select id="zcode-plan"><option value="coding-plan">编码套餐（coding-plan）</option><option value="start-plan">Start Plan（活动/试用额度）</option></select><button id="zcode-config-apply" class="secondary" type="submit">切换档位</button><span class="muted small">切换需通道处于停用状态</span></form></article>
+    </div>
+    <div id="zcode-pane-login" hidden>
+    <article id="zcode-login" class="panel"><div class="section-title"><h2>GLM 登录</h2><span class="badge warn" id="zcode-login-badge">未登录</span></div>
+     <form id="zcode-login-form" class="inline-form"><label for="zcode-provider">服务商</label><select id="zcode-provider"><option value="bigmodel">智谱 bigmodel.cn</option><option value="zai">Z.AI 国际站</option></select><button id="zcode-login-start" class="primary" type="submit">开始登录</button></form>
+     <p id="zcode-auth-row" hidden><a id="zcode-auth-link" target="_blank" rel="noopener noreferrer">打开授权页面 ↗</a></p>
+     <p id="zcode-login-hint" class="muted small" role="status" aria-live="polite"></p></article>
+    </div>
+    <div id="zcode-pane-models" hidden>
+    <div class="section-title" id="zcode-models-title"><h2>GLM 模型</h2><span class="muted small">来自 zcode-proxy 的 <code>/v1/models</code></span></div>
+    <div class="panel table-wrap" id="zcode-models-table"><table><thead><tr><th>模型 ID</th></tr></thead><tbody id="zcode-models-body"></tbody></table><p id="zcode-models-empty" class="empty">暂无模型。</p></div>
+    <p id="zcode-models-note" class="muted small" hidden>当前为 Start Plan 档位，仅展示可用的 <code>-flash</code> 模型。</p>
+    </div>
+    <div id="zcode-pane-chat" hidden>
+    <div class="section-title" id="zcode-chat-title"><h2>对话测试</h2><span class="muted small">仅 OpenAI 流式协议，真实请求转发给 zcode-proxy</span></div>
+    <div class="panel chat-panel" id="zcode-chat-panel"><div class="chat-settings"><label for="zcode-model">模型</label><select id="zcode-model"></select></div>
+     <div id="zcode-messages" class="messages" aria-live="polite"><div class="chat-empty">选择一个 GLM 模型，在下方输入问题。<small>对话只保留在当前页面，刷新即清空。</small></div></div>
+     <form id="zcode-form"><label class="sr-only" for="zcode-prompt">你的问题</label><textarea id="zcode-prompt" rows="3" placeholder="输入一个问题…" required></textarea><div class="composer-footer"><span id="zcode-usage" class="muted small" role="status" aria-live="polite">用量将在上游返回后显示</span><button id="zcode-stop" class="secondary" type="button" hidden>停止生成</button><button id="zcode-send" class="primary" type="submit">发送 ↑</button></div></form></div>
+    </div>
+   </div>
   </section>
   <section class="page" data-page="access" hidden><div class="page-heading"><div><p class="eyebrow">INTEGRATION</p><h1>接入你喜欢的客户端</h1><p class="muted">选择客户端使用的协议，复制配置后即可开始。</p></div></div><article class="panel access-panel">
    <div class="protocol-row"><div class="protocol-switch" role="group" aria-label="接入协议"><button id="access-openai" data-protocol="openai" aria-pressed="true">OpenAI</button><button id="access-anthropic" data-protocol="anthropic" aria-pressed="false">Anthropic · Beta 测试</button></div><span id="protocol-support" class="badge">OpenAI · Chat Completions</span></div>

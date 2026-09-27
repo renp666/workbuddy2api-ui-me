@@ -55,6 +55,8 @@ curl -N http://127.0.0.1:7863/v1/chat/completions \
 
 以上是填写示例，请替换地址、密钥和模型 ID。
 
+模型列表按账号池实际可用性过滤：只有至少存在一个可用账号（未禁用、不在冷却）的模型才会出现在 `/v1/models` 中，某平台（国内版/国际版）没有任何可用账号时整个平台的模型都不列出；每个模型条目带 `realm` 字段（`cn`/`global`，叠加 GLM 通道时另有 `glm`）标明归属平台，并带 `accounts` 清单（`uid` 与可选 `nickname`，按 UID 升序）列出多账号池中能服务该模型的账号。成功的对话响应会附带 `X-Account`（服务本次请求的账号昵称，昵称不适合展示时回落为 UID）与 `X-Account-Realm` 响应头，方便调用方定位实际使用的账号；失败响应不附带。控制台「API 接入」页的模型下拉同样带平台标签（国内版/国际版/GLM·智谱），多账号模型标注账号数（如「国内版 · cn:glm-5.2 · 3账号」），并在 GLM 通道启用时列出可选的 `glm-*` 模型及其调用示例。
+
 ### Anthropic 文本接口
 
 在控制台“API 接入”切换到 **Anthropic**，查看地址和示例；“前往对话测试”会带上所选协议与模型。官方 Python SDK 的 Base URL 填服务根地址 `http://服务器地址:7863`，SDK 会追加 `/v1/messages`，不要再追加 `/v1`。
@@ -98,11 +100,47 @@ Compose 从阿里云仓库拉取成品镜像，**无需下载源码、构建镜�
 
 登录和人工验证需要你本人完成，程序不会绕过激活或验证码。
 
+## 可选：接入 GLM 编码套餐
+
+本部署可以并列挂一个 [zcode-proxy](https://github.com/TriDefender/zcode-proxy) 容器，把你的智谱 GLM 编码套餐变成第三个模型来源。启用后仍是同一个 `:7863` 出口：控制台 `/v1/models` 会合并显示 GLM 模型，客户端请求 `model` 以 `glm-` 开头时由 console 自动转发给 zcode-proxy，其余模型仍走 WorkBuddy 账号池；本服务不管理 GLM 账号，额度与登录状态由 zcode-proxy 自持。
+
+前置：拉取镜像并放置配置。zcode-proxy 容器与 console 共享网络命名空间，只监听 `127.0.0.1`，不对外暴露端口；凭据、配置和设备标识持久化在宿主 `runtime/zcode/` 下。
+
+```bash
+mkdir -p runtime/zcode
+cp deploy/zcode.config.yaml runtime/zcode/config.yaml
+```
+
+配置模板默认国内智谱（`provider: bigmodel`）；使用 Z.AI 国际站改成 `provider: zai`。如需加密凭据，在 overlay 的 `ZCODE_PROXY_CREDENTIAL_SECRET` 设置一串你自己知道的口令并保持一致，否则容器重建后凭据无法解密（忘记口令只能重新登录）。
+
+第一步，用 overlay 启动。容器未登录时也能常驻（代理处于停止态），登录和启用都在控制台内完成：
+
+```bash
+docker compose -f docker-compose.yml -f deploy/compose.zcode.yml up -d
+```
+
+第二步，打开控制台 **Zcode 页签**（页内分为「通道状态 / GLM 登录 / GLM 模型 / 对话测试」子菜单，按当前状态显示）：在「GLM 登录」选择服务商并点击「开始登录」，浏览器会自动打开智谱授权页面（若被拦截可点击页签内的链接；手机或任意设备浏览器均可，无需回调页面），完成登录后页签每 3 秒自动检测到并刷新状态；随后在「通道状态」点击「启用通道」，状态变为在线即可使用。页签还提供「停用通道」与「退出登录」（清除容器内凭据，二次点击确认）。
+
+套餐档位（plan）：默认 `coding-plan` 走编码套餐的直连端点与永久 API Key；周末活动等赠送的试用额度属于 `start-plan`，走 zcode.z.ai 网关与 JWT 鉴权，通常只放行一两个免费模型（如 `glm-5.3-flash`）。切换档位需在页签「通道状态」卡中选择并点「切换档位」，**要求通道处于停用状态**（运行中上游会拒绝变更）；用哪个档位以上游实际授予你的额度为准，选错档位会报余额/资源不足（如 1113）。处于 `start-plan` 时，控制台会按档位过滤模型列表：页签「GLM 模型」与公共 `/v1/models` 只展示 `-flash` 类可用模型，避免客户端选到必然报错的模型；其它档位或控制端不可达时不过滤。
+
+之后客户端用法不变：`/v1/models` 里选 `glm-*` 模型即可，OpenAI 与 Anthropic 两种协议都支持分流。Zcode 页签同时可查看通道状态与 GLM 模型列表，并直接做流式对话测试。未叠加该 overlay 时页签会置灰并提示未启用；只读模式下（未配置控制链路）页签仅展示状态与模型。不想要该通道时直接回到 `docker compose -f docker-compose.yml up -d` 启动即可，不影响原有服务。GLM 通道的可用性、额度和模型行为由 zcode-proxy 与其上游决定，本仓未对其做真实上游验收。
+
+无法使用页签时（例如页签登录入口不可用），可在宿主机用一次性容器完成命令行登录，凭据文件与页签共用 `runtime/zcode/`：
+
+```bash
+docker run --rm -it \
+  -e ZCODE_PROXY_CREDENTIAL_SECRET="<你的口令>" \
+  -e ZCODE_PROXY_STORE_DIR=/data \
+  -v "$(pwd)/runtime/zcode:/data" \
+  --entrypoint bun ghcr.io/tridefender/zcode-proxy:4.7.0 \
+  run src/index.ts auth login bigmodel
+```
+
 ## 配套 Web 控制台
 
 ### 对话测试
 
-选择 OpenAI 或 Anthropic 协议、模型并发送问题，直接检查模型响应与流式显示。Anthropic 模式可设置最大输出 tokens，默认 1024；切换协议会清空当前测试对话，生成中可停止。真实部署中的测试会消耗账号额度；页面内的对话刷新后清空。
+选择 OpenAI 或 Anthropic 协议、模型并发送问题，直接检查模型响应与流式显示。Anthropic 模式可设置最大输出 tokens，默认 1024；切换协议会清空当前测试对话，生成中可停止。回答完成后用量行会显示本次服务请求的账号与平台（来自响应归属头），Zcode 页签的测试则标明 GLM 通道。真实部署中的测试会消耗账号额度；页面内的对话刷新后清空。
 
 ![对话测试页面：选择模型并查看流式回答](docs/superpowers/verification/2026-09-16-openai-chat-playground.jpg)
 

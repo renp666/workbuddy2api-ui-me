@@ -1,0 +1,211 @@
+模型可用性过滤与账号归属（补丁 0009）：/v1/models 仅列出至少存在一个可用账号（未禁用、不在账号级冷却/熔断、不在 6004 模型级冷却）的模型，某 realm 无任何可用账号时整域隐藏（global 域在探测上游前即短路，零外呼）；每个模型条目注入 realm 归属标签（cn/global）与 accounts 账号清单（uid+nickname，UID 升序，与过滤同一静态健康口径），与 console 为 glm-* 注入的 realm=glm 对齐，客户端可据此区分平台并定位多账号池中哪些账号能跑该模型。chatCompletions 两条成功路径（流式/非流式）在响应头透出 X-Account（昵称非可打印 ASCII 时回落 UID）与 X-Account-Realm，供 API 调用方和管理台对话测试定位本次服务账号；错误规范化路径保持不透出。配套扩展新文件：internal/pool/availability.go（HasAvailableAccountForModelRealm/AvailableAccountsForModelRealm 静态健康口径）、internal/server/account_header.go（setAccountHeaders/sanitizeHeaderValue/accountRefsToJSON）、internal/server/model_filter_test.go（回归）。
+
+diff --git a/internal/server/handler.go b/internal/server/handler.go
+index 8132afb..5dec85f 100644
+--- a/internal/server/handler.go
++++ b/internal/server/handler.go
+@@ -223,10 +223,22 @@ var globalModels = upstream.GlobalModelNames
+ // modelList 动态获取模型列表并包装成 OpenAI 格式（含 context_length）。
+ // CN 模型输出统一加 "cn:" 前缀（gateway 路由协议，与 resolveModel 对称）。
+ // 动态失败回退静态表；global.enabled=false（显式逃生门）时只列 CN（global 名单不出现）。
++// 补丁 0009（模型可用性过滤 + 归属标签）：
++//   - 每个模型仅在「池内存在对该模型可选的同域账号」时列出（零可用才隐藏；
++//     口径 AvailableAccountsForModelRealm 的静态健康判定：禁用/账号级冷却/熔断/
++//     6004 模型级冷却，不含在途满额瞬态，避免列表随并发闪烁）；
++//   - realm 内无任何可用账号时整个域名单不列（global 域在探测前 gate，零上游调用）；
++//   - 每个模型条目带 "realm" 归属标签（cn/global），供控制台与客户端区分平台；
++//   - 每个模型条目带 "accounts" 清单（uid+nickname，UID 升序），透出「哪些账号能跑这个
++//     模型」，与过滤同一静态健康口径，多账号池可定位账号级归属。
+ func (h *Handler) modelList() []map[string]any {
+ 	out := make([]map[string]any, 0, len(staticModels)+len(globalModels))
+ 	if infos := h.fetchDynamicModels(); len(infos) > 0 {
+ 		for _, mi := range infos {
++			accs := h.cfg.Pool.AvailableAccountsForModelRealm(mi.ID, "cn")
++			if len(accs) == 0 {
++				continue // 补丁 0009：该模型在全部 CN 账号上不可选 → 隐藏
++			}
+ 			entry := map[string]any{
+ 				"id":                "cn:" + mi.ID,
+ 				"object":            "model",
+@@ -234,6 +246,7 @@ func (h *Handler) modelList() []map[string]any {
+ 				"owned_by":          "workbuddy",
+ 				"context_length":    mi.ContextWindow,
+ 				"max_output_tokens": mi.MaxTokens,
++				"realm":             "cn",
+ 			}
+ 			if mi.ContextWindow == 0 {
+ 				entry["context_length"] = 131072 // 兜底
+@@ -249,15 +262,23 @@ func (h *Handler) modelList() []map[string]any {
+ 					entry["reasoning_default_effort"] = def
+ 				}
+ 			}
++			entry["accounts"] = accountRefsToJSON(accs) // 补丁 0009：透出可跑该模型的账号清单
+ 			out = append(out, entry)
+ 		}
+ 	} else {
+ 		for _, m := range staticModels {
+-			e := make(map[string]any, len(m)+1)
++			id, _ := m["id"].(string)
++			accs := h.cfg.Pool.AvailableAccountsForModelRealm(id, "cn")
++			if len(accs) == 0 {
++				continue // 补丁 0009：零可用账号的模型不列（含池内无 CN 账号时整域隐藏）
++			}
++			e := make(map[string]any, len(m)+2)
+ 			for k, v := range m {
+ 				e[k] = v
+ 			}
+-			if id, ok := m["id"].(string); ok {
++			e["realm"] = "cn"
++			e["accounts"] = accountRefsToJSON(accs) // 补丁 0009：透出可跑该模型的账号清单
++			if id != "" {
+ 				e["id"] = "cn:" + id
+ 				// P0：静态兜底分支同样按 CN 静态档位表透出 effort 能力（远端不可用时的可发现性）。
+ 				if efforts, def := upstream.EffortListing("cn", id, nil, ""); efforts != nil {
+@@ -274,25 +295,35 @@ func (h *Handler) modelList() []map[string]any {
+ 	// 名单 = 探测结果 ∪ §7.2 静态（fetchGlobalModels 内合并去重）；无 global 账号时
+ 	// 直接静态名单且零上游调用。
+ 	if h.cfg.GlobalEnabled {
+-		// global 域 effort 能力三级查找：探测下发桶（权威）→ 静态兜底表 → 省略。
+-		// 先 fetchGlobalModels（内部探测并落 effort 桶），再按 id 取快照。
+-		globalIDs := h.fetchGlobalModels()
+-		globalEfforts, globalDefaults := h.cfg.Upstream.GlobalEffortSnapshot()
+-		for _, id := range globalIDs {
+-			entry := map[string]any{
+-				"id":             "global:" + id,
+-				"object":         "model",
+-				"created":        1753600000,
+-				"owned_by":       "workbuddy",
+-				"context_length": 131072,
+-			}
+-			if efforts, def := upstream.EffortListing("global", id, globalEfforts[id], globalDefaults[id]); efforts != nil {
+-				entry["reasoning_supported_efforts"] = efforts
+-				if def != "" {
+-					entry["reasoning_default_effort"] = def
++		// 补丁 0009：global 域内无任何可选账号时整域不列（零可用才隐藏），
++		// 且在探测前 gate，避免无可用 global 账号时仍发起上游探测。
++		if h.cfg.Pool.HasAvailableAccountForModelRealm("", "global") {
++			// global 域 effort 能力三级查找：探测下发桶（权威）→ 静态兜底表 → 省略。
++			// 先 fetchGlobalModels（内部探测并落 effort 桶），再按 id 取快照。
++			globalIDs := h.fetchGlobalModels()
++			globalEfforts, globalDefaults := h.cfg.Upstream.GlobalEffortSnapshot()
++			for _, id := range globalIDs {
++				accs := h.cfg.Pool.AvailableAccountsForModelRealm(id, "global")
++				if len(accs) == 0 {
++					continue // 补丁 0009：该模型在全部 global 账号上不可选 → 隐藏
++				}
++				entry := map[string]any{
++					"id":             "global:" + id,
++					"object":         "model",
++					"created":        1753600000,
++					"owned_by":       "workbuddy",
++					"context_length": 131072,
++					"realm":          "global",
++					"accounts":       accountRefsToJSON(accs),
++				}
++				if efforts, def := upstream.EffortListing("global", id, globalEfforts[id], globalDefaults[id]); efforts != nil {
++					entry["reasoning_supported_efforts"] = efforts
++					if def != "" {
++						entry["reasoning_default_effort"] = def
++					}
+ 				}
++				out = append(out, entry)
+ 			}
+-			out = append(out, entry)
+ 		}
+ 	}
+ 	return out
+@@ -631,6 +662,10 @@ func (h *Handler) chatCompletions(w http.ResponseWriter, r *http.Request) {
+ 		if sessKey != "" && h.cfg.Session != nil {
+ 			h.cfg.Session.Bind(sessKey, acct.UID)
+ 		}
++		// 归属标签（补丁 0009）：成功响应告知客户端本次实际使用的账号与平台域，
++		// 供公共 API 客户端与控制台对话测试展示「用的哪个号 / 哪个平台」。
++		// 仅成功路径透出；末端错误规范化路径（见下）保持不泄露账号语义。
++		setAccountHeaders(w, acct)
+ 		if peek.Stream {
+ 			// 流式：透传结束后立即关闭上游 body，避免 defer 在轮转场景下堆积 fd。
+ 			st.status = http.StatusOK
+diff --git a/internal/server/handler_effort_models_test.go b/internal/server/handler_effort_models_test.go
+index 789a3f7..0fca3df 100644
+--- a/internal/server/handler_effort_models_test.go
++++ b/internal/server/handler_effort_models_test.go
+@@ -14,7 +14,8 @@ import (
+ func TestModelListEffortFieldsStaticCN(t *testing.T) {
+ 	resetModelsCache()
+ 	// 无 CN 健康号触发动态拉取 → 走静态表分支。
+-	h := NewHandler(Config{Pool: testPoolWith(), Upstream: upstream.New(), GlobalEnabled: false})
++	// 补丁 0009：静态表仍要求 CN 域存在可选账号（零可用整域隐藏），故挂一个健康 CN 号。
++	h := NewHandler(Config{Pool: testPoolWith(&auth.Auth{UID: "u1", AccessToken: "at", ExpiresAt: 9999999999}), Upstream: upstream.New(), GlobalEnabled: false})
+ 
+ 	got := h.modelList()
+ 	var target map[string]any
+@@ -158,7 +159,8 @@ func TestModelListEffortFieldsGlobalRemote(t *testing.T) {
+ // 既有字段 id/object/created/owned_by/context_length 保持原样（新增字段不删不改）。
+ func TestModelsEndpointFullJSONLockExistingKeys(t *testing.T) {
+ 	resetModelsCache()
+-	h := NewHandler(Config{Pool: testPoolWith(), Upstream: upstream.New(), GlobalEnabled: false})
++	// 补丁 0009：静态表分支要求 CN 域存在可选账号，挂一个健康 CN 号。
++	h := NewHandler(Config{Pool: testPoolWith(&auth.Auth{UID: "u1", AccessToken: "at", ExpiresAt: 9999999999}), Upstream: upstream.New(), GlobalEnabled: false})
+ 	// modelList 直接产出（跳过 HTTP 序列化，验证数据结构本身）。
+ 	got := h.modelList()
+ 	for _, m := range got {
+diff --git a/internal/server/handler_global_models_test.go b/internal/server/handler_global_models_test.go
+index d3b0516..c9f3a30 100644
+--- a/internal/server/handler_global_models_test.go
++++ b/internal/server/handler_global_models_test.go
+@@ -140,7 +140,8 @@ func TestModelListTwoFamilies(t *testing.T) {
+ 	// fetchDynamicModels 会失败回退静态——这里不断言 CN 调用，避免耦合 CN 缓存重置时序）。
+ }
+ 
+-// TestModelListNoGlobalAccountZeroProbe 无 global 账号：直接静态名单，探测零调用。
++// TestModelListNoGlobalAccountZeroProbe 无 global 账号：补丁 0009 起整个 global 域
++// 不列（零可用才隐藏），且探测前 gate → 探测零调用。
+ func TestModelListNoGlobalAccountZeroProbe(t *testing.T) {
+ 	auth.SetGlobalEnabled(true)
+ 	t.Cleanup(func() { auth.SetGlobalEnabled(true) })
+@@ -153,18 +154,11 @@ func TestModelListNoGlobalAccountZeroProbe(t *testing.T) {
+ 	h := NewHandler(Config{Pool: p, Upstream: cf.up, GlobalEnabled: true})
+ 
+ 	got := h.modelList()
+-	var globIDs []string
+ 	for _, m := range got {
+ 		if id, ok := m["id"].(string); ok && strings.HasPrefix(id, "global:") {
+-			globIDs = append(globIDs, strings.TrimPrefix(id, "global:"))
++			t.Fatalf("no-global-account: global model %q must be hidden (patch 0009 zero-availability filter)", id)
+ 		}
+ 	}
+-	if len(globIDs) != len(upstream.GlobalModelNames) {
+-		t.Fatalf("no-global-account: global ids=%d want %d (static only)", len(globIDs), len(upstream.GlobalModelNames))
+-	}
+-	if !reflect.DeepEqual(globIDs, upstream.GlobalModelNames) {
+-		t.Errorf("no-global-account: global names != static GlobalModelNames")
+-	}
+ 	cnt, _, _, _ := cf.snapshot()
+ 	if cnt != 0 {
+ 		t.Errorf("no-global-account: probe calls=%d want 0 (zero upstream calls)", cnt)
+diff --git a/internal/server/handler_global_test.go b/internal/server/handler_global_test.go
+index 14bc9f1..58d0edd 100644
+--- a/internal/server/handler_global_test.go
++++ b/internal/server/handler_global_test.go
+@@ -62,10 +62,18 @@ func newRealmFake(t *testing.T) *realmFake {
+ // TestModelsGlobalListGating 断言 global 名单（§7.2 21 名）在 GlobalEnabled=true（缺省）时
+ // 列出（带 global: 前缀）、false（逃生门）时不出现——CN 模型恒加 cn: 前缀。
+ func TestModelsGlobalListGating(t *testing.T) {
+-	// 关闭动态（无健康 CN 账号）→ 回退静态表，便于精确计数。
++	// 关闭动态（CN 号走静态表探测失败路径），便于精确计数。
++	// 补丁 0009：global 名单要求池内存在可选 global 账号（零可用整域隐藏），故挂 g1；
++	// 探测走本地 fake（500 → 回落静态 21 名），绝不外连。
++	auth.SetGlobalEnabled(true)
++	t.Cleanup(func() { auth.SetGlobalEnabled(true) })
+ 	resetModelsCache()
+-	p := testPoolWith(&auth.Auth{UID: "u1", AccessToken: "at", ExpiresAt: 9999999999})
+-	up := upstream.New()
++	cf := newGlobalModelsHandlerFake(t, 500, `{"code":500,"msg":"boom"}`)
++	p := testPoolWith(
++		&auth.Auth{UID: "u1", AccessToken: "at", ExpiresAt: 9999999999},
++		&auth.Auth{UID: "g1", AccessToken: "at_gl", Domain: "www.workbuddy.ai", ExpiresAt: 9999999999},
++	)
++	up := cf.up
+ 	h := NewHandler(Config{Pool: p, Upstream: up, GlobalEnabled: true})
+ 	data := h.modelList()
+ 

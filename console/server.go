@@ -24,10 +24,15 @@ import (
 var webFiles embed.FS
 
 type Config struct {
-	CoreURL      *url.URL
-	AdminKey     string
-	APIKey       string // Only exposed by the authenticated, CSRF-protected access endpoint.
-	BridgeKey    string
+	CoreURL  *url.URL
+	ZCodeURL *url.URL // Optional second upstream for glm-* models; nil disables routing.
+	ZCodeKey string   // Replaces Authorization when forwarding to ZCodeURL.
+	// ZCodeControlURL is the zcode-proxy localhost control API (POST /control).
+	// nil keeps the Zcode tab read-only; set it to drive login/enable/disable/logout in-page.
+	ZCodeControlURL *url.URL
+	AdminKey string
+	APIKey   string // Only exposed by the authenticated, CSRF-protected access endpoint.
+	BridgeKey string
 	PublicOrigin string
 	// TrustedProxyCIDRs lists proxies allowed to name the client in X-Forwarded-For.
 	// It is consumed by the login limiter only; same-origin and CSRF checks keep using the connection peer.
@@ -54,6 +59,9 @@ type server struct {
 	limits   map[string]loginLimit
 	client   *http.Client
 	trusted  []*net.IPNet
+	// zcodeClient fetches both /v1/models lists for the merged public endpoint. It has no
+	// overall timeout so slow core model probes keep the same semantics as the plain proxy path.
+	zcodeClient *http.Client
 	// httpsEnabled is derived from PublicOrigin and only gates HSTS; it is not an auth check.
 	httpsEnabled bool
 }
@@ -61,6 +69,12 @@ type server struct {
 func NewServer(cfg Config) (http.Handler, error) {
 	if cfg.CoreURL == nil || !validOriginURL(cfg.CoreURL) {
 		return nil, errors.New("WB2A_CORE_URL 必须是无凭据、路径、查询和片段的 HTTP(S) 地址")
+	}
+	if cfg.ZCodeURL != nil && !validOriginURL(cfg.ZCodeURL) {
+		return nil, errors.New("WB2A_ZCODE_URL 必须是无凭据、路径、查询和片段的 HTTP(S) 地址")
+	}
+	if cfg.ZCodeControlURL != nil && !validOriginURL(cfg.ZCodeControlURL) {
+		return nil, errors.New("WB2A_ZCODE_CONTROL_URL 必须是无凭据、路径、查询和片段的 HTTP(S) 地址")
 	}
 	if !ValidateAdminOrigin(cfg.PublicOrigin) {
 		return nil, errors.New("WB2A_PUBLIC_ORIGIN 必须是有效的 HTTP(S) origin")
@@ -71,6 +85,11 @@ func NewServer(cfg Config) (http.Handler, error) {
 	target := *cfg.CoreURL
 	target.Path = ""
 	cfg.CoreURL = &target
+	if cfg.ZCodeURL != nil {
+		zcodeTarget := *cfg.ZCodeURL
+		zcodeTarget.Path = ""
+		cfg.ZCodeURL = &zcodeTarget
+	}
 	cfg.PublicOrigin = strings.TrimRight(cfg.PublicOrigin, "/")
 	var trusted []*net.IPNet
 	for _, raw := range strings.Split(cfg.TrustedProxyCIDRs, ",") {
@@ -87,7 +106,7 @@ func NewServer(cfg Config) (http.Handler, error) {
 		}
 		trusted = append(trusted, network)
 	}
-	h := &server{cfg: cfg, mux: http.NewServeMux(), sessions: map[string]*adminSession{}, limits: map[string]loginLimit{}, client: &http.Client{Timeout: 3 * time.Second, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}, trusted: trusted, httpsEnabled: strings.HasPrefix(cfg.PublicOrigin, "https://")}
+	h := &server{cfg: cfg, mux: http.NewServeMux(), sessions: map[string]*adminSession{}, limits: map[string]loginLimit{}, client: &http.Client{Timeout: 3 * time.Second, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}, zcodeClient: &http.Client{CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}, trusted: trusted, httpsEnabled: strings.HasPrefix(cfg.PublicOrigin, "https://")}
 	assets, err := fs.Sub(webFiles, "web")
 	if err != nil {
 		return nil, err
@@ -101,7 +120,12 @@ func NewServer(cfg Config) (http.Handler, error) {
 		writeJSON(w, 200, map[string]string{"service": "workbuddy2api-console", "status": "running"})
 	})
 	public := h.proxy(false)
-	h.mux.Handle("/v1/", public)
+	if cfg.ZCodeURL != nil {
+		routed := h.publicRouter(public, h.zcodeProxy())
+		h.mux.Handle("/v1/", routed)
+	} else {
+		h.mux.Handle("/v1/", public)
+	}
 	h.mux.Handle("GET /status", public)
 	h.mux.Handle("GET /healthz", public)
 	h.mux.HandleFunc("POST /admin/login", h.adminLogin)
@@ -111,9 +135,16 @@ func NewServer(cfg Config) (http.Handler, error) {
 			adminError(w, 503, err.Error())
 			return
 		}
-		writeJSON(w, 200, map[string]any{"csrf": sessionFrom(r).csrf, "global_enabled": info.GlobalEnabled})
+		writeJSON(w, 200, map[string]any{"csrf": sessionFrom(r).csrf, "global_enabled": info.GlobalEnabled, "zcode_enabled": cfg.ZCodeURL != nil})
 	}))
 	h.mux.HandleFunc("POST /admin/logout", h.withAdmin(h.adminLogout))
+	h.mux.HandleFunc("GET /admin/zcode", h.withAdmin(h.adminZcodeStatus))
+	h.mux.HandleFunc("POST /admin/zcode/chat", h.withAdmin(h.adminZcodeChat))
+	h.mux.HandleFunc("POST /admin/zcode/login", h.withAdmin(h.adminZcodeLogin))
+	h.mux.HandleFunc("POST /admin/zcode/config", h.withAdmin(h.adminZcodeConfig))
+	h.mux.HandleFunc("POST /admin/zcode/enable", h.withAdmin(h.adminZcodeEnable))
+	h.mux.HandleFunc("POST /admin/zcode/disable", h.withAdmin(h.adminZcodeDisable))
+	h.mux.HandleFunc("POST /admin/zcode/logout", h.withAdmin(h.adminZcodeLogout))
 	h.mux.HandleFunc("POST /admin/access", h.withAdmin(func(w http.ResponseWriter, r *http.Request) {
 		if _, err := h.coreInfo(r.Context()); err != nil {
 			adminError(w, 503, err.Error())
@@ -344,7 +375,7 @@ func (h *server) adminLogin(w http.ResponseWriter, r *http.Request) {
 	http.SetCookie(w, &http.Cookie{Name: "wb2a_admin", Value: id, Path: "/admin", HttpOnly: true, Secure: r.TLS != nil || strings.HasPrefix(h.cfg.PublicOrigin, "https://"), SameSite: http.SameSiteStrictMode, MaxAge: 8 * 3600})
 	// Authentication remains available during a core outage; actions still fail closed.
 	info, _ := h.coreInfo(r.Context())
-	writeJSON(w, 200, map[string]any{"csrf": csrf, "global_enabled": info.GlobalEnabled})
+	writeJSON(w, 200, map[string]any{"csrf": csrf, "global_enabled": info.GlobalEnabled, "zcode_enabled": h.cfg.ZCodeURL != nil})
 }
 func (h *server) adminLogout(w http.ResponseWriter, r *http.Request) {
 	h.mu.Lock()

@@ -30,6 +30,7 @@ console（独立 Go 服务，内嵌 HTML/CSS/JavaScript）
 
 - **core**：固定上游加扩展和补丁，负责账号池、公共 API、OAuth、任务执行及持久化。不得为控制台另建账号池或调度器。
 - **console**：负责网页、管理认证和代理；不加载账号凭据，不直接执行签到等业务。
+- 可选并列 zcode-proxy（`deploy/compose.zcode.yml`，默认不启动）：console 公共 `/v1/chat/completions`、`/v1/messages`、`/v1/responses` 按请求 `model` 的 `glm-` 前缀分流到 zcode-proxy，`/v1/models` 合并两个上游列表；由 `WB2A_ZCODE_URL` 开关，未设置时公共出口与现状完全一致。core 固定上游语义不变，console 不为 zcode 建账号池或调度。`/admin/*` 管理链路默认不经过 zcode-proxy，仅网页 Zcode 页签的 `/admin/zcode`、`/admin/zcode/chat` 两端点直连它（console 注入 `WB2A_ZCODE_KEY`，剥离管理 Cookie、CSRF 与部署 API Key；对话端点强制校验 `glm-` 前缀，不作为通用转发口）。overlay 下 zcode-proxy 以 android entry 常驻并 `network_mode: service:console` 共享 console 网络命名空间，代理与控制 API 均只监听 `127.0.0.1`；`WB2A_ZCODE_CONTROL_URL` 配置后，页签经 `/admin/zcode/login|config|enable|disable|logout` 驱动容器进程内 OAuth 登录、provider/plan 档位切换与代理启停（console 零 Docker 权限，与 WorkBuddy 桥接授权同构；plan 仅 `coding-plan`/`start-plan`，运行中上游拒绝变更），未配置时页签退化为只读状态展示。
 - 仅 console 发布宿主端口。core 只在 Compose 网络内访问；console 仅只读挂载密钥目录，不挂载账号和状态目录。
 - 当前 README 重点介绍 `/v1/models`、`/v1/chat/completions` 与流式调用；不得把“OpenAI 兼容”宣传为完整覆盖所有 OpenAI API 或客户端功能。
 - `/v1/messages` 由 core 的 Anthropic 文本适配器在进程内复用原 OpenAI Handler；不另建账号池、HTTP 回环或协议代理服务。只在启用 core 桥接的分支包装，未启用桥接的源码模式保持原 Handler。
@@ -42,14 +43,14 @@ console（独立 Go 服务，内嵌 HTML/CSS/JavaScript）
 | `extensions/cmd/server/extension.go` | core 初始化、密钥、桥接和任务生命周期接线。 |
 | `extensions/internal/bridge/` | 内部管理接口，复用公共能力。 |
 | `extensions/internal/anthropic/` | Messages 文本请求、普通响应与增量 SSE 适配，传递取消与真实用量。 |
-| `extensions/internal/oauth/`、`extensions/internal/pool/` | 授权流程、账号热加载等扩展。 |
+| `extensions/internal/oauth/`、`extensions/internal/pool/` | 授权流程、账号热加载等扩展；`pool/availability.go` 提供补丁 0009 的按模型可用性静态健康口径。 |
 | `extensions/internal/scheduler/`、`extensions/internal/taskrun/` | 任务目录、执行观察、单运行器和持久历史。 |
-| `extensions/internal/server/`、`extensions/internal/session/`、`extensions/internal/usagelog/` | 补丁 0006-0008 配套的扩展文件与回归测试（`wafip.go`、`session_gc_race_test.go`、调用统计账本），移除条件见 `patches/README.md`。 |
+| `extensions/internal/server/`、`extensions/internal/session/`、`extensions/internal/usagelog/` | 补丁 0006-0009 配套的扩展文件与回归测试（`wafip.go`、`session_gc_race_test.go`、调用统计账本、`account_header.go` 与 `model_filter_test.go` 的归属头），移除条件见 `patches/README.md`。 |
 | `extensions/scripts/` | Python 任务结果事件与测试。 |
 | `patches/series`、`patches/README.md` | 补丁顺序、修改原因、验证方式和移除条件。 |
-| `console/main.go`、`console/server.go`、`console/proxy.go` | 配置、管理会话、路由与代理。 |
+| `console/main.go`、`console/server.go`、`console/proxy.go` | 配置、管理会话、路由与代理；`console/zcode.go` 为可选 glm- 分流与模型列表合并，`console/zcodecontrol.go` 为页签内登录/启停控制链路。 |
 | `console/web/`、`console/web_test.cjs` | 无前端框架的页面资源及 Node 测试；通过 Go embed 打包。 |
-| `deploy/` | Dockerfile、core 镜像启动入口、配置和隔离验收工具。 |
+| `deploy/` | Dockerfile、core 镜像启动入口、配置、可选 zcode-proxy overlay 和隔离验收工具。 |
 | `scripts/overlay.py` | 源码物化、补丁标识和上游更新。 |
 | `scripts/check.sh`、`scripts/acceptance.sh` | 本地检查和真实容器隔离验收。 |
 | `scripts/release.sh`、`scripts/release.py` | 时间戳镜像发布入口与实现。 |

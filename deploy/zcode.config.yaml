@@ -1,0 +1,38 @@
+# GLM 通道（zcode-proxy）配置模板。
+# 用法：复制到 runtime/zcode/config.yaml 后按需修改，再叠加 deploy/compose.zcode.yml 启动。
+# 缺失时容器会回退内置模板（监听 0.0.0.0），与页签内管理链路不符，因此必须放置本文件。
+server:
+  port: 8080
+  # 共享 console 网络命名空间后仅本机可达；不要改成 0.0.0.0。
+  host: "127.0.0.1"
+
+auth:
+  # 代理本身不设客户端密钥：流量只来自同命名空间内的 console，
+  # 公共出口仍由部署 API Key 鉴权。
+  proxyApiKey: null
+
+# 服务商：bigmodel（智谱国内编码套餐）或 zai（Z.AI 国际站）。页签登录也可指定。
+provider: bigmodel
+plan: coding-plan
+
+defaultModel: glm-4.6
+
+models:
+  - glm-4.5-air
+  - glm-4.6
+  - glm-4.6v
+  - glm-4.7
+  - glm-5
+  - glm-5-turbo
+  - glm-5v-turbo
+  - glm-5.1
+  - glm-5.2
+  - glm-5.3
+  - glm-5.3-flash
+
+# 关闭自动领取周末试用包：避免后台调度产生账号侧副作用，行为以页签操作为准。
+claim:
+  enabled: false
+
+logging:
+  level: info

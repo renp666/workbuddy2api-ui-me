@@ -37,7 +37,7 @@ test('malformed SSE cancels the live request and restores controls', async () =>
 
 function logoutFixture(fetch) {
   const elements = new Map();
-  const element = () => ({value:'', type:'password', hidden:false, textContent:'', children:[], handlers:{},
+  const element = () => ({value:'', type:'password', hidden:false, textContent:'', children:[], handlers:{}, classList:{toggle(){},add(){},remove(){}},
     addEventListener(name, fn){this.handlers[name]=fn;},
     replaceChildren(...children){this.children=children;}, select(){}});
   const get = id => {if(!elements.has(id))elements.set(id,element());return elements.get(id);};
@@ -91,18 +91,19 @@ test('task truth and all run statuses are formatted without guessing', () => {
 function taskFixture(fetch, cryptoImpl={randomUUID:()=> '11111111-2222-4333-8444-555555555555'}) {
   const elements=new Map();
   function element(tag='div') {
-    return {tagName:tag.toUpperCase(),value:'',type:'',hidden:false,disabled:false,textContent:'',className:'',children:[],dataset:{},handlers:{},
+    return {tagName:tag.toUpperCase(),value:'',type:'',hidden:false,disabled:false,textContent:'',className:'',children:[],dataset:{},handlers:{},classList:{toggled:{},toggle(name,on){this.toggled[name]=on;},add(name){this.toggled[name]=true;},remove(name){delete this.toggled[name];}},
       addEventListener(name,fn){this.handlers[name]=fn;},append(...children){this.children.push(...children);},appendChild(child){this.children.push(child);return child;},
       replaceChildren(...children){this.children=children;},setAttribute(name,value){this[name]=value;},insertBefore(child){this.children.unshift(child);},querySelector(){return null;},scrollIntoView(){},select(){}};
   }
   const get=id=>{if(!elements.has(id))elements.set(id,element());return elements.get(id);};
   const protocolButtons=['access-openai','access-anthropic','chat-openai','chat-anthropic'].map(id=>{const button=get(id);button.dataset.protocol=id.split('-')[1];return button;});
+  const opened=[];
   const ctx=vm.createContext({document:{getElementById:get,querySelectorAll:selector=>selector==='[data-protocol]'?protocolButtons:[],createElement:element,hidden:false,handlers:{},addEventListener(name,fn){this.handlers[name]=fn;}},
     location:{origin:'http://console.test'},AbortController,TextDecoder,TextEncoder,Option:function(text,value){return {textContent:text,value};},
-    setInterval(){},clearTimeout(){},setTimeout(){},fetch,crypto:cryptoImpl,navigator:{clipboard:{writeText:async()=>{}}}});
+    setInterval(){},clearTimeout(){},setTimeout(){},fetch,crypto:cryptoImpl,navigator:{clipboard:{writeText:async()=>{}}},window:{open(url){const w={closed:false,location:{href:url||''},close(){this.closed=true;}};opened.push(w);return w;}}});
   vm.runInContext(readFileSync(__dirname+'/web/app.js','utf8'),ctx);
   vm.runInContext("csrf='active-csrf';page='tasks';taskState={items:[{id:'checkin',enabled:true,hours:[9,21],timezone:'Asia/Shanghai',next_at:null}],active_run:null,latest_runs:[]};",ctx);
-  return {ctx,get};
+  return {ctx,get,opened};
 }
 
 test('rapid task activation sends once and an unknown response retries the same intent id', async () => {
@@ -415,13 +416,13 @@ test('a current-session 401 still clears local authentication', async () => {
   assert.equal(get('login-view').hidden,false);
 });
 
-function chatFixture(chunks, status=200) {
+function chatFixture(chunks, status=200, headers={}) {
   const requests=[];
   const fixture=taskFixture(async (url,options)=>{
     if(url==='/admin/session'||url==='/admin/status')return new Promise(()=>{});
     requests.push({url,...options});
     let index=0;
-    return {ok:status===200,status,json:async()=>({error:{message:'安全错误'}}),body:{getReader:()=>({read:async()=>index<chunks.length?{value:chunks[index++],done:false}:{done:true}})}};
+    return {ok:status===200,status,json:async()=>({error:{message:'安全错误'}}),headers:{get:(name)=>headers[String(name).toLowerCase()]??null},body:{getReader:()=>({read:async()=>index<chunks.length?{value:chunks[index++],done:false}:{done:true}})}};
   });
   fixture.get('model').value='global:claude-sonnet-4.6';
   fixture.get('access-model').value='global:claude-sonnet-4.6';
@@ -462,6 +463,19 @@ test('protocol buttons synchronize, preserve same-protocol history and generate 
   get('prompt').value='private draft';get('usage').textContent='private stream error';
   vm.runInContext('signedOut()',ctx);assert.equal(vm.runInContext('protocol',ctx),'openai');assert.equal(get('api-key').value,'');assert.equal(get('prompt').value,'');assert.equal(get('usage').textContent,'用量将在上游返回后显示');
   assert.doesNotMatch(get('protocol-support').textContent,/Beta 测试/);
+});
+
+test('chat usage line shows the serving account and platform from attribution headers', async()=>{
+  const ok=[sse({choices:[{delta:{content:'hi'}}]},{choices:[{delta:{}}],usage:{prompt_tokens:1,completion_tokens:1,total_tokens:2}},'[DONE]')];
+  const withHeaders=chatFixture(ok,200,{'x-account':'alice','x-account-realm':'global'});
+  await withHeaders.submit();
+  assert.match(withHeaders.get('usage').textContent,/本次账号：alice（国际版）/);
+  const cnHeaders=chatFixture(ok,200,{'x-account':'u-cn','x-account-realm':'cn'});
+  await cnHeaders.submit();
+  assert.match(cnHeaders.get('usage').textContent,/本次账号：u-cn（国内版）/);
+  const none=chatFixture(ok);
+  await none.submit();
+  assert.doesNotMatch(none.get('usage').textContent,/本次账号/);
 });
 
 test('Anthropic fragmented UTF8 stream uses management envelope and preserves real usage and multi-turn text', async()=>{
@@ -539,6 +553,56 @@ test('refresh populates both model selects from server data, preserves choices a
   models=[];await vm.runInContext('refreshModels()',ctx);assert.equal(get('copy-example').disabled,true);assert.equal(get('go-chat').disabled,true);
 });
 
+test('access and chat model options carry a platform realm label from the model tag',async()=>{
+  let models=[{id:'cn:workbuddy',realm:'cn'},{id:'global:claude',realm:'global'}];
+  const {ctx,get}=taskFixture(url=>url==='/admin/models'?Promise.resolve({ok:true,status:200,json:async()=>({data:models})}):new Promise(()=>{}));
+  await vm.runInContext('refreshModels()',ctx);
+  const chatLabels=get('model').children.map(o=>o.textContent);
+  assert.deepEqual(chatLabels,['国内版 · cn:workbuddy','国际版 · global:claude']);
+  assert.deepEqual(get('access-model').children.map(o=>o.textContent),chatLabels,'access select labels differ');
+  assert.deepEqual(get('access-model').children.map(o=>o.value),['cn:workbuddy','global:claude'],'option value must stay the bare id');
+});
+
+test('model options append an account-count suffix only for multi-account models',async()=>{
+  let models=[{id:'cn:workbuddy',realm:'cn',accounts:[{uid:'u1',nickname:'alice'},{uid:'u2'}]},{id:'cn:solo',realm:'cn',accounts:[{uid:'u1'}]},{id:'glm-5.3-flash',realm:'glm'}];
+  const {ctx,get}=taskFixture(url=>url==='/admin/models'?Promise.resolve({ok:true,status:200,json:async()=>({data:models})}):new Promise(()=>{}));
+  await vm.runInContext('refreshModels()',ctx);
+  assert.deepEqual(get('model').children.map(o=>o.textContent),['国内版 · cn:workbuddy · 2账号','国内版 · cn:solo','GLM·智谱 · glm-5.3-flash']);
+  assert.deepEqual(get('access-model').children.map(o=>o.textContent),get('model').children.map(o=>o.textContent),'access labels differ');
+});
+
+test('access model select merges GLM channel models and routes glm go-chat to the zcode tab',async()=>{
+  const {ctx,get}=zcodeFixture({enabled:true,reachable:true,model_count:1,models:[{id:'glm-5.3-flash',realm:'glm'}]});
+  vm.runInContext("modelList=[{id:'cn:workbuddy',realm:'cn'}]",ctx);
+  await vm.runInContext('loadZcode()',ctx);
+  assert.deepEqual(get('access-model').children.map(o=>o.value),['cn:workbuddy','glm-5.3-flash'],'glm model missing from access select');
+  assert.deepEqual(get('access-model').children.map(o=>o.textContent),['国内版 · cn:workbuddy','GLM·智谱 · glm-5.3-flash']);
+  get('access-model').value='glm-5.3-flash';vm.runInContext('renderAccess()',ctx);
+  assert.equal(get('copy-example').disabled,false,'glm example stayed disabled');
+  assert.match(get('api-example').textContent,/zcode 通道/);
+  vm.runInContext("zcodeModels=['glm-5.3-flash']",ctx);
+  get('go-chat').handlers.click();
+  assert.equal(vm.runInContext('page',ctx),'zcode','glm go-chat did not route to the zcode tab');
+});
+
+test('access tab lazily loads zcode status once so glm models appear without visiting the tab',async()=>{
+  const urls=[];
+  const {ctx,get}=zcodeFixture({enabled:true,reachable:true,model_count:1,models:[{id:'glm-5.3-flash'}]});
+  ctx.fetch=async(url,options={})=>{
+    urls.push(url);
+    if(url==='/admin/zcode')return {ok:true,status:200,json:async()=>({enabled:true,reachable:true,model_count:1,models:[{id:'glm-5.3-flash'}]})};
+    if(url==='/admin/status')return {ok:true,status:200,json:async()=>({total:0,healthy:0,cooling:0,disabled:0,accounts:[]})};
+    if(url==='/admin/models')return {ok:true,status:200,json:async()=>({data:[{id:'cn:workbuddy',realm:'cn'}]})};
+    throw new Error('unexpected '+url);
+  };
+  await vm.runInContext("signedIn({csrf:'c',global_enabled:true,zcode_enabled:true})",ctx);
+  assert.ok(!urls.includes('/admin/zcode'),'zcode status fetched eagerly at login');
+  vm.runInContext("showPage('access')",ctx);
+  await new Promise(r=>setImmediate(r));
+  assert.ok(urls.includes('/admin/zcode'),'access tab did not trigger the lazy zcode status load');
+  assert.ok(get('access-model').children.map(o=>o.value).includes('glm-5.3-flash'),'glm model absent after lazy load');
+});
+
 test('access curl quotes JSON model strings without executing shell metacharacters',()=>{
   const {ctx,get}=taskFixture(()=>new Promise(()=>{}));
   const model='global:quote\'$(not-executed)"';ctx.actualModel=model;
@@ -561,4 +625,193 @@ test('server-provided task and flow ids cannot reshape the admin request path',a
   const encoded=encodeURIComponent(hostile);
   assert.deepEqual(urls.filter(url=>url.startsWith('/admin/tasks/')),[`/admin/tasks/${encoded}/runs`]);
   assert.deepEqual(urls.filter(url=>url.startsWith('/admin/oauth/')),[`/admin/oauth/${encoded}/poll`,`/admin/oauth/${encoded}/region`]);
+});
+
+function zcodeFixture(zcodeStatus) {
+  const response=body=>({ok:true,status:200,json:async()=>body});
+  const {ctx,get,opened}=taskFixture(url=>{
+    if(url==='/admin/session')return new Promise(()=>{});
+    if(url==='/admin/status')return response({total:0,healthy:0,cooling:0,disabled:0,accounts:[]});
+    if(url==='/admin/models')return response({data:[]});
+    if(url==='/admin/zcode')return response(zcodeStatus);
+    throw new Error('unexpected '+url);
+  });
+  get('realm').querySelector=()=>({disabled:false});
+  return {ctx,get,opened};
+}
+
+test('zcode tab greys out and shows the disabled notice when the channel is off',async()=>{
+  const {ctx,get}=zcodeFixture({enabled:false});
+  await vm.runInContext("signedIn({csrf:'c',global_enabled:true,zcode_enabled:false})",ctx);
+  assert.equal(get('nav-zcode').classList.toggled['nav-muted'],true,'disabled channel left the tab fully lit');
+  await vm.runInContext('loadZcode()',ctx);
+  assert.equal(get('zcode-disabled').hidden,false,'disabled notice stayed hidden');
+  assert.equal(get('zcode-content').hidden,true,'enabled content showed while disabled');
+});
+
+test('zcode tab renders status badge, model table and model select when reachable',async()=>{
+  const {ctx,get}=zcodeFixture({enabled:true,reachable:true,model_count:2,models:[{id:'glm-5.2'},{id:'glm-4.7'}]});
+  await vm.runInContext("signedIn({csrf:'c',global_enabled:true,zcode_enabled:true})",ctx);
+  assert.equal(get('nav-zcode').classList.toggled['nav-muted'],false,'enabled channel greyed the tab');
+  await vm.runInContext('loadZcode()',ctx);
+  assert.equal(get('zcode-disabled').hidden,true);
+  assert.equal(get('zcode-content').hidden,false);
+  assert.equal(get('zcode-status-badge').textContent,'在线');
+  assert.equal(get('zcode-models-body').children.length,2,'model table row count');
+  assert.deepEqual(get('zcode-model').children.map(option=>option.value),['glm-5.2','glm-4.7']);
+});
+
+test('zcode tab reports an unreachable channel without hiding the panel',async()=>{
+  const {ctx,get}=zcodeFixture({enabled:true,reachable:false,model_count:0,models:[]});
+  await vm.runInContext("signedIn({csrf:'c',global_enabled:true,zcode_enabled:true})",ctx);
+  await vm.runInContext('loadZcode()',ctx);
+  assert.equal(get('zcode-content').hidden,false);
+  assert.equal(get('zcode-status-badge').textContent,'不可达');
+  assert.equal(get('zcode-status-badge').className,'badge warn');
+});
+
+function controlFixture(statuses) {
+  const requests=[];
+  let index=0;
+  const response=body=>({ok:true,status:200,json:async()=>body});
+  const {ctx,get,opened}=zcodeFixture(statuses[0]);
+  ctx.fetch=async(url,options={})=>{
+    if(url==='/admin/zcode'){const status=statuses[Math.min(index,statuses.length-1)];index++;return response(status);}
+    if(url==='/admin/zcode/login'||url==='/admin/zcode/config'||url==='/admin/zcode/enable'||url==='/admin/zcode/disable'||url==='/admin/zcode/logout'){requests.push({url,body:options.body});return response(url==='/admin/zcode/login'?{authorize_url:'https://bigmodel.cn/oauth?state=x'}:{ok:true});}
+    if(url==='/admin/status')return response({total:0,healthy:0,cooling:0,disabled:0,accounts:[]});
+    if(url==='/admin/models')return response({data:[]});
+    if(url==='/admin/session')return new Promise(()=>{});
+    throw new Error('unexpected '+url);
+  };
+  let poll;
+  ctx.setTimeout=(fn,ms)=>{poll=fn;return 1;};
+  return {ctx,get,requests,opened,poll:()=>poll};
+}
+
+test('zcode control tab shows the login card and schedules polling while logged out',async()=>{
+  const {ctx,get}=controlFixture([{enabled:true,control:true,logged_in:false,proxy_running:false,provider:'bigmodel',reachable:false,model_count:0,models:[]}]);
+  await vm.runInContext("signedIn({csrf:'c',global_enabled:true,zcode_enabled:true})",ctx);
+  vm.runInContext("page='zcode'",ctx);
+  await vm.runInContext('loadZcode()',ctx);
+  assert.equal(get('zcode-view-login').hidden,false,'login tab missing while logged out');
+  assert.equal(get('zcode-pane-login').hidden,false,'did not auto-land on the login tab');
+  assert.equal(get('zcode-pane-status').hidden,true,'status pane stayed open over login');
+  assert.equal(get('zcode-enable').hidden,true,'enable showed before login');
+  assert.equal(get('zcode-view-models').hidden,true,'models tab offered before login');
+  assert.equal(get('zcode-status-badge').textContent,'未登录');
+  assert.ok(vm.runInContext('zcodePollTimer',ctx),'logged-out tab scheduled no status poll');
+});
+
+test('zcode login form posts the chosen provider, auto-opens the authorize page, and keeps manual provider choice',async()=>{
+  const {ctx,get,requests,opened}=controlFixture([
+    {enabled:true,control:true,logged_in:false,proxy_running:false,provider:'bigmodel',reachable:false,model_count:0,models:[]},
+    {enabled:true,control:true,logged_in:false,proxy_running:false,provider:'zai',reachable:false,model_count:0,models:[]},
+    {enabled:true,control:true,logged_in:false,proxy_running:false,provider:'zai',reachable:false,model_count:0,models:[]},
+  ]);
+  await vm.runInContext("signedIn({csrf:'c',global_enabled:true,zcode_enabled:true})",ctx);
+  vm.runInContext("page='zcode'",ctx);
+  await vm.runInContext('loadZcode()',ctx);
+  assert.equal(get('zcode-provider').value,'bigmodel','provider not prefilled from status');
+  // The user picks bigmodel explicitly; later polls reporting zai must not override it.
+  get('zcode-provider').value='bigmodel';
+  get('zcode-provider').handlers.change();
+  await vm.runInContext('loadZcode()',ctx);
+  assert.equal(get('zcode-provider').value,'bigmodel','poll after user interaction overrode the provider');
+  await get('zcode-login-form').handlers.submit({preventDefault(){}});
+  assert.equal(requests.length,1,'login issued no request');
+  assert.equal(requests[0].url,'/admin/zcode/login');
+  assert.deepEqual(JSON.parse(requests[0].body),{provider:'bigmodel'});
+  assert.equal(get('zcode-auth-row').hidden,false,'authorize link stayed hidden after login start');
+  assert.match(get('zcode-login-hint').textContent,/自动检查/);
+  const authorize=opened.find(w=>w.location.href==='https://bigmodel.cn/oauth?state=x');
+  assert.ok(authorize,'login did not auto-open the authorize page');
+});
+
+test('zcode enable action posts the command and the running state reveals the panels',async()=>{
+  const {ctx,get,requests}=controlFixture([
+    {enabled:true,control:true,logged_in:true,proxy_running:false,provider:'bigmodel',reachable:false,model_count:0,models:[]},
+    {enabled:true,control:true,logged_in:true,proxy_running:true,provider:'bigmodel',reachable:true,model_count:1,models:[{id:'glm-5.2'}]},
+  ]);
+  await vm.runInContext("signedIn({csrf:'c',global_enabled:true,zcode_enabled:true})",ctx);
+  vm.runInContext("page='zcode'",ctx);
+  await vm.runInContext('loadZcode()',ctx);
+  assert.equal(get('zcode-enable').hidden,false,'enable button missing in logged-in idle state');
+  assert.equal(get('zcode-view-login').hidden,true,'login tab offered after login');
+  assert.equal(vm.runInContext('zcodePollTimer',ctx),undefined,'idle logged-in tab polled status');
+  await get('zcode-enable').handlers.click();
+  assert.deepEqual(requests.map(item=>item.url),['/admin/zcode/enable']);
+  assert.equal(get('zcode-view-models').hidden,false,'models tab missing after enable');
+  assert.equal(get('zcode-view-chat').hidden,false,'chat tab missing after enable');
+  assert.equal(get('zcode-pane-models').hidden,true,'models pane opened without a click');
+  await get('zcode-view-models').handlers.click();
+  assert.equal(get('zcode-pane-models').hidden,false,'models pane stayed closed after clicking the tab');
+  assert.equal(get('zcode-pane-status').hidden,true,'status pane stayed open over models');
+  assert.equal(get('zcode-models-body').children.length,1,'model table not rendered');
+  assert.equal(get('zcode-status-badge').textContent,'在线');
+  assert.equal(get('zcode-disable').hidden,false,'disable button missing while running');
+});
+
+test('zcode plan select hides while running and posts setConfig when stopped',async()=>{
+  const {ctx,get,requests}=controlFixture([
+    {enabled:true,control:true,logged_in:true,proxy_running:true,provider:'bigmodel',plan:'coding-plan',reachable:true,model_count:1,models:[{id:'glm-5.2'}]},
+    {enabled:true,control:true,logged_in:true,proxy_running:false,provider:'bigmodel',plan:'coding-plan',reachable:false,model_count:0,models:[]},
+    {enabled:true,control:true,logged_in:true,proxy_running:false,provider:'bigmodel',plan:'start-plan',reachable:false,model_count:0,models:[]},
+  ]);
+  await vm.runInContext("signedIn({csrf:'c',global_enabled:true,zcode_enabled:true})",ctx);
+  vm.runInContext("page='zcode'",ctx);
+  await vm.runInContext('loadZcode()',ctx);
+  assert.equal(get('zcode-config-form').hidden,true,'plan switch showed while the proxy runs');
+  await vm.runInContext('loadZcode()',ctx);
+  assert.equal(get('zcode-config-form').hidden,false,'plan switch hidden while stopped');
+  assert.equal(get('zcode-plan').value,'coding-plan','plan not prefilled from status');
+  get('zcode-plan').value='start-plan';
+  get('zcode-plan').handlers.change();
+  await get('zcode-config-form').handlers.submit({preventDefault(){}});
+  assert.equal(requests[0].url,'/admin/zcode/config');
+  assert.deepEqual(JSON.parse(requests[0].body),{plan:'start-plan'});
+  // After the successful switch the next poll reports start-plan and the select follows.
+  assert.equal(get('zcode-plan').value,'start-plan','plan select did not follow the new status');
+});
+
+test('zcode logout needs a second confirming click',async()=>{
+  const {ctx,get,requests}=controlFixture([{enabled:true,control:true,logged_in:true,proxy_running:true,provider:'bigmodel',reachable:true,model_count:1,models:[{id:'glm-5.2'}]}]);
+  await vm.runInContext("signedIn({csrf:'c',global_enabled:true,zcode_enabled:true})",ctx);
+  vm.runInContext("page='zcode'",ctx);
+  await vm.runInContext('loadZcode()',ctx);
+  await get('zcode-logout').handlers.click();
+  assert.equal(requests.length,0,'first logout click sent a request');
+  assert.equal(get('zcode-logout').textContent,'再次点击确认退出');
+  await get('zcode-logout').handlers.click();
+  assert.deepEqual(requests.map(item=>item.url),['/admin/zcode/logout']);
+});
+
+test('zcode dialog posts a glm model to the admin proxy and streams the answer',async()=>{
+  const requests=[];
+  const {ctx,get}=zcodeFixture({enabled:true,reachable:true,model_count:1,models:[{id:'glm-5.2'}]});
+  ctx.fetch=async(url,options={})=>{
+    if(url==='/admin/zcode/chat'){
+      requests.push({url,...options});
+      const chunks=[new TextEncoder().encode('data: '+JSON.stringify({choices:[{delta:{content:'GLM'} }]})+'\n\n'),new TextEncoder().encode('data: '+JSON.stringify({choices:[{delta:{content:' reply'} }],usage:{prompt_tokens:1,completion_tokens:2,total_tokens:3}})+'\n\n'),new TextEncoder().encode('data: [DONE]\n\n')];
+      let index=0;
+      return {ok:true,status:200,body:{getReader:()=>({read:async()=>index<chunks.length?{value:chunks[index++],done:false}:{done:true}})}};
+    }
+    if(url==='/admin/status')return {ok:true,status:200,json:async()=>({total:0,healthy:0,cooling:0,disabled:0,accounts:[]})};
+    if(url==='/admin/models')return {ok:true,status:200,json:async()=>({data:[]})};
+    if(url==='/admin/zcode')return {ok:true,status:200,json:async()=>({enabled:true,reachable:true,model_count:1,models:[{id:'glm-5.2'}]})};
+    if(url==='/admin/session')return new Promise(()=>{});
+    throw new Error('unexpected '+url);
+  };
+  await vm.runInContext("signedIn({csrf:'c',global_enabled:true,zcode_enabled:true})",ctx);
+  await vm.runInContext('loadZcode()',ctx);
+  get('zcode-model').value='glm-5.2';
+  get('zcode-prompt').value='你好';
+  await get('zcode-form').handlers.submit({preventDefault(){}});
+  assert.equal(requests.length,1,'zcode dialog issued no request');
+  const body=JSON.parse(requests[0].body);
+  assert.equal(body.model,'glm-5.2');
+  assert.deepEqual(body.messages,[{role:'user',content:'你好'}]);
+  assert.equal(body.stream,true);
+  assert.match(vm.runInContext('zcodeHistory[1].content',ctx),/GLM reply/);
+  assert.match(get('zcode-usage').textContent,/输入 1 · 输出 2 · 总计 3/);
+  assert.equal(vm.runInContext('activeRequest',ctx),undefined,'zcode request left controls locked');
 });
