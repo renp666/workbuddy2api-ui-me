@@ -186,7 +186,7 @@ func TestCoreSourceModeRemainsUnchanged(t *testing.T) {
 	if _, err := os.Stat(cfg.AuthDir); !os.IsNotExist(err) {
 		t.Fatal("source mode initialized directory")
 	}
-	h, err := wrapCore(context.Background(), cfg, nil, nil, nil, public, nil, nil, nil)
+	h, err := wrapCore(context.Background(), cfg, nil, nil, nil, public, nil, nil, nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -223,7 +223,7 @@ func TestCoreAnthropicUsesSharedHandlerAndIsolatedCredentials(t *testing.T) {
 		}
 		io.WriteString(w, `{"id":"chatcmpl-core","choices":[{"message":{"role":"assistant","content":"hello"},"finish_reason":"stop"}]}`)
 	})
-	h, err := wrapCore(context.Background(), cfg, nil, nil, nil, public, nil, nil, nil)
+	h, err := wrapCore(context.Background(), cfg, nil, nil, nil, public, nil, nil, nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -280,7 +280,7 @@ func TestCoreRejectsInvalidBridgeKeysBeforeInitialization(t *testing.T) {
 			if _, err := os.Stat(cfg.AuthDir); !os.IsNotExist(err) {
 				t.Fatal("initialized before validating")
 			}
-			if _, err := wrapCore(context.Background(), cfg, nil, nil, nil, http.NotFoundHandler(), nil, nil, nil); err == nil {
+			if _, err := wrapCore(context.Background(), cfg, nil, nil, nil, http.NotFoundHandler(), nil, nil, nil, nil); err == nil {
 				t.Fatal("wrapper accepted invalid bridge key")
 			}
 		})
@@ -303,7 +303,7 @@ func TestCoreInitializesEarlyAndSeparatesLivenessAndPublicAuth(t *testing.T) {
 	defer p.Close()
 	up := upstream.New()
 	public := server.NewHandler(server.Config{Pool: p, Upstream: up, APIKey: cfg.APIKey})
-	h, err := wrapCore(context.Background(), cfg, p, up, nil, public, nil, nil, nil)
+	h, err := wrapCore(context.Background(), cfg, p, up, nil, public, nil, nil, nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -398,7 +398,7 @@ func TestCorruptTaskHistorySkipsSchedulesAndPreservesPublic(t *testing.T) {
 	}
 	callback(ctx, "checkin", time.Now())
 	public := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(418) })
-	h, err := wrapCore(ctx, cfg, nil, nil, sch, public, tasks, history, taskErr)
+	h, err := wrapCore(ctx, cfg, nil, nil, sch, public, tasks, history, taskErr, nil)
 	if err != nil {
 		t.Fatal(err)
 	}

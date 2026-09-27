@@ -17,6 +17,7 @@ import (
 
 	"workbuddy2api/internal/anthropic"
 	"workbuddy2api/internal/bridge"
+	"workbuddy2api/internal/pin"
 	"workbuddy2api/internal/pool"
 	"workbuddy2api/internal/scheduler"
 	"workbuddy2api/internal/taskrun"
@@ -283,7 +284,7 @@ func newCoreTasks(ctx context.Context, cfg *Config, sch *scheduler.Scheduler) (*
 	return taskrun.NewRunner(ctx, history, sch.TaskCatalog, sch.ExecuteTask), history, nil
 }
 
-func wrapCore(ctx context.Context, cfg *Config, p *pool.Pool, up *upstream.Client, sch *scheduler.Scheduler, public http.Handler, tasks *taskrun.Runner, history *taskrun.Store, taskError error) (http.Handler, error) {
+func wrapCore(ctx context.Context, cfg *Config, p *pool.Pool, up *upstream.Client, sch *scheduler.Scheduler, public http.Handler, tasks *taskrun.Runner, history *taskrun.Store, taskError error, pins *pin.Store) (http.Handler, error) {
 	key, err := coreBridgeKey(cfg)
 	if err != nil {
 		return nil, err
@@ -300,7 +301,7 @@ func wrapCore(ctx context.Context, cfg *Config, p *pool.Pool, up *upstream.Clien
 		return public, nil
 	}
 	public = anthropic.New(public, cfg.APIKey, int64(cfg.Server.MaxBodyMB)<<20)
-	internal := bridge.New(ctx, bridge.Config{Key: key, APIKey: cfg.APIKey, MaxBodyBytes: int64(cfg.Server.MaxBodyMB) << 20, AuthDir: cfg.AuthDir, UpstreamCommit: upstreamCommit, PatchIdentity: patchIdentity, GlobalEnabled: cfg.Global.Enabled, Pool: p, Upstream: up, Scheduler: sch, Tasks: tasks, History: history, TaskError: taskError, Public: public, Usage: usage})
+	internal := bridge.New(ctx, bridge.Config{Key: key, APIKey: cfg.APIKey, MaxBodyBytes: int64(cfg.Server.MaxBodyMB) << 20, AuthDir: cfg.AuthDir, UpstreamCommit: upstreamCommit, PatchIdentity: patchIdentity, GlobalEnabled: cfg.Global.Enabled, Pool: p, Upstream: up, Scheduler: sch, Tasks: tasks, History: history, TaskError: taskError, Public: public, Usage: usage, Pins: pins})
 	mux := http.NewServeMux()
 	mux.Handle("/internal/", internal)
 	mux.HandleFunc("GET /livez", func(w http.ResponseWriter, r *http.Request) {

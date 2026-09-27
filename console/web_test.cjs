@@ -627,6 +627,77 @@ test('server-provided task and flow ids cannot reshape the admin request path',a
   assert.deepEqual(urls.filter(url=>url.startsWith('/admin/oauth/')),[`/admin/oauth/${encoded}/poll`,`/admin/oauth/${encoded}/region`]);
 });
 
+function pinFixture() {
+  const posts=[];
+  let pinIndex=0;
+  const response=(status,body)=>({ok:status<400,status,json:async()=>body});
+  const pinsView=[
+    {pins:{cn:{uid:'u1',nickname:'alice',realm:'cn',exists:true},global:null}},
+    {pins:{cn:{uid:'u2',nickname:'bob',realm:'cn',exists:true},global:null}},
+    {pins:{cn:null,global:null}},
+  ];
+  const accounts=[
+    {uid:'u1',nickname:'alice',realm:'cn',in_flight:0,success_count:1,err_total:0,rate_limited_models:[]},
+    {uid:'u2',nickname:'bob',realm:'cn',in_flight:0,success_count:0,err_total:0,rate_limited_models:[]},
+  ];
+  const fixture=taskFixture((url,options={})=>{
+    if(url==='/admin/session')return new Promise(()=>{});
+    if(url==='/admin/status')return response(200,{total:2,healthy:2,cooling:0,disabled:0,accounts});
+    if(url==='/admin/models')return response(200,{data:[{id:'cn:workbuddy',realm:'cn'}]});
+    if(url==='/admin/pin'&&options.method!=='POST')return response(200,pinsView[Math.min(pinIndex,pinsView.length-1)]);
+    if(url==='/admin/pin'&&options.method==='POST'){posts.push(['pin',JSON.parse(options.body)]);pinIndex=1;return response(200,{realm:'cn',uid:'u2',nickname:'bob',exists:true});}
+    if(url==='/admin/unpin'){posts.push(['unpin',JSON.parse(options.body)]);pinIndex=2;return response(200,pinsView[2]);}
+    throw new Error('unexpected '+url+' '+(options.method||'GET'));
+  });
+  fixture.get('realm').querySelector=()=>({disabled:false});
+  const opCell=row=>row.children[6];
+  const button=td=>td.children.find(c=>c.tagName==='BUTTON');
+  const badge=td=>td.children.find(c=>c.tagName==='SPAN');
+  const click=async btn=>{btn.closest=()=>btn;await fixture.ctx.document.handlers.click({target:btn});};
+  return {...fixture,posts,opCell,button,badge,click,rows:()=>fixture.get('accounts-body').children};
+}
+
+test('account pin: locked row shows badge/unlock, pin replaces, unpin clears banner',async()=>{
+  const {ctx,get,posts,opCell,button,badge,click,rows}=pinFixture();
+  await vm.runInContext("signedIn({csrf:'c',global_enabled:true,zcode_enabled:false})",ctx);
+  const [row1,row2]=rows();
+  assert.equal(badge(opCell(row1)).textContent,'已锁定','locked row missing 已锁定 badge');
+  assert.equal(button(opCell(row1)).textContent,'解锁','locked row button not 解锁');
+  assert.equal(badge(opCell(row2)),undefined,'unlocked row unexpectedly shows a badge');
+  assert.equal(button(opCell(row2)).textContent,'锁定','unlocked row button not 锁定');
+  const banner=get('pin-banner');
+  assert.equal(banner.hidden,false,'pin banner hidden while a pin exists');
+  assert.match(banner.children[0].children[0].textContent,/alice/);
+  // 锁定同平台另一个账号 → POST pin {uid}，UI 替换锁定目标
+  await click(button(opCell(row2)));
+  assert.deepEqual(posts,[['pin',{uid:'u2'}]],'pin POST body mismatch');
+  assert.equal(button(opCell(rows()[0])).textContent,'锁定','old locked row did not revert');
+  assert.equal(badge(opCell(rows()[1])).textContent,'已锁定','new locked row missing badge');
+  assert.match(get('pin-banner').children[0].children[0].textContent,/bob/);
+  // 横幅解锁 → POST unpin {realm}，横幅隐藏，所有行恢复锁定按钮
+  await click(get('pin-banner').children[0].children[1]);
+  assert.deepEqual(posts[1],['unpin',{realm:'cn'}],'unpin POST body mismatch');
+  assert.equal(get('pin-banner').hidden,true,'banner stayed visible after unpin');
+  assert.equal(button(opCell(rows()[0])).textContent,'锁定');
+  assert.equal(button(opCell(rows()[1])).textContent,'锁定');
+});
+
+test('account pin UI degrades silently when core lacks pin endpoints',async()=>{
+  const response=(status,body)=>({ok:status<400,status,json:async()=>body});
+  const {ctx,get}=taskFixture((url)=>{
+    if(url==='/admin/session')return new Promise(()=>{});
+    if(url==='/admin/status')return response(200,{total:1,healthy:1,cooling:0,disabled:0,accounts:[{uid:'u1',realm:'cn'}]});
+    if(url==='/admin/models')return response(200,{data:[]});
+    if(url==='/admin/pin')return response(404,{error:'接口不存在'});
+    throw new Error('unexpected '+url);
+  });
+  get('realm').querySelector=()=>({disabled:false});
+  await vm.runInContext("signedIn({csrf:'c',global_enabled:true,zcode_enabled:false})",ctx);
+  assert.equal(get('pin-banner').hidden,true,'banner shown without pin endpoint');
+  const row=get('accounts-body').children[0];
+  assert.equal(row.children[6].children.find(c=>c.tagName==='BUTTON').textContent,'锁定');
+});
+
 function zcodeFixture(zcodeStatus) {
   const response=body=>({ok:true,status:200,json:async()=>body});
   const {ctx,get,opened}=taskFixture(url=>{

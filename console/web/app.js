@@ -1,5 +1,7 @@
 const $ = (id) => document.getElementById(id);
 let csrf = '', modelList = [], accounts = [], history = [], conversation = newConversation(), activeRequest, flowID, flowTimer;
+// pinState：{cn:{uid,nickname,exists}|null, global:null|...}，null=该平台未锁定。
+let pinState = {cn:null, global:null}, lastStatus = null;
 let page = 'overview', sessionGeneration = 0;
 let protocol = 'openai';
 let taskState = {items:[],active_run:null,latest_runs:[]}, taskHistory = [], taskBefore = null, taskStarting = false, taskPollTimer, taskRenderKey, detailController, detailGeneration = 0;
@@ -30,13 +32,14 @@ function signedOut() {
  $('messages').replaceChildren();$('task-list').replaceChildren();$('task-history-body').replaceChildren();$('task-detail').hidden=true;$('task-accounts').textContent='';$('task-log').textContent=''; $('api-key').value = ''; $('api-key').type = 'password'; $('admin-key').value = ''; $('console-view').hidden = true; $('login-view').hidden = false;
  protocol='openai';$('prompt').value='';$('max-tokens').value='1024';$('usage').textContent='用量将在上游返回后显示';usageGeneration++;renderAccess();
  zcodeModels=[];zcodeHistory=[];zcodeStatus=null;zcodeAuthURL='';zcodeLogoutArmed=false;zcodeBusy=false;zcodeProviderTouched=false;zcodePlanTouched=false;zcodeView='status';zcodeViewTouched=false;zcodeEnabled=false;clearTimeout(zcodePollTimer);zcodePollTimer=undefined;$('zcode-model').replaceChildren();$('zcode-messages').replaceChildren();$('zcode-prompt').value='';$('zcode-usage').textContent='用量将在上游返回后显示';$('zcode-disabled').hidden=true;$('zcode-content').hidden=true;$('nav-zcode').classList.remove('nav-muted');
+ pinState={cn:null,global:null};lastStatus=null;renderPinBanner();
 }
 async function signedIn(session) {
  csrf = session.csrf; $('admin-key').value = ''; $('login-view').hidden = true; $('console-view').hidden = false;
  $('realm').querySelector('[value="global"]').disabled = !session.global_enabled;
  $('nav-zcode').classList.toggle('nav-muted', !session.zcode_enabled);
  zcodeEnabled = !!session.zcode_enabled;
- await refreshStatus(); await refreshModels();
+ await refreshStatus(); await refreshModels(); await loadPins();
 }
 function showPage(value) {
  if (page === 'tasks' && value !== 'tasks') stopTaskReads(true);
@@ -61,6 +64,7 @@ $('login-form').addEventListener('submit', async event => {
 $('logout').addEventListener('click', async () => {$('login-error').textContent='';const pending=jsonAPI('logout', {});signedOut();try {await pending;} catch(e){$('login-error').textContent=e.message;} });
 function cell(text, small) { const td = document.createElement('td'); td.textContent = text; if (small) { const s=document.createElement('small');s.textContent=small;td.append(s); } return td; }
 function renderAccounts(data) {
+ lastStatus = data;
  accounts = data.accounts || [];
  $('count-total').textContent = data.total; $('count-healthy').textContent = data.healthy; $('count-limited').textContent = `${data.cooling} / ${data.disabled}`;
  $('count-flight').textContent = accounts.reduce((n,a) => n + a.in_flight, 0);
@@ -72,11 +76,86 @@ function renderAccounts(data) {
   const tr=document.createElement('tr');const state=a.disabled?'已禁用':a.cooling?'冷却中':'可用';
   const status=cell('');const badge=document.createElement('span');badge.className='badge'+(state==='可用'?'':' warn');badge.textContent=state;status.append(badge);
   const limits=(a.rate_limited_models||[]).map(m => `${m.model} 至 ${new Date(m.until).toLocaleString()}`).join('；');
-  tr.append(cell(a.nickname||a.uid,`${a.realm === 'global'?'国际版':'国内版'} · ${a.uid}`),status,cell(a.credits_known ? String(a.credits) : a.credits>0 ? `${a.credits}（历史）` : '待确认'),cell(`${a.success_count||0} / ${a.err_total||0}`),cell(String(a.in_flight)),cell(limits||a.disabled_reason||a.reason||'—', a.cool_remaining_sec ? `约 ${Math.ceil(a.cool_remaining_sec/60)} 分钟后恢复` : ''));
+  tr.append(cell(a.nickname||a.uid,`${a.realm === 'global'?'国际版':'国内版'} · ${a.uid}`),status,cell(a.credits_known ? String(a.credits) : a.credits>0 ? `${a.credits}（历史）` : '待确认'),cell(`${a.success_count||0} / ${a.err_total||0}`),cell(String(a.in_flight)),cell(limits||a.disabled_reason||a.reason||'—', a.cool_remaining_sec ? `约 ${Math.ceil(a.cool_remaining_sec/60)} 分钟后恢复` : ''), pinOpCell(a));
   $('accounts-body').append(tr);
  }
  updateModelHint();
 }
+// pinOpCell 构造账号行的锁定操作单元格：同平台锁定号显示「已锁定 + 解锁」，
+// 其余账号显示「锁定」。realm 以账号实际归属为准（防 pinState 与行错配）。
+function pinOpCell(a) {
+ const td = document.createElement('td');
+ const realm = a.realm === 'global' ? 'global' : 'cn';
+ const pinned = pinState[realm];
+ const btn = document.createElement('button');
+ btn.className = 'secondary pin-btn';
+ if (pinned && pinned.uid === a.uid) {
+  const tag = document.createElement('span');
+  tag.className = 'badge pin-tag';
+  tag.textContent = '已锁定';
+  btn.textContent = '解锁';
+  btn.dataset.action = 'unpin';
+  btn.dataset.realm = realm;
+  td.append(tag, ' ', btn);
+ } else {
+  btn.textContent = '锁定';
+  btn.dataset.action = 'pin';
+  btn.dataset.uid = a.uid;
+  btn.dataset.realm = realm;
+  // 同平台已锁定其他账号时，按钮仍可用（锁定此号即替换），title 说明语义。
+  if (pinned) btn.title = `将替换当前锁定的账号（${pinned.nickname || pinned.uid}）`;
+  td.append(btn);
+ }
+ return td;
+}
+async function loadPins() {
+ try { pinState = (await jsonAPI('pin')).pins || {cn:null, global:null}; }
+ catch { pinState = {cn:null, global:null}; } // 旧核心无端点时降级为无锁定 UI
+ renderPinBanner();
+ if (lastStatus) renderAccounts(lastStatus);
+}
+function renderPinBanner() {
+ const banner = $('pin-banner');
+ banner.replaceChildren();
+ const realms = ['cn','global'].filter(r => pinState[r]);
+ banner.hidden = realms.length === 0;
+ for (const realm of realms) {
+  const p = pinState[realm];
+  const row = document.createElement('div');
+  row.className = 'pin-row';
+  const label = document.createElement('span');
+  label.textContent = `🔒 ${realmLabel(realm)}消费已锁定到「${p.nickname || p.uid}」——该平台对话请求只会使用此账号，账号不可用或请求失败时直接报错，不会切换其他账号。` + (p.exists ? '' : ' 注意：该账号已不在账号池，请解锁或改锁其他账号。');
+  const btn = document.createElement('button');
+  btn.className = 'secondary pin-btn';
+  btn.textContent = '解锁';
+  btn.dataset.action = 'unpin';
+  btn.dataset.realm = realm;
+  row.append(label, btn);
+  banner.append(row);
+ }
+}
+async function pinAction(btn) {
+ const action = btn.dataset.action;
+ btn.disabled = true;
+ try {
+  if (action === 'pin') {
+   const r = await jsonAPI('pin', {uid: btn.dataset.uid});
+   await loadPins();
+   notice(`${realmLabel(r.realm)}消费已锁定到该账号`);
+  } else {
+   await jsonAPI('unpin', {realm: btn.dataset.realm});
+   await loadPins();
+   notice(`已解除${realmLabel(btn.dataset.realm)}账号锁定，恢复自动选号`);
+  }
+ } catch(e) {
+  notice(e.message);
+  btn.disabled = false;
+ }
+}
+document.addEventListener?.('click', e => {
+ const btn = e.target.closest?.('button[data-action="pin"], button[data-action="unpin"]');
+ if (btn) return pinAction(btn);
+});
 async function refreshStatus() { try { renderAccounts(await jsonAPI('status')); } catch(e) { notice(e.message); } }
 function realmLabel(realm) { return realm === 'global' ? '国际版' : realm === 'cn' ? '国内版' : realm === 'glm' ? 'GLM·智谱' : ''; }
 function modelRealm(model) { return model.realm || (model.id.startsWith('global:') ? 'global' : model.id.startsWith('glm-') ? 'glm' : 'cn'); }
@@ -111,7 +190,7 @@ function updateModelHint() { const realm=$('model').value.startsWith('global:')?
 function updateEfforts() { const model=modelList.find(m=>m.id===$('model').value),previous=$('effort').value;$('effort').replaceChildren(new Option('默认',''));for(const e of model?.reasoning_supported_efforts||[])$('effort').append(new Option(e,e));$('effort').value=model?.reasoning_supported_efforts?.includes(previous)?previous:'';$('effort').disabled=!!activeRequest||protocol==='anthropic'||!model?.reasoning_supported_efforts?.length;updateModelHint(); }
 $('model').addEventListener('change',updateEfforts);
 $('refresh').addEventListener('click',async()=>{await refreshStatus();await refreshModels();});
-setInterval(()=>{if(csrf&&!document.hidden)refreshStatus();},15000);
+setInterval(()=>{if(csrf&&!document.hidden){refreshStatus();void loadPins();}},15000);
 
 const taskNames={checkin:'签到',travel:'猫猫旅行',activity:'活跃上报',keepalive:'Token 保活',school:'开学季',cat:'夜猫子'};
 const runStatuses={running:'运行中',success:'成功',partial_failure:'部分失败',failed:'失败',skipped:'已跳过',interrupted:'已中断（结果未确认）',unknown:'结果未确认'};

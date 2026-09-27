@@ -17,6 +17,7 @@ import (
 
 	"workbuddy2api/internal/anthropic"
 	"workbuddy2api/internal/oauth"
+	"workbuddy2api/internal/pin"
 	"workbuddy2api/internal/pool"
 	"workbuddy2api/internal/scheduler"
 	"workbuddy2api/internal/taskrun"
@@ -40,6 +41,7 @@ type Config struct {
 	TaskError      error
 	Public         http.Handler
 	Usage          *usagelog.Log
+	Pins           *pin.Store
 }
 
 type handler struct {
@@ -73,6 +75,9 @@ func New(ctx context.Context, cfg Config) http.Handler {
 	h.mux.HandleFunc("DELETE /internal/v1/owners/{owner}/flows", h.withOwner(h.cancelOwner))
 	h.mux.HandleFunc("GET /internal/v1/tasks", h.listTasks)
 	h.mux.HandleFunc("GET /internal/v1/usage", h.listUsage)
+	h.mux.HandleFunc("GET /internal/v1/pin", h.listPins)
+	h.mux.HandleFunc("POST /internal/v1/pin", h.pinAccount)
+	h.mux.HandleFunc("POST /internal/v1/unpin", h.unpinAccount)
 	h.mux.HandleFunc("POST /internal/v1/tasks/{id}/runs", h.startTask)
 	h.mux.HandleFunc("GET /internal/v1/task-runs", h.listTaskRuns)
 	h.mux.HandleFunc("GET /internal/v1/task-runs/{id}", h.getTaskRun)

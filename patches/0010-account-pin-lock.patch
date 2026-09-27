@@ -1,0 +1,197 @@
+人工锁定消费账号（补丁 0010）：每个 realm（cn/global）可由控制台锁定一个 UID，锁定期间该平台的对话请求（/v1/chat/completions 与进程内复用的 /v1/messages）严格只走锁定账号——账号禁用/冷却/熔断/6004 模型冷却/在途占满时直接 503，token 刷新失败、网络错误、上游 4xx 均不换号重试，保证优惠活动期间积分只花在目标账号；锁定优先于会话粘性，且锁定期间不写粘性绑定，避免解锁后被残留绑定钉住。终态错误固定返回 503 pinned_account_unavailable 与中文说明，不拼接上游原始错误。锁定状态存于数据目录 pin.json（原子写、0600），损坏文件拒绝启动；未锁定 realm 完全保持原轮换/粘性逻辑。配套扩展新文件：internal/pin/pin.go（Store 持久化与校验）、internal/bridge/pin.go（/internal/v1/pin|unpin 管理端点，realm 从账号池反查防伪造）、internal/server/pin_lock_test.go（严格锁定语义端到端回归）。
+
+diff --git a/cmd/server/main.go b/cmd/server/main.go
+index cd36596..bd91b03 100644
+--- a/cmd/server/main.go
++++ b/cmd/server/main.go
+@@ -9,10 +9,12 @@ import (
+ 	"net/http"
+ 	"os"
+ 	"os/signal"
++	"path/filepath"
+ 	"syscall"
+ 	"time"
+ 
+ 	"workbuddy2api/internal/auth"
++	"workbuddy2api/internal/pin"
+ 	"workbuddy2api/internal/pool"
+ 	"workbuddy2api/internal/redisstore"
+ 	"workbuddy2api/internal/scheduler"
+@@ -178,6 +180,14 @@ func main() {
+ 		log.Printf("夜猫子任务已启用：%v 点（task_runner.py ALL --yes --only black_cat）", cfg.Schedule.CatHours)
+ 	}
+ 
++	// 补丁 0010：人工锁定账号状态（数据目录 pin.json）。损坏文件拒绝启动，
++	// 不静默清空用户显式设置的省钱锁定。未配置桥接（源码模式）时也随 handler 注入，
++	// 只是没有管理端点可修改它。
++	pins, err := pin.Open(filepath.Join(filepath.Dir(cfg.StateFile), "pin.json"))
++	if err != nil {
++		log.Fatalf("load pin store: %v", err)
++	}
++
+ 	h := server.NewHandler(server.Config{
+ 		Pool:         p,
+ 		Upstream:     up,
+@@ -191,12 +201,14 @@ func main() {
+ 		MaxBodyBytes: int64(cfg.Server.MaxBodyMB) << 20, // MB → 字节
+ 		// global realm 开关（handler 侧第三道闸：modelList 据此决定是否列 global 名单）。
+ 		GlobalEnabled: cfg.Global.Enabled,
++		// 人工锁定（补丁 0010）：nil 接口安全，未锁定时 PinnedUID 恒空。
++		Pinned: pins,
+ 	})
+ 
+ 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+ 	defer stop()
+ 	tasks, history, taskErr := newCoreTasks(ctx, cfg, sch)
+-	coreHandler, err := wrapCore(ctx, cfg, p, up, sch, h, tasks, history, taskErr)
++	coreHandler, err := wrapCore(ctx, cfg, p, up, sch, h, tasks, history, taskErr, pins)
+ 	if err != nil {
+ 		log.Fatalf("wrap core: %v", err)
+ 	}
+diff --git a/internal/server/handler.go b/internal/server/handler.go
+index 5dec85f..1d852cc 100644
+--- a/internal/server/handler.go
++++ b/internal/server/handler.go
+@@ -50,8 +50,23 @@ type Config struct {
+ 	// false（显式逃生门）时即便 auth realm=global 也不提供 global: 模型名
+ 	// （modelList 不列 global 名单）。
+ 	GlobalEnabled bool
++
++	// Pinned 由扩展层注入的人工锁定查询（可选；nil = 未启用，选号完全自动）。
++	// 补丁 0010：PinnedUID 返回非空时，该 realm 的对话请求严格只走锁定账号，
++	// 不可用直接 503、失败不换号，用于优惠活动期间人工指定消费账号。
++	Pinned Pinner
++}
++
++// Pinner 查询某 realm 当前人工锁定的账号 UID（空串 = 未锁定）。
++// 由扩展 internal/pin.Store 实现，server 包只依赖最小接口。
++type Pinner interface {
++	PinnedUID(realm string) string
+ }
+ 
++// errPinnedUnavailable 是严格锁定模式的内部哨兵：锁定号不可用，或本轮在锁定号上
++// 失败且策略禁止换号。末端错误规范化据此返回固定文案，不拼接上游原始错误。
++var errPinnedUnavailable = errors.New("pinned account unavailable")
++
+ // notFoundCooldown 上游 404 的固定短冷却时长。
+ // 与 SoftCooldown 分流的原因：404 是上游**偶发**路径缺失，不是"本账号在限流"，
+ // 若共用 soft_rate（600s 起 + 指数升级），一次偶发 404 会把好账号罚 10 分钟并逐次加倍。
+@@ -546,17 +561,37 @@ func (h *Handler) chatCompletions(w http.ResponseWriter, r *http.Request) {
+ 	}
+ 	chatMeta.TraceID = r.Header.Get("X-Trace-ID")
+ 
++	// 补丁 0010：人工严格锁定。该 realm 被锁定时只尝试锁定号——不可用直接结束轮转，
++	// token 刷新/上游请求失败也不换号（避免优惠活动期间意外消耗其他账号积分）；
++	// 锁定优先于会话粘性且不写粘性绑定。未锁定的 realm 完全保持原轮换逻辑。
++	pinnedUID := ""
++	if h.cfg.Pinned != nil {
++		pinnedUID = h.cfg.Pinned.PinnedUID(realm)
++	}
+ 	for i := 0; i < h.cfg.MaxRotate; i++ {
+ 		// 选号：粘性号优先（PickByUIDForModel 已校验该模型可用性 + 在途未满），否则普通轮换。
+ 		var acct *auth.Auth
+-		if stickyUID != "" {
++		if pinnedUID != "" {
++			// 严格锁定：只选锁定号（禁用/冷却/熔断/6004 模型冷却/在途占满均返回 nil）。
++			// realm 以池中账号实际归属再校验一层，锁定记录异常错域时按不可用处理。
++			acct = h.cfg.Pool.PickByUIDForModel(pinnedUID, bareModel)
++			if acct != nil && realm != "" && acct.Realm() != realm {
++				log.Printf("WARN: [server] pinned account realm mismatch uid=%s want=%s got=%s", logfmt.UID8(pinnedUID), realm, acct.Realm())
++				acct = nil
++			}
++			if acct == nil {
++				lastErr = errPinnedUnavailable
++				st.status = http.StatusServiceUnavailable
++				break
++			}
++		} else if stickyUID != "" {
+ 			acct = h.cfg.Pool.PickByUIDForModel(stickyUID, bareModel)
+ 			if acct == nil || (realm != "" && acct.Realm() != realm) {
+ 				// 粘性号在当前模型不可用（冷却/占满/该模型被 6004 限额）或 realm 不符 → 解绑。
+ 				unbindSticky()
+ 			}
+ 		}
+-		if acct == nil {
++		if pinnedUID == "" && acct == nil {
+ 			// 模型感知 + realm 感知选号：模型非空时启用 6004 模型级冷却豁免
+ 			// （healthyForModel），realm 谓词过滤跨域账号。
+ 			acct = h.cfg.Pool.PickExcludingForRealm(tried, bareModel, realm)
+@@ -570,6 +605,11 @@ func (h *Handler) chatCompletions(w http.ResponseWriter, r *http.Request) {
+ 
+ 		// 占用在途名额：Pick 已跳过满额账号，此处 CAS 兜底并发抢名额的竞态。
+ 		if !h.cfg.Pool.Acquire(acct.UID) {
++			if pinnedUID != "" {
++				// 严格锁定：锁定号最后一个在途名额被并发抢走，不换号，快速失败。
++				lastErr = errPinnedUnavailable
++				break
++			}
+ 			// 若被抢的正是粘性号，立即解绑并回落普通轮换，避免下一轮仍撞同一个
+ 			// 满载粘性号再浪费一次 PickByUID 往返（语义与 fail()/PickByUID-nil 的解绑一致）。
+ 			if stickyUID != "" && acct.UID == stickyUID {
+@@ -582,7 +622,6 @@ func (h *Handler) chatCompletions(w http.ResponseWriter, r *http.Request) {
+ 		// token 临近过期 → 先 refresh（失败冷却换号）
+ 		if acct.NeedsRefresh(h.cfg.RefreshSkew) {
+ 			if err := h.cfg.Upstream.RefreshToken(acct); err != nil {
+-				lastErr = err
+ 				var ue *upstream.Error
+ 				if errors.As(err, &ue) && ue.Kind == upstream.ErrSessionDead {
+ 					// 12153 一次失败不杀号（临时触发会误杀）：与 scheduler keepalive/checkin
+@@ -592,6 +631,12 @@ func (h *Handler) chatCompletions(w http.ResponseWriter, r *http.Request) {
+ 					h.cfg.Pool.NoteError(acct.UID)
+ 				}
+ 				fail(acct.UID)
++				if pinnedUID != "" {
++					// 严格锁定：锁定号授权刷新失败也不换号，按锁定不可用结束。
++					lastErr = errPinnedUnavailable
++					break
++				}
++				lastErr = err
+ 				continue
+ 			}
+ 			acct.BackfillRealm() // 老 auth 空 realm → 落盘前补标识（幂等：已有不动）
+@@ -616,6 +661,11 @@ func (h *Handler) chatCompletions(w http.ResponseWriter, r *http.Request) {
+ 			st.status = http.StatusServiceUnavailable
+ 			lastErr = terr
+ 			fail(acct.UID)
++			if pinnedUID != "" {
++				// 严格锁定：网络错误也不换号重试，由末端给锁定专用文案。
++				lastErr = errPinnedUnavailable
++				break
++			}
+ 			continue
+ 		}
+ 		if status >= 400 {
+@@ -654,12 +704,18 @@ func (h *Handler) chatCompletions(w http.ResponseWriter, r *http.Request) {
+ 				break
+ 			}
+ 			fail(acct.UID)
++			if pinnedUID != "" {
++				// 严格锁定：锁定号已按错误分类冷却/熔断，但绝不换号重试。
++				lastErr = errPinnedUnavailable
++				break
++			}
+ 			continue
+ 		}
+ 		h.cfg.Pool.NoteSuccess(acct.UID)
+ 		// 粘性跟随最终成功号：本轮成功的账号成为该会话的粘性绑定（覆盖旧绑定）。
+ 		// 若 sticky 号失败、轮换到别的号成功，这里把会话重绑到新号，多轮对话下一跳不再随机抽。
+-		if sessKey != "" && h.cfg.Session != nil {
++		// 补丁 0010：人工锁定期间不写粘性绑定，避免解锁后会话被残留绑定钉在旧锁定号上。
++		if pinnedUID == "" && sessKey != "" && h.cfg.Session != nil {
+ 			h.cfg.Session.Bind(sessKey, acct.UID)
+ 		}
+ 		// 归属标签（补丁 0009）：成功响应告知客户端本次实际使用的账号与平台域，
+@@ -726,6 +782,13 @@ func (h *Handler) chatCompletions(w http.ResponseWriter, r *http.Request) {
+ 	status := http.StatusServiceUnavailable
+ 	code := "no_healthy_account"
+ 	msg := "all accounts are temporarily unavailable, please retry later"
++	// 补丁 0010：严格锁定的统一终态——不拼接上游错误细节，明确告知「不会自动换号」。
++	if errors.Is(lastErr, errPinnedUnavailable) {
++		writeOpenAIError(w, http.StatusServiceUnavailable, "pinned_account_unavailable",
++			"该平台已人工锁定到指定账号：锁定账号当前不可用或本次请求失败。严格锁定下不会自动切换其他账号，请稍后重试或在控制台解锁后再试")
++		st.status = http.StatusServiceUnavailable
++		return
++	}
+ 	var ue *upstream.Error
+ 	if errors.As(lastErr, &ue) {
+ 		switch ue.Kind {

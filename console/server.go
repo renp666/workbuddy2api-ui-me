@@ -165,6 +165,9 @@ func NewServer(cfg Config) (http.Handler, error) {
 		{"GET /admin/task-runs", "GET", "/internal/v1/task-runs"},
 		{"GET /admin/task-runs/{id}", "GET", "/internal/v1/task-runs/{id}"},
 		{"GET /admin/usage", "GET", "/internal/v1/usage"},
+		{"GET /admin/pin", "GET", "/internal/v1/pin"},
+		{"POST /admin/pin", "POST", "/internal/v1/pin"},
+		{"POST /admin/unpin", "POST", "/internal/v1/unpin"},
 	} {
 		h.mux.HandleFunc(route.pattern, h.withAdmin(h.management(route.method, route.path)))
 	}

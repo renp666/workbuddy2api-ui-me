@@ -29,7 +29,8 @@
     <div id="flow" class="flow" hidden><span id="flow-label" class="badge"></span><p id="flow-message" role="status"></p><a id="auth-link" target="_blank" rel="noopener noreferrer">重新打开授权页面 ↗</a><form id="region-form" class="inline-form" hidden><label for="region">注册地区</label><select id="region"></select><button class="primary" type="submit">确认地区并继续</button></form><button id="flow-retry" class="secondary" hidden>重新检查</button></div>
    </article>
    <div class="section-title"><h2>已连接账号</h2><span class="muted small">每 15 秒刷新本地状态</span></div>
-   <div class="panel table-wrap"><table><thead><tr><th>账号 / 版本</th><th>状态</th><th>积分快照</th><th>成功 / 错误</th><th>在途</th><th>限制与说明</th></tr></thead><tbody id="accounts-body"></tbody></table><p id="accounts-empty" class="empty">还没有账号。点击上方「浏览器授权」开始。</p></div><p class="muted small">积分为最近观测值；未查询时显示「待确认」。同账号重新授权会更新凭据，保留现有限流记录。</p>
+   <div id="pin-banner" class="pin-banner" hidden></div>
+   <div class="panel table-wrap"><table><thead><tr><th>账号 / 版本</th><th>状态</th><th>积分快照</th><th>成功 / 错误</th><th>在途</th><th>限制与说明</th><th>操作</th></tr></thead><tbody id="accounts-body"></tbody></table><p id="accounts-empty" class="empty">还没有账号。点击上方「浏览器授权」开始。</p></div><p class="muted small">积分为最近观测值；未查询时显示「待确认」。同账号重新授权会更新凭据，保留现有限流记录。锁定后该平台的对话消费严格只走锁定账号，账号不可用时直接报错、不切换其他账号。</p>
   </section>
   <section class="page" data-page="tasks" hidden><div class="page-heading"><div><p class="eyebrow">AUTOMATION</p><h1>自动任务</h1><p class="muted">配置与下次执行时间来自核心调度器；立即执行覆盖全部符合条件账号。</p></div><button id="task-refresh" class="secondary">↻ 刷新任务</button></div>
    <p id="task-live" class="muted small" role="status" aria-live="polite">尚未读取任务状态</p><div id="task-list" class="task-grid"></div>
