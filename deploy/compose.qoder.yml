@@ -1,8 +1,10 @@
 # Optional Qoder CN sidecar: docker compose -f docker-compose.yml -f deploy/compose.qoder.yml up -d
-# Prerequisites:
-#   1. Set WB2A_QODER_PAT in your environment or .env file (from https://qoder.com.cn/account/integrations).
-# The container joins console's network namespace (network_mode: service:console): its proxy
-# is reachable from console at 127.0.0.1 only, never from the Compose network or the host.
+# Auth (either one works):
+#   1. Page login (recommended): open the Qoder tab in the console and click 开始登录.
+#      The in-container control process drives qoderclicn device-flow OAuth; no PAT needed.
+#   2. Unattended/PAT: set WB2A_QODER_PAT (from https://qoder.com.cn/account/integrations).
+# The container joins console's network namespace (network_mode: service:console): proxy and
+# login-control APIs listen on 127.0.0.1 only, never on the Compose network or the host.
 services:
   qoder-proxy:
     build:
@@ -14,9 +16,14 @@ services:
     environment:
       TZ: Asia/Shanghai
       PORT: "3000"
+      CONTROL_PORT: "3001"
       CLI_BACKEND: "cn"
-      QODERCN_PERSONAL_ACCESS_TOKEN: ${WB2A_QODER_PAT:-}
+      # 数据面密钥（console -> qoder-proxy:3000）
       PROXY_API_KEY: ${WB2A_QODER_KEY:-}
+      # 控制面密钥（console -> qoder-login-ctl:3001）；为空时退化为环路+自定义头防护
+      CONTROL_API_KEY: ${WB2A_QODER_KEY:-}
+      # 无人值守备选：页面登录与本地凭据存在时无需配置
+      QODERCN_PERSONAL_ACCESS_TOKEN: ${WB2A_QODER_PAT:-}
     volumes:
       - ./runtime/qoder:/root/.qoderworkcn
 
@@ -24,6 +31,7 @@ services:
     environment:
       WB2A_QODER_URL: http://127.0.0.1:3000
       WB2A_QODER_KEY: ${WB2A_QODER_KEY:-}
+      WB2A_QODER_CONTROL_URL: http://127.0.0.1:3001
     depends_on:
       core:
         condition: service_started

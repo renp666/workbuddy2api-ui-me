@@ -76,16 +76,30 @@
     </div>
    </div>
   </section>
-  <section class="page" data-page="qoder" hidden><div class="page-heading"><div><p class="eyebrow">QODER CHANNEL</p><h1>Qoder 通道</h1><p class="muted">可选的 Qoder CN 旁路。Personal Access Token 由环境变量配置，对话消费直达 Qoder。</p></div><button id="qoder-refresh" class="secondary">↻ 刷新状态</button></div>
-   <p id="qoder-disabled" class="empty" hidden>Qoder 通道未启用。在部署目录用 <code>deploy/compose.qoder.yml</code> overlay 启动后，这里会显示通道状态、模型列表与对话测试。</p>
+  <section class="page" data-page="qoder" hidden><div class="page-heading"><div><p class="eyebrow">QODER CHANNEL</p><h1>Qoder 通道</h1><p class="muted">可选的 Qoder CN 旁路。在页签内登录 Qoder 账号后，对话消费直达 Qoder；也可用 Personal Access Token 环境变量无人值守接入。</p></div><button id="qoder-refresh" class="secondary">↻ 刷新状态</button></div>
+   <p id="qoder-disabled" class="empty" hidden>Qoder 通道未启用。在部署目录用 <code>deploy/compose.qoder.yml</code> overlay 启动后，这里会显示通道状态、账号登录、模型列表与对话测试。</p>
    <div id="qoder-content" hidden>
-    <article class="panel"><div class="section-title"><h2>通道状态</h2><span class="badge" id="qoder-status-badge">未知</span></div><p id="qoder-status-text" class="muted small" role="status" aria-live="polite">正在读取通道状态…</p></article>
+    <div class="qoder-tabs" role="tablist" aria-label="Qoder 子页"><button id="qoder-view-status" class="qoder-tab active" role="tab" type="button">◫ 通道状态</button><button id="qoder-view-login" class="qoder-tab" role="tab" type="button" hidden>⇆ Qoder 登录</button><button id="qoder-view-models" class="qoder-tab" role="tab" type="button" hidden>☰ Qoder 模型</button><button id="qoder-view-chat" class="qoder-tab" role="tab" type="button" hidden>↗ 对话测试</button></div>
+    <div id="qoder-pane-status">
+    <article class="panel"><div class="section-title"><h2>通道状态</h2><span class="badge" id="qoder-status-badge">未知</span></div><p id="qoder-status-text" class="muted small" role="status" aria-live="polite">正在读取通道状态…</p>
+     <div class="inline-form"><button id="qoder-logout" class="quiet" type="button" hidden>退出登录</button></div></article>
+    </div>
+    <div id="qoder-pane-login" hidden>
+    <article id="qoder-login" class="panel"><div class="section-title"><h2>Qoder 登录</h2><span class="badge warn" id="qoder-login-badge">未登录</span></div>
+     <form id="qoder-login-form" class="inline-form"><button id="qoder-login-start" class="primary" type="submit">开始登录</button></form>
+     <p id="qoder-auth-row" hidden><a id="qoder-auth-link" target="_blank" rel="noopener noreferrer">打开授权页面 ↗</a></p>
+     <p id="qoder-login-hint" class="muted small" role="status" aria-live="polite"></p></article>
+    </div>
+    <div id="qoder-pane-models" hidden>
     <div class="section-title"><h2>Qoder 模型</h2><span class="muted small">来自 qoder-proxy 的 <code>/v1/models</code></span></div>
     <div class="panel table-wrap"><table><thead><tr><th>模型 ID</th><th>归属</th></tr></thead><tbody id="qoder-models-body"></tbody></table><p id="qoder-models-empty" class="empty">暂无模型。</p></div>
+    </div>
+    <div id="qoder-pane-chat" hidden>
     <div class="section-title"><h2>对话测试</h2><span class="muted small">OpenAI 流式协议，真实请求转发给 qoder-proxy</span></div>
     <div class="panel chat-panel" id="qoder-chat-panel"><div class="chat-settings"><label for="qoder-model">模型</label><select id="qoder-model"></select></div>
      <div id="qoder-messages" class="messages" aria-live="polite"><div class="chat-empty">选择一个 Qoder 模型，在下方输入问题。<small>对话只保留在当前页面，刷新即清空。</small></div></div>
-     <form id="qoder-form" class="chat-input"><label class="sr-only" for="qoder-prompt">你的问题</label><textarea id="qoder-prompt" rows="3" placeholder="输入一个问题…" required></textarea><div class="composer-footer"><span id="qoder-usage" class="muted small" role="status" aria-live="polite">用量将在上游返回后显示</span><button id="qoder-stop" class="secondary" type="button" hidden>停止生成</button><button id="qoder-send" class="primary" type="submit">发送 ↑</button></div></form></div>
+     <form id="qoder-form"><label class="sr-only" for="qoder-prompt">你的问题</label><textarea id="qoder-prompt" rows="3" placeholder="输入一个问题…" required></textarea><div class="composer-footer"><span id="qoder-usage" class="muted small" role="status" aria-live="polite">用量将在上游返回后显示</span><button id="qoder-stop" class="secondary" type="button" hidden>停止生成</button><button id="qoder-send" class="primary" type="submit">发送 ↑</button></div></form></div>
+    </div>
    </div>
   </section>
   <section class="page" data-page="access" hidden><div class="page-heading"><div><p class="eyebrow">INTEGRATION</p><h1>接入你喜欢的客户端</h1><p class="muted">选择客户端使用的协议，复制配置后即可开始。</p></div></div><article class="panel access-panel">

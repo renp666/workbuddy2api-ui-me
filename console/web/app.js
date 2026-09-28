@@ -7,7 +7,7 @@ let protocol = 'openai';
 let taskState = {items:[],active_run:null,latest_runs:[]}, taskHistory = [], taskBefore = null, taskStarting = false, taskPollTimer, taskRenderKey, detailController, detailGeneration = 0;
 let usageRange = 'today', usageGeneration = 0;
 let zcodeModels = [], zcodeHistory = [], zcodeStatus = null, zcodePollTimer, zcodeBusy = false, zcodeAuthURL = '', zcodeLogoutArmed = false, zcodeProviderTouched = false, zcodePlanTouched = false, zcodeView = 'status', zcodeViewTouched = false, zcodeEnabled = false;
-let qoderModels = [], qoderHistory = [], qoderStatus = null, qoderEnabled = false;
+let qoderModels = [], qoderHistory = [], qoderStatus = null, qoderPollTimer, qoderBusy = false, qoderAuthURL = '', qoderLogoutArmed = false, qoderControl = false, qoderLoggedIn = false, qoderLoginTimer = null, qoderView = 'status', qoderViewTouched = false, qoderEnabled = false;
 let selectedTaskRun, historyGeneration = 0, historyLoading = false, taskHistoryKey;
 const taskIntents = new Map(), taskReads = new Set();
 function newConversation() { return `web-${Date.now()}-${Math.random().toString(36).slice(2)}`; }
@@ -33,7 +33,7 @@ function signedOut() {
  $('messages').replaceChildren();$('task-list').replaceChildren();$('task-history-body').replaceChildren();$('task-detail').hidden=true;$('task-accounts').textContent='';$('task-log').textContent=''; $('api-key').value = ''; $('api-key').type = 'password'; $('admin-key').value = ''; $('console-view').hidden = true; $('login-view').hidden = false;
  protocol='openai';$('prompt').value='';$('max-tokens').value='1024';$('usage').textContent='用量将在上游返回后显示';usageGeneration++;renderAccess();
  zcodeModels=[];zcodeHistory=[];zcodeStatus=null;zcodeAuthURL='';zcodeLogoutArmed=false;zcodeBusy=false;zcodeProviderTouched=false;zcodePlanTouched=false;zcodeView='status';zcodeViewTouched=false;zcodeEnabled=false;clearTimeout(zcodePollTimer);zcodePollTimer=undefined;$('zcode-model').replaceChildren();$('zcode-messages').replaceChildren();$('zcode-prompt').value='';$('zcode-usage').textContent='用量将在上游返回后显示';$('zcode-disabled').hidden=true;$('zcode-content').hidden=true;$('nav-zcode').classList.remove('nav-muted');
- qoderModels=[];qoderHistory=[];qoderStatus=null;qoderEnabled=false;$('qoder-model').replaceChildren();$('qoder-messages').replaceChildren();$('qoder-prompt').value='';$('qoder-usage').textContent='用量将在上游返回后显示';$('qoder-disabled').hidden=true;$('qoder-content').hidden=true;$('nav-qoder').classList.remove('nav-muted');
+ qoderModels=[];qoderHistory=[];qoderStatus=null;qoderEnabled=false;qoderControl=false;qoderLoggedIn=false;qoderAuthURL='';qoderBusy=false;qoderLogoutArmed=false;qoderView='status';qoderViewTouched=false;clearTimeout(qoderPollTimer);qoderPollTimer=undefined;clearTimeout(qoderLoginTimer);qoderLoginTimer=null;$('qoder-model').replaceChildren();$('qoder-messages').replaceChildren();$('qoder-prompt').value='';$('qoder-usage').textContent='用量将在上游返回后显示';$('qoder-disabled').hidden=true;$('qoder-content').hidden=true;$('nav-qoder').classList.remove('nav-muted');$('qoder-auth-row').hidden=true;$('qoder-pane-login').hidden=true;$('qoder-login-hint').textContent='';
  pinState={cn:null,global:null};lastStatus=null;renderPinBanner();
 }
 async function signedIn(session) {
@@ -43,6 +43,7 @@ async function signedIn(session) {
  zcodeEnabled = !!session.zcode_enabled;
  $('nav-qoder').classList.toggle('nav-muted', !session.qoder_enabled);
  qoderEnabled = !!session.qoder_enabled;
+ qoderControl = !!session.qoder_control;
  await refreshStatus(); await refreshModels(); await loadPins();
 }
 function showPage(value) {
@@ -300,7 +301,7 @@ async function loadTaskDetail(id,scroll=true){
 $('task-refresh').addEventListener('click',loadTaskPage);
 $('task-more').addEventListener('click',()=>loadTaskHistory(false));
 $('task-detail-close').addEventListener('click',()=>cancelTaskDetail(true));
-document.addEventListener?.('visibilitychange',()=>{if(document.hidden)stopTaskReads();else if(page==='tasks')pollTaskRun();else if(page==='zcode'&&zcodeStatus&&zcodeStatus.control&&!zcodeStatus.logged_in)loadZcode();});
+document.addEventListener?.('visibilitychange',()=>{if(document.hidden)stopTaskReads();else if(page==='tasks')pollTaskRun();else if(page==='zcode'&&zcodeStatus&&zcodeStatus.control&&!zcodeStatus.logged_in)loadZcode();else if(page==='qoder'&&qoderStatus&&qoderStatus.control&&!qoderStatus.logged_in)loadQoder();});
 
 const usageModeNames={stream:'流式',sync:'同步'};
 function formatUsageTokens(value){return value<0?'—':String(value);}
@@ -433,7 +434,7 @@ $('zcode-login-form').addEventListener('submit',async event=>{
  const generation=sessionGeneration;zcodeBusy=true;zcodeActionControls();notice('');
  zcodeProviderTouched=true;
  let authWindow=null;
- try{authWindow=window.open('about:blank','_blank','noopener');}catch(_){authWindow=null;}
+ try{authWindow=window.open('about:blank','_blank');if(authWindow)authWindow.opener=null;}catch(_){authWindow=null;}
  try{
   const result=await jsonAPI('zcode/login',{provider:$('zcode-provider').value});
   if(generation!==sessionGeneration){try{authWindow?.close();}catch(_){}return;}
@@ -499,16 +500,60 @@ async function loadQoder(){
  try{renderQoder(await jsonAPI('qoder'));}
  catch(error){notice(error.message);}
 }
+function qoderPageVisible(){return page==='qoder'&&csrf&&!document.hidden;}
+function scheduleQoderPoll(){
+ clearTimeout(qoderPollTimer);qoderPollTimer=undefined;
+ if(qoderPageVisible()&&qoderStatus&&qoderStatus.control&&!qoderStatus.logged_in)qoderPollTimer=setTimeout(loadQoder,3000);
+}
+function stopQoderPoll(){clearTimeout(qoderPollTimer);qoderPollTimer=undefined;}
 function renderQoder(status){
  qoderStatus=status;
  const enabled=!!status.enabled;
  $('qoder-disabled').hidden=enabled;
  $('qoder-content').hidden=!enabled;
- if(!enabled)return;
+ if(!enabled){stopQoderPoll();return;}
+ const control=status.control===true;
+ // status.control===false 表示配置了控制端但不可达；字段缺失是纯 PAT 模式。
+ qoderControl=control;
+ const loggedIn=!!status.logged_in;
+ qoderLoggedIn=loggedIn;
+ if(control&&loggedIn)qoderAuthURL='';
  const badge=$('qoder-status-badge');
- badge.textContent=status.reachable?'在线':'不可达';
- badge.className='badge'+(status.reachable?'':' warn');
- $('qoder-status-text').textContent=status.reachable?`qoder-proxy 可达 · ${status.model_count} 个模型`:'qoder-proxy 当前不可达，请确认容器已启动。';
+ let statusText='';
+ if(control&&!loggedIn){
+  badge.textContent='未登录';badge.className='badge warn';
+  statusText='尚未保存 Qoder 凭据，切换到「Qoder 登录」完成设备授权后即可使用通道。';
+ }else{
+  badge.textContent=status.reachable?'在线':'不可达';
+  badge.className='badge'+(status.reachable?'':' warn');
+  let extra='';
+  if(status.control===false)extra=' · 登录控制端不可达';
+  else if(control)extra=' · Qoder 账号已登录';
+  else if(status.reachable)extra=' · PAT 模式';
+  statusText=status.reachable?`qoder-proxy 可达 · ${status.model_count} 个模型${extra}`:`qoder-proxy 当前不可达，请确认容器已启动。${extra}`;
+ }
+ $('qoder-status-text').textContent=statusText;
+ $('qoder-login-badge').textContent='未登录';
+ $('qoder-logout').hidden=!control||!loggedIn;
+ $('qoder-logout').textContent=qoderLogoutArmed?'再次点击确认退出':'退出登录';
+ $('qoder-auth-row').hidden=!qoderAuthURL;
+ if(qoderAuthURL)$('qoder-auth-link').href=qoderAuthURL;
+ $('qoder-login-hint').textContent=!control||loggedIn?'':qoderAuthURL?'已在新标签页打开授权页面，完成授权后本页每 2 秒自动检查登录结果；若被拦截请用下方链接打开（5 分钟内有效）。':'点击「开始登录」，在打开的 Qoder 页面完成授权；凭据只保存在 qoder-proxy 容器内。';
+ qoderActionControls();
+ // 与 zcode 同一视图模型：未登录只给登录页签并自动落地；模型/对话页签在数据面可用后出现。
+ const loginTab=control&&!loggedIn;
+ const dataTab=!loginTab&&!!status.reachable;
+ if(loginTab&&!qoderViewTouched)qoderView='login';
+ if(qoderView==='login'&&!loginTab)qoderView='status';
+ if((qoderView==='models'||qoderView==='chat')&&!dataTab)qoderView='status';
+ $('qoder-view-status').hidden=false;
+ $('qoder-view-login').hidden=!loginTab;
+ $('qoder-view-models').hidden=!dataTab;
+ $('qoder-view-chat').hidden=!dataTab;
+ for(const view of ['status','login','models','chat']){
+  $('qoder-view-'+view).classList.toggle('active',view===qoderView);
+  $('qoder-pane-'+view).hidden=view!==qoderView;
+ }
  qoderModels=(status.models||[]).map(item=>item.id).filter(Boolean);
  renderAccessModelSelect();renderAccess();
  const previous=$('qoder-model').value;
@@ -520,12 +565,90 @@ function renderQoder(status){
  $('qoder-models-empty').hidden=qoderModels.length>0;
  $('qoder-model').disabled=!qoderModels.length||!!activeRequest;
  $('qoder-send').disabled=!qoderModels.length||!!activeRequest;
+ qoderControls();
+ scheduleQoderPoll();
 }
 function qoderControls(){
  for(const id of ['qoder-model','qoder-prompt','qoder-send'])$(id).disabled=!!activeRequest;
  $('qoder-stop').hidden=!activeRequest;
 }
+function qoderActionControls(){
+ for(const id of ['qoder-login-start','qoder-logout','qoder-refresh'])$(id).disabled=qoderBusy;
+}
+async function qoderAction(path){
+ if(qoderBusy)return;
+ const generation=sessionGeneration;qoderBusy=true;qoderActionControls();notice('');
+ try{
+  await jsonAPI(path,{});
+  if(generation!==sessionGeneration)return;
+  qoderAuthURL='';qoderLogoutArmed=false;
+  await loadQoder();
+ }catch(error){if(generation===sessionGeneration)notice(error.message);}
+ finally{if(generation===sessionGeneration){qoderBusy=false;qoderActionControls();}}
+}
+// 设备码登录自身有状态机（waiting→success/error），登录期间 2 秒轮询控制进程；
+// 未登录期间另有与 zcode 同构的 3 秒状态轮询，二者并存互不影响。
+function qoderLoginPollLoop(generation){
+ clearTimeout(qoderLoginTimer);
+ const tick=async()=>{
+  if(generation!==sessionGeneration){return;}
+  try{
+   const state=await jsonAPI('qoder/login');
+   if(generation!==sessionGeneration)return;
+   if(state.state==='success'){
+    qoderBusy=false;qoderAuthURL='';
+    await loadQoder();
+    return;
+   }
+   if(state.state==='error'){
+    qoderBusy=false;qoderAuthURL='';
+    $('qoder-login-hint').textContent='登录失败：'+(state.detail||'未知错误')+'，可重新发起。';
+    if(qoderStatus)renderQoder(qoderStatus);
+    return;
+   }
+   // waiting / idle（链接生成中）：继续轮询
+   qoderLoginTimer=setTimeout(tick,2000);
+  }catch(e){
+   if(generation===sessionGeneration){qoderBusy=false;notice(e.message);if(qoderStatus)renderQoder(qoderStatus);}
+  }
+ };
+ qoderLoginTimer=setTimeout(tick,1000);
+}
 $('qoder-refresh').addEventListener('click',loadQoder);
+for(const view of ['status','login','models','chat'])$('qoder-view-'+view).addEventListener('click',()=>{qoderViewTouched=true;setQoderView(view);});
+function setQoderView(view){qoderView=view;if(qoderStatus)renderQoder(qoderStatus);}
+$('qoder-login-form').addEventListener('submit',async event=>{
+ event.preventDefault();
+ if(qoderBusy||qoderLoggedIn)return;
+ const generation=sessionGeneration;
+ qoderBusy=true;notice('');
+ qoderAuthURL='';
+ let authWindow=null;
+ try{authWindow=window.open('about:blank','_blank');if(authWindow)authWindow.opener=null;}catch(_){authWindow=null;}
+ try{
+  const result=await jsonAPI('qoder/login',{});
+  if(generation!==sessionGeneration){try{authWindow?.close();}catch(_){}return;}
+  qoderAuthURL=result.auth_url||'';
+  if(qoderAuthURL){
+   if(authWindow&&!authWindow.closed)authWindow.location.href=qoderAuthURL;
+   else{try{window.open(qoderAuthURL,'_blank','noopener');}catch(_){}}
+  }
+  if(qoderStatus)renderQoder(qoderStatus);
+  qoderLoginPollLoop(generation);
+ }catch(e){
+  qoderBusy=false;
+  try{authWindow?.close();}catch(_){}
+  notice(e.message);
+  if(qoderStatus)renderQoder(qoderStatus);
+ } finally{
+  if(generation===sessionGeneration)qoderActionControls();
+ }
+});
+$('qoder-logout').addEventListener('click',()=>{
+ if(qoderBusy)return;
+ if(!qoderLogoutArmed){qoderLogoutArmed=true;$('qoder-logout').textContent='再次点击确认退出';return;}
+ qoderLogoutArmed=false;qoderAction('qoder/logout');
+});
 $('qoder-stop').addEventListener('click',()=>activeRequest?.abort());
 $('qoder-form').addEventListener('submit',async event=>{
  event.preventDefault();if(activeRequest)return;const text=$('qoder-prompt').value.trim();if(!text||!$('qoder-model').value)return;

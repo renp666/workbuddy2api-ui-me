@@ -122,10 +122,19 @@ func (h *server) adminQoderStatus(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 	}
-	writeJSON(w, 200, map[string]any{
+	result := map[string]any{
 		"enabled": true, "reachable": reachable,
 		"model_count": len(models), "models": models,
-	})
+	}
+	// 控制端在线时补充设备码登录态（PAT 模式无控制端则不返回该字段）。
+	if loggedIn, controlOK := h.qoderLoggedIn(r.Context()); controlOK {
+		result["control"] = true
+		result["logged_in"] = loggedIn
+	} else if h.cfg.QoderControlURL != nil {
+		// 配置了控制端但当下不可达：如实标注，前端显示「控制端不可达」而非误判未登录。
+		result["control"] = false
+	}
+	writeJSON(w, 200, result)
 }
 
 func (h *server) adminQoderChat(w http.ResponseWriter, r *http.Request) {

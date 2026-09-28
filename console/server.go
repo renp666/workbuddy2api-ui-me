@@ -34,6 +34,9 @@ type Config struct {
 	QoderURL *url.URL
 	// QoderKey replaces Authorization when forwarding to QoderURL.
 	QoderKey string
+	// QoderControlURL 是 qoder-proxy 容器内 qoder-login-ctl 的地址（仅回环）。
+	// nil 时 Qoder 页签不提供登录/登出（纯 PAT 或只读模式）。
+	QoderControlURL *url.URL
 	AdminKey string
 	APIKey   string // Only exposed by the authenticated, CSRF-protected access endpoint.
 	BridgeKey string
@@ -87,6 +90,9 @@ func NewServer(cfg Config) (http.Handler, error) {
 	if cfg.QoderURL != nil && !validOriginURL(cfg.QoderURL) {
 		return nil, errors.New("WB2A_QODER_URL 必须是无凭据、路径、查询和片段的 HTTP(S) 地址")
 	}
+	if cfg.QoderControlURL != nil && !validOriginURL(cfg.QoderControlURL) {
+		return nil, errors.New("WB2A_QODER_CONTROL_URL 必须是无凭据、路径、查询和片段的 HTTP(S) 地址")
+	}
 	if !ValidateAdminOrigin(cfg.PublicOrigin) {
 		return nil, errors.New("WB2A_PUBLIC_ORIGIN 必须是有效的 HTTP(S) origin")
 	}
@@ -105,6 +111,11 @@ func NewServer(cfg Config) (http.Handler, error) {
 		qoderTarget := *cfg.QoderURL
 		qoderTarget.Path = ""
 		cfg.QoderURL = &qoderTarget
+	}
+	if cfg.QoderControlURL != nil {
+		qoderControlTarget := *cfg.QoderControlURL
+		qoderControlTarget.Path = ""
+		cfg.QoderControlURL = &qoderControlTarget
 	}
 	cfg.PublicOrigin = strings.TrimRight(cfg.PublicOrigin, "/")
 	var trusted []*net.IPNet
@@ -151,7 +162,7 @@ func NewServer(cfg Config) (http.Handler, error) {
 			adminError(w, 503, err.Error())
 			return
 		}
-		writeJSON(w, 200, map[string]any{"csrf": sessionFrom(r).csrf, "global_enabled": info.GlobalEnabled, "zcode_enabled": cfg.ZCodeURL != nil, "qoder_enabled": cfg.QoderURL != nil})
+		writeJSON(w, 200, map[string]any{"csrf": sessionFrom(r).csrf, "global_enabled": info.GlobalEnabled, "zcode_enabled": cfg.ZCodeURL != nil, "zcode_control": cfg.ZCodeControlURL != nil, "qoder_enabled": cfg.QoderURL != nil, "qoder_control": cfg.QoderControlURL != nil})
 	}))
 	h.mux.HandleFunc("POST /admin/logout", h.withAdmin(h.adminLogout))
 	h.mux.HandleFunc("GET /admin/zcode", h.withAdmin(h.adminZcodeStatus))
@@ -163,6 +174,9 @@ func NewServer(cfg Config) (http.Handler, error) {
 	h.mux.HandleFunc("POST /admin/zcode/logout", h.withAdmin(h.adminZcodeLogout))
 	h.mux.HandleFunc("GET /admin/qoder", h.withAdmin(h.adminQoderStatus))
 	h.mux.HandleFunc("POST /admin/qoder/chat", h.withAdmin(h.adminQoderChat))
+	h.mux.HandleFunc("POST /admin/qoder/login", h.withAdmin(h.adminQoderLoginStart))
+	h.mux.HandleFunc("GET /admin/qoder/login", h.withAdmin(h.adminQoderLoginPoll))
+	h.mux.HandleFunc("POST /admin/qoder/logout", h.withAdmin(h.adminQoderLogout))
 	h.mux.HandleFunc("POST /admin/access", h.withAdmin(func(w http.ResponseWriter, r *http.Request) {
 		if _, err := h.coreInfo(r.Context()); err != nil {
 			adminError(w, 503, err.Error())

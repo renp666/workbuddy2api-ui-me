@@ -43,6 +43,8 @@ SPEC.md
 /start-build.bat
 /stop.bat
 /restart.bat
+/start-channels.bat
+/stop-channels.bat
 
 # Local tool artifacts
 /.mimosa/

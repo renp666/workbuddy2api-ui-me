@@ -974,3 +974,94 @@ test('qoder dialog posts a qoder model to the admin proxy and streams the answer
   assert.match(get('qoder-usage').textContent,/输入 3 · 输出 4 · 总计 7/);
   assert.equal(vm.runInContext('activeRequest',ctx),undefined,'qoder request left controls locked');
 });
+
+function qoderControlFixture(statuses,loginPolls){
+  const requests=[];let statusIndex=0,pollIndex=0;let poll;
+  const response=body=>({ok:true,status:200,json:async()=>body});
+  const {ctx,get,opened}=qoderFixture(statuses[0]);
+  ctx.fetch=async(url,options={})=>{
+    if(url==='/admin/qoder'){const status=statuses[Math.min(statusIndex,statuses.length-1)];statusIndex++;return response(status);}
+    if(url==='/admin/qoder/login'){
+      if(options.method==='POST'){requests.push({url,method:'POST',body:options.body});return response({state:'waiting',auth_url:'https://qoder.cn/device/selectAccounts?x=1'});}
+      requests.push({url,method:'GET'});
+      const state=loginPolls[Math.min(pollIndex,loginPolls.length-1)];pollIndex++;return response(state);
+    }
+    if(url==='/admin/qoder/logout'){requests.push({url,method:'POST',body:options.body});return response({ok:true});}
+    if(url==='/admin/status')return response({total:0,healthy:0,cooling:0,disabled:0,accounts:[]});
+    if(url==='/admin/models')return response({data:[]});
+    if(url==='/admin/session')return new Promise(()=>{});
+    throw new Error('unexpected '+url+' '+options.method);
+  };
+  ctx.setTimeout=fn=>{poll=fn;return 1;};
+  return {ctx,get,opened,requests,poll:()=>poll};
+}
+
+test('qoder login tab drives device login: auto-lands logged out, starts, authorizes, polls to success',async()=>{
+  const loggedOut={enabled:true,control:true,logged_in:false,reachable:false,model_count:0,models:[]};
+  const loggedIn={enabled:true,control:true,logged_in:true,reachable:true,model_count:1,models:[{id:'qoder-qwen3.8-max',realm:'qoder'}]};
+  const {ctx,get,opened,requests,poll}=qoderControlFixture([loggedOut,loggedIn],[{state:'waiting'},{state:'success'}]);
+  await vm.runInContext("signedIn({csrf:'c',global_enabled:true,zcode_enabled:false,qoder_enabled:true})",ctx);
+  vm.runInContext("page='qoder'",ctx);
+  await vm.runInContext('loadQoder()',ctx);
+  assert.equal(get('qoder-view-login').hidden,false,'login tab missing while logged out');
+  assert.equal(get('qoder-pane-login').hidden,false,'did not auto-land on the login pane');
+  assert.equal(get('qoder-pane-status').hidden,true,'status pane stayed open over login');
+  assert.equal(get('qoder-view-models').hidden,true,'models tab offered before login');
+  assert.equal(get('qoder-view-chat').hidden,true,'chat tab offered before login');
+  assert.equal(get('qoder-status-badge').textContent,'未登录');
+  assert.equal(get('qoder-login-badge').textContent,'未登录');
+  assert.equal(get('qoder-logout').hidden,true,'logout showed while logged out');
+  await get('qoder-login-form').handlers.submit({preventDefault(){}});
+  assert.equal(requests.filter(r=>r.url==='/admin/qoder/login'&&r.method==='POST').length,1,'login start not posted');
+  assert.equal(opened[opened.length-1].location.href,'https://qoder.cn/device/selectAccounts?x=1','authorize window not redirected to the device page');
+  assert.equal(get('qoder-auth-row').hidden,false,'manual authorize link stayed hidden');
+  assert.equal(get('qoder-auth-link').href,'https://qoder.cn/device/selectAccounts?x=1');
+  assert.match(get('qoder-login-hint').textContent,/若被拦截请用下方链接打开/);
+  assert.equal(get('qoder-login-start').disabled,true,'start stayed enabled while login is pending');
+  await poll()(); // waiting: reschedules
+  await poll()(); // success: triggers loadQoder with the logged-in status
+  assert.equal(get('qoder-view-login').hidden,true,'login tab stayed after success');
+  assert.equal(get('qoder-view-models').hidden,false,'models tab missing after login');
+  assert.equal(get('qoder-view-chat').hidden,false,'chat tab missing after login');
+  assert.equal(get('qoder-pane-status').hidden,false,'did not return to the status pane');
+  assert.equal(get('qoder-pane-login').hidden,true,'login pane stayed open after success');
+  assert.equal(get('qoder-logout').hidden,false,'logout hidden after login');
+});
+
+test('qoder logout needs two clicks, posts, and returns the tab to logged-out login pane',async()=>{
+  const loggedIn={enabled:true,control:true,logged_in:true,reachable:true,model_count:1,models:[{id:'qoder-qwen3.8-max',realm:'qoder'}]};
+  const loggedOut={enabled:true,control:true,logged_in:false,reachable:false,model_count:0,models:[]};
+  const {ctx,get,requests}=qoderControlFixture([loggedIn,loggedOut],[]);
+  await vm.runInContext("signedIn({csrf:'c',global_enabled:true,zcode_enabled:false,qoder_enabled:true})",ctx);
+  vm.runInContext("page='qoder'",ctx);
+  await vm.runInContext('loadQoder()',ctx);
+  assert.equal(get('qoder-logout').hidden,false);
+  await get('qoder-logout').handlers.click();
+  assert.equal(get('qoder-logout').textContent,'再次点击确认退出');
+  assert.equal(requests.some(r=>r.url==='/admin/qoder/logout'),false,'logout posted on the first arming click');
+  await get('qoder-logout').handlers.click();
+  await new Promise(r=>setTimeout(r,0)); // 同步 click 处理器内部触发异步 qoderAction，排空微任务
+  assert.ok(requests.some(r=>r.url==='/admin/qoder/logout'&&r.method==='POST'),'logout not posted');
+  assert.equal(get('qoder-view-login').hidden,false,'login tab missing after logout');
+  assert.equal(get('qoder-pane-login').hidden,false,'did not auto-land on the login pane');
+  assert.equal(get('qoder-pane-status').hidden,true,'status pane stayed open after logout');
+  assert.equal(get('qoder-logout').hidden,true);
+  assert.equal(get('qoder-login-start').hidden,false);
+});
+
+test('qoder login tab stays hidden without a usable control endpoint',async()=>{
+  // PAT-only mode: control field absent, data plane reachable -> status/models/chat, no login tab.
+  const patOnly=qoderFixture({enabled:true,reachable:true,model_count:1,models:[{id:'qoder-qwen3.8-max',realm:'qoder'}]});
+  await vm.runInContext("signedIn({csrf:'c',global_enabled:true,zcode_enabled:false,qoder_enabled:true})",patOnly.ctx);
+  await vm.runInContext('loadQoder()',patOnly.ctx);
+  assert.equal(patOnly.get('qoder-view-login').hidden,true,'login tab showed in PAT-only mode');
+  assert.equal(patOnly.get('qoder-pane-login').hidden,true,'login pane showed in PAT-only mode');
+  assert.equal(patOnly.get('qoder-view-models').hidden,false,'models tab missing in PAT-only mode');
+  assert.match(patOnly.get('qoder-status-text').textContent,/PAT 模式/);
+  // Control configured but unreachable: control:false hides the login tab as well.
+  const down=qoderFixture({enabled:true,control:false,reachable:false,model_count:0,models:[]});
+  await vm.runInContext("signedIn({csrf:'c',global_enabled:true,zcode_enabled:false,qoder_enabled:true})",down.ctx);
+  await vm.runInContext('loadQoder()',down.ctx);
+  assert.equal(down.get('qoder-view-login').hidden,true,'login tab showed while the control endpoint is down');
+  assert.match(down.get('qoder-status-text').textContent,/登录控制端不可达/);
+});
