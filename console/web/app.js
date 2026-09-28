@@ -762,6 +762,10 @@ function accountNote(response) {
  const platform = realm === 'global' ? '国际版' : realm === 'cn' ? '国内版' : realm;
  return ` · 本次账号：${account || '—'}${platform ? `（${platform}）` : ''}`;
 }
+for(const [inputId,formId] of [['prompt','chat-form'],['zcode-prompt','zcode-form'],['qoder-prompt','qoder-form']])$(inputId).addEventListener('keydown',event=>{
+ if(event.key!=='Enter'||event.shiftKey||event.isComposing)return;
+ event.preventDefault();$(formId).requestSubmit();
+});
 $('chat-form').addEventListener('submit',async event=>{
  event.preventDefault();if(activeRequest)return;const text=$('prompt').value.trim();if(!text)return;
  const requestProtocol=protocol,generation=sessionGeneration;

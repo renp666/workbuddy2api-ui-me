@@ -45,6 +45,7 @@ SPEC.md
 /restart.bat
 /start-channels.bat
 /stop-channels.bat
+/claim-zcode.bat
 
 # Local tool artifacts
 /.mimosa/

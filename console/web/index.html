@@ -46,7 +46,7 @@
   <section class="page" data-page="chat" hidden><div class="page-heading"><div><p class="eyebrow">PLAYGROUND</p><h1>让模型回答一个问题</h1><p class="muted">真实请求经过同一账号池。对话只保留在当前页面，刷新即清空。</p></div><button id="clear-chat" class="secondary">清空对话</button></div>
    <div class="panel chat-panel"><div class="protocol-row"><div class="protocol-switch" role="group" aria-label="对话协议"><button id="chat-openai" data-protocol="openai" aria-pressed="true">OpenAI</button><button id="chat-anthropic" data-protocol="anthropic" aria-pressed="false">Anthropic · Beta 测试</button></div><span class="muted small">切换协议会清空当前对话</span></div>
    <div class="chat-settings"><label for="model">模型</label><select id="model"></select><label id="effort-label" for="effort">推理档位</label><select id="effort"><option value="">默认</option></select><label id="max-tokens-label" for="max-tokens" hidden>最大输出 tokens</label><input id="max-tokens" type="number" value="1024" min="1" step="1" hidden></div><p id="model-hint" class="muted small"></p><div id="messages" class="messages" aria-live="polite"><div class="chat-empty">你好，想先问些什么？<small>选择模型后，在下方输入你的问题。</small></div></div>
-   <form id="chat-form"><label class="sr-only" for="prompt">你的问题</label><textarea id="prompt" rows="3" placeholder="输入一个问题…" required></textarea><div class="composer-footer"><span id="usage" class="muted small" role="status" aria-live="polite">用量将在上游返回后显示</span><button id="stop-chat" class="secondary" type="button" hidden>停止生成</button><button id="send-chat" class="primary" type="submit">发送 ↑</button></div></form></div>
+   <form id="chat-form"><label class="sr-only" for="prompt">你的问题</label><textarea id="prompt" rows="2" placeholder="输入一个问题…（回车发送，Shift+回车换行）" required></textarea><div class="composer-footer"><span id="usage" class="muted small" role="status" aria-live="polite">用量将在上游返回后显示</span><button id="stop-chat" class="secondary" type="button" hidden>停止生成</button><button id="send-chat" class="primary" type="submit">发送 ↑</button></div></form></div>
   </section>
   <section class="page" data-page="zcode" hidden><div class="page-heading"><div><p class="eyebrow">GLM CHANNEL</p><h1>Zcode 通道</h1><p class="muted">可选的智谱 GLM 编码套餐旁路。账号、额度与登录由 zcode-proxy 自持，本控制台只负责查看与测试。</p></div><button id="zcode-refresh" class="secondary">↻ 刷新状态</button></div>
    <p id="zcode-disabled" class="empty" hidden>GLM 通道未启用。在部署目录用 <code>deploy/compose.zcode.yml</code> overlay 启动后，这里会显示通道状态、模型列表与对话测试。</p>
@@ -72,7 +72,7 @@
     <div class="section-title" id="zcode-chat-title"><h2>对话测试</h2><span class="muted small">仅 OpenAI 流式协议，真实请求转发给 zcode-proxy</span></div>
     <div class="panel chat-panel" id="zcode-chat-panel"><div class="chat-settings"><label for="zcode-model">模型</label><select id="zcode-model"></select></div>
      <div id="zcode-messages" class="messages" aria-live="polite"><div class="chat-empty">选择一个 GLM 模型，在下方输入问题。<small>对话只保留在当前页面，刷新即清空。</small></div></div>
-     <form id="zcode-form"><label class="sr-only" for="zcode-prompt">你的问题</label><textarea id="zcode-prompt" rows="3" placeholder="输入一个问题…" required></textarea><div class="composer-footer"><span id="zcode-usage" class="muted small" role="status" aria-live="polite">用量将在上游返回后显示</span><button id="zcode-stop" class="secondary" type="button" hidden>停止生成</button><button id="zcode-send" class="primary" type="submit">发送 ↑</button></div></form></div>
+     <form id="zcode-form"><label class="sr-only" for="zcode-prompt">你的问题</label><textarea id="zcode-prompt" rows="2" placeholder="输入一个问题…（回车发送，Shift+回车换行）" required></textarea><div class="composer-footer"><span id="zcode-usage" class="muted small" role="status" aria-live="polite">用量将在上游返回后显示</span><button id="zcode-stop" class="secondary" type="button" hidden>停止生成</button><button id="zcode-send" class="primary" type="submit">发送 ↑</button></div></form></div>
     </div>
    </div>
   </section>
@@ -98,7 +98,7 @@
     <div class="section-title"><h2>对话测试</h2><span class="muted small">OpenAI 流式协议，真实请求转发给 qoder-proxy</span></div>
     <div class="panel chat-panel" id="qoder-chat-panel"><div class="chat-settings"><label for="qoder-model">模型</label><select id="qoder-model"></select></div>
      <div id="qoder-messages" class="messages" aria-live="polite"><div class="chat-empty">选择一个 Qoder 模型，在下方输入问题。<small>对话只保留在当前页面，刷新即清空。</small></div></div>
-     <form id="qoder-form"><label class="sr-only" for="qoder-prompt">你的问题</label><textarea id="qoder-prompt" rows="3" placeholder="输入一个问题…" required></textarea><div class="composer-footer"><span id="qoder-usage" class="muted small" role="status" aria-live="polite">用量将在上游返回后显示</span><button id="qoder-stop" class="secondary" type="button" hidden>停止生成</button><button id="qoder-send" class="primary" type="submit">发送 ↑</button></div></form></div>
+     <form id="qoder-form"><label class="sr-only" for="qoder-prompt">你的问题</label><textarea id="qoder-prompt" rows="2" placeholder="输入一个问题…（回车发送，Shift+回车换行）" required></textarea><div class="composer-footer"><span id="qoder-usage" class="muted small" role="status" aria-live="polite">用量将在上游返回后显示</span><button id="qoder-stop" class="secondary" type="button" hidden>停止生成</button><button id="qoder-send" class="primary" type="submit">发送 ↑</button></div></form></div>
     </div>
    </div>
   </section>
