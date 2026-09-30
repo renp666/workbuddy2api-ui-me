@@ -47,6 +47,8 @@
    <div class="panel chat-panel"><div class="protocol-row"><div class="protocol-switch" role="group" aria-label="对话协议"><button id="chat-openai" data-protocol="openai" aria-pressed="true">OpenAI</button><button id="chat-anthropic" data-protocol="anthropic" aria-pressed="false">Anthropic · Beta 测试</button></div><span class="muted small">切换协议会清空当前对话</span></div>
    <div class="chat-settings"><label for="model">模型</label><select id="model"></select><label id="effort-label" for="effort">推理档位</label><select id="effort"><option value="">默认</option></select><label id="max-tokens-label" for="max-tokens" hidden>最大输出 tokens</label><input id="max-tokens" type="number" value="1024" min="1" step="1" hidden></div><p id="model-hint" class="muted small"></p><div id="messages" class="messages" aria-live="polite"><div class="chat-empty">你好，想先问些什么？<small>选择模型后，在下方输入你的问题。</small></div></div>
    <form id="chat-form"><label class="sr-only" for="prompt">你的问题</label><textarea id="prompt" rows="2" placeholder="输入一个问题…（回车发送，Shift+回车换行）" required></textarea><div class="composer-footer"><span id="usage" class="muted small" role="status" aria-live="polite">用量将在上游返回后显示</span><button id="stop-chat" class="secondary" type="button" hidden>停止生成</button><button id="send-chat" class="primary" type="submit">发送 ↑</button></div></form></div>
+   <div class="section-title"><h2>模型列表</h2><span class="muted small">来自 core 的 <code>/v1/models</code>；core 不提供探测结论，未探测的字段如实留空</span></div>
+   <div class="panel table-wrap"><table><thead><tr><th>模型 ID</th><th>能力</th><th>状态</th><th>耗时</th><th>说明</th></tr></thead><tbody id="core-models-body"></tbody></table><p id="core-models-empty" class="empty">暂无模型。</p></div>
   </section>
   <section class="page" data-page="zcode" hidden><div class="page-heading"><div><p class="eyebrow">GLM CHANNEL</p><h1>Zcode 通道</h1><p class="muted">可选的智谱 GLM 编码套餐旁路。账号、额度与登录由 zcode-proxy 自持，本控制台只负责查看与测试。</p></div><button id="zcode-refresh" class="secondary">↻ 刷新状态</button></div>
    <p id="zcode-disabled" class="empty" hidden>GLM 通道未启用。在部署目录用 <code>deploy/compose.zcode.yml</code> overlay 启动后，这里会显示通道状态、模型列表与对话测试。</p>
@@ -64,8 +66,8 @@
      <p id="zcode-login-hint" class="muted small" role="status" aria-live="polite"></p></article>
     </div>
     <div id="zcode-pane-models" hidden>
-    <div class="section-title" id="zcode-models-title"><h2>GLM 模型</h2><span class="muted small">来自 zcode-proxy 的 <code>/v1/models</code></span></div>
-    <div class="panel table-wrap" id="zcode-models-table"><table><thead><tr><th>模型 ID</th></tr></thead><tbody id="zcode-models-body"></tbody></table><p id="zcode-models-empty" class="empty">暂无模型。</p></div>
+    <div class="section-title" id="zcode-models-title"><h2>GLM 模型</h2><span class="muted small">来自 zcode-proxy 的 <code>/v1/models</code>；zcode 暂不提供探测结论，状态列如实显示「未探测」</span></div>
+    <div class="panel table-wrap" id="zcode-models-table"><table><thead><tr><th>模型 ID</th><th>能力</th><th>状态</th><th>耗时</th><th>说明</th></tr></thead><tbody id="zcode-models-body"></tbody></table><p id="zcode-models-empty" class="empty">暂无模型。</p></div>
     <p id="zcode-models-note" class="muted small" hidden>当前为 Start Plan 档位，仅展示可用的 <code>-flash</code> 模型。</p>
     </div>
     <div id="zcode-pane-chat" hidden>
@@ -91,8 +93,8 @@
      <p id="qoder-login-hint" class="muted small" role="status" aria-live="polite"></p></article>
     </div>
     <div id="qoder-pane-models" hidden>
-    <div class="section-title"><h2>Qoder 模型</h2><span class="muted small">来自 qoder-proxy 的 <code>/v1/models</code></span></div>
-    <div class="panel table-wrap"><table><thead><tr><th>模型 ID</th><th>归属</th></tr></thead><tbody id="qoder-models-body"></tbody></table><p id="qoder-models-empty" class="empty">暂无模型。</p></div>
+    <div class="section-title"><h2>Qoder 模型</h2><span class="muted small">来自 qoder-proxy 的 <code>/v1/models</code>；qoder 暂不提供探测结论，状态列如实显示「未探测」</span></div>
+    <div class="panel table-wrap"><table><thead><tr><th>模型 ID</th><th>能力</th><th>状态</th><th>耗时</th><th>说明</th></tr></thead><tbody id="qoder-models-body"></tbody></table><p id="qoder-models-empty" class="empty">暂无模型。</p></div>
     </div>
     <div id="qoder-pane-chat" hidden>
     <div class="section-title"><h2>对话测试</h2><span class="muted small">OpenAI 流式协议，真实请求转发给 qoder-proxy</span></div>
@@ -111,8 +113,8 @@
      <div class="panel table-wrap" id="opencode-health-wrap" hidden><table><thead><tr><th>字段</th><th>值</th></tr></thead><tbody id="opencode-health-body"></tbody></table></div></article>
     </div>
     <div id="opencode-pane-models" hidden>
-    <div class="section-title"><h2>OpenCode 模型</h2><span class="muted small">来自 OW Bridge 的 <code>/v1/models</code>（仅列出探测通过的免费模型）</span></div>
-    <div class="panel table-wrap"><table><thead><tr><th>模型 ID</th><th>归属</th></tr></thead><tbody id="opencode-models-body"></tbody></table><p id="opencode-models-empty" class="empty">暂无模型。</p></div>
+    <div class="section-title"><h2>OpenCode 模型</h2><span class="muted small">来自 OW Bridge 的 <code>/v1/models</code>，并合并 <code>/health</code> 的探测结论（含探测未通过的模型）</span></div>
+    <div class="panel table-wrap"><table><thead><tr><th>模型 ID</th><th>能力</th><th>状态</th><th>耗时</th><th>说明</th></tr></thead><tbody id="opencode-models-body"></tbody></table><p id="opencode-models-empty" class="empty">暂无模型。</p></div>
     </div>
     <div id="opencode-pane-chat" hidden>
     <div class="section-title"><h2>对话测试</h2><span class="muted small">OpenAI 流式协议，真实请求转发给 OW Bridge sidecar</span></div>

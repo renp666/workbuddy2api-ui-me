@@ -1136,6 +1136,87 @@ test('opencode tab falls back to the status view when the channel drops mid-sess
   assert.equal(get('opencode-pane-chat').hidden,true,'chat pane stayed open after the channel dropped');
 });
 
+test('opencode model table keeps probed-but-unavailable models with capability, probe detail and failure reason',async()=>{
+  // /v1/models only lists the 2 published models; /health.modelResults probes 3, so the failed
+  // one must still show up with its reason instead of vanishing from the console.
+  const {ctx,get}=opencodeFixture({enabled:true,reachable:true,model_count:2,
+    models:[{id:'opencode-OC · Big Pickle',realm:'opencode'},{id:'opencode-OC · LongCat 2.5 Preview Free',realm:'opencode'}],
+    health:{phase:'ready',
+      models:[{name:'Big Pickle',context:200000,images:false,toolcall:true,reasoning:true},
+        {name:'LongCat 2.5 Preview Free',context:1000000,images:true,toolcall:true,reasoning:true,variants:{low:{},medium:{},high:{}}},
+        {name:'Muse Spark 1.3 Free',context:1048576,images:true,toolcall:true,reasoning:true}],
+      modelResults:{'OC · Big Pickle':{ok:true,category:'available',durationMs:7945,source:'probe'},
+        'OC · LongCat 2.5 Preview Free':{ok:true,chatOnly:true,code:'chat_only',error:'探测时只返回文本、未产生动作；已按仅对话发布'},
+        'OC · Muse Spark 1.3 Free':{ok:false,category:'access',status:403,durationMs:120,source:'probe',error:'This model is not available in your country.'}}}});
+  await vm.runInContext("signedIn({csrf:'c',global_enabled:true,zcode_enabled:false,qoder_enabled:false,opencode_enabled:true})",ctx);
+  await vm.runInContext('loadOpenCode()',ctx);
+  const body=get('opencode-models-body');
+  assert.equal(body.children.length,3,'probed-but-unavailable model dropped from the table');
+  const [available,chatOnly,blocked]=body.children;
+  // Row 1: a healthy model -> capability badges, context limit, duration and probe source.
+  assert.equal(available.children[0].textContent,'opencode-OC · Big Pickle');
+  assert.deepEqual(available.children[1].children[0].children.map(tag=>tag.textContent),['工具','推理'],'capability badges');
+  assert.equal(available.children[1].children[1].textContent,'上下文 200000');
+  assert.equal(available.children[2].children[0].textContent,'可用');
+  assert.equal(available.children[2].children[0].className,'badge');
+  assert.equal(available.children[3].textContent,'7.9 秒');
+  assert.equal(available.children[3].children[0].textContent,'探测');
+  assert.equal(available.children[4].textContent,'—');
+  // Row 2: chat-only publish downgrade is not the same as unavailable, and variants surface.
+  assert.equal(chatOnly.children[2].children[0].textContent,'仅对话');
+  assert.equal(chatOnly.children[2].children[0].className,'badge warn');
+  assert.match(chatOnly.children[1].children[1].textContent,/档位 low \/ medium \/ high/);
+  assert.match(chatOnly.children[4].textContent,/仅对话发布/);
+  // Row 3: a 403 region block keeps its own label, duration and upstream reason.
+  assert.equal(blocked.children[0].textContent,'opencode-OC · Muse Spark 1.3 Free');
+  assert.equal(blocked.children[2].children[0].textContent,'地区限制');
+  assert.equal(blocked.children[3].children[0].textContent,'探测');
+  assert.equal(blocked.children[4].textContent,'This model is not available in your country.');
+  assert.equal(get('opencode-models-empty').hidden,true);
+});
+
+test('opencode health table reports model sync, availability and the latest request',async()=>{
+  const {ctx,get}=opencodeFixture({enabled:true,reachable:true,model_count:1,
+    models:[{id:'opencode-OC · Free',realm:'opencode'}],
+    health:{phase:'ready',version:'1.2.3',opencodeVersion:'1.4.5',endpoint:'https://opencode.ai/zen/v1',
+      modelResults:{'OC · Free':{ok:true}},probe:{running:false},
+      availableModels:['opencode/Free'],sync:{skipped:true,count:5},lastRequest:{model:'opencode/Free',ok:false,category:'error'},
+      updatedAt:'2026-09-30T14:38:34.482Z'}});
+  await vm.runInContext("signedIn({csrf:'c',global_enabled:true,zcode_enabled:false,qoder_enabled:false,opencode_enabled:true})",ctx);
+  await vm.runInContext('loadOpenCode()',ctx);
+  const rows=get('opencode-health-body').children;
+  assert.deepEqual(rows.map(tr=>tr.children[0].textContent),['phase','version','opencode 版本','endpoint','模型探测','可用模型','模型同步','最近请求','更新时间']);
+  assert.equal(rows[5].children[1].textContent,'1 个');
+  assert.equal(rows[6].children[1].textContent,'本次跳过');
+  assert.match(rows[7].children[1].textContent,/opencode\/Free · 失败（调用失败）/);
+  assert.match(rows[8].children[1].textContent,/2026/);
+});
+
+test('channels without probe data fall back to an explicit 未探测 state instead of hiding the column',async()=>{
+  const {ctx,get}=zcodeFixture({enabled:true,reachable:true,model_count:2,models:[{id:'glm-5.2'},{id:'glm-4.7'}]});
+  await vm.runInContext("signedIn({csrf:'c',global_enabled:true,zcode_enabled:true})",ctx);
+  await vm.runInContext('loadZcode()',ctx);
+  const rows=get('zcode-models-body').children;
+  assert.equal(rows.length,2);
+  assert.equal(rows[0].children[0].textContent,'glm-5.2');
+  assert.equal(rows[0].children[2].children[0].textContent,'未探测');
+  assert.equal(rows[0].children[2].children[0].className,'badge warn');
+  assert.equal(rows[0].children[3].textContent,'—');
+});
+
+test('core model table renders the catalog with the shared layout and an explicit 未探测 state',async()=>{
+  const models=[{id:'cn:workbuddy'},{id:'global:claude',reasoning_supported_efforts:['low','high']}];
+  const {ctx,get}=taskFixture(url=>url==='/admin/models'?Promise.resolve({ok:true,status:200,json:async()=>({data:models})}):new Promise(()=>{}));
+  await vm.runInContext('refreshModels()',ctx);
+  const rows=get('core-models-body').children;
+  assert.equal(rows.length,2,'core model rows missing');
+  assert.equal(rows[0].children[0].textContent,'cn:workbuddy');
+  assert.equal(rows[0].children[2].children[0].textContent,'未探测');
+  assert.equal(rows[0].children[2].children[0].className,'badge warn');
+  assert.equal(rows[1].children[1].children[0].children[0].textContent,'推理','reasoning effort hint lost');
+  assert.equal(get('core-models-empty').hidden,true);
+});
+
 test('access model select merges opencode models and routes opencode go-chat to the opencode tab',async()=>{
   const {ctx,get}=opencodeFixture({enabled:true,reachable:true,model_count:1,models:[{id:'opencode-OC · Free',realm:'opencode'}]});
   vm.runInContext("modelList=[{id:'cn:workbuddy',realm:'cn'}]",ctx);

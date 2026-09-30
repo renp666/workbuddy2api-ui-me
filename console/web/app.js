@@ -76,6 +76,84 @@ $('login-form').addEventListener('submit', async event => {
 });
 $('logout').addEventListener('click', async () => {$('login-error').textContent='';const pending=jsonAPI('logout', {});signedOut();try {await pending;} catch(e){$('login-error').textContent=e.message;} });
 function cell(text, small) { const td = document.createElement('td'); td.textContent = text; if (small) { const s=document.createElement('small');s.textContent=small;td.append(s); } return td; }
+// zcode / qoder / opencode / core 共用的模型表渲染。能力与探测结论都取自上游探测结果；
+// 没有探测数据的通道显式显示「未探测」而不是隐藏列，后续上游补上同构数据即可直接复用。
+const modelChannels={zcode:{body:'zcode-models-body',empty:'zcode-models-empty',namePrefix:'GLM · '},
+ qoder:{body:'qoder-models-body',empty:'qoder-models-empty',namePrefix:'Qoder · '},
+ opencode:{body:'opencode-models-body',empty:'opencode-models-empty',namePrefix:'opencode-OC · '},
+ core:{body:'core-models-body',empty:'core-models-empty',namePrefix:''}};
+const modelFailureLabels={timeout:'探测超时',access:'地区限制',error:'调用失败',model_error:'模型错误',auth:'未授权',rate_limit:'限流'};
+const modelProbeSources={probe:'探测',request:'真实请求'};
+// 公共模型名带通道前缀（opencode-OC · X / glm-X / opencode/x），去掉前缀与分隔符后作为跨源对齐键。
+function modelKey(id){return String(id||'').replace(/^opencode-OC · /,'').replace(/^OC · /,'').replace(/^opencode\//,'').replace(/^glm-/,'').replace(/^qoder-/,'').toLowerCase().replace(/[^a-z0-9\u4e00-\u9fa5]+/g,'');}
+function badgeCell(text,warn){const td=document.createElement('td');const tag=document.createElement('span');tag.className='badge'+(warn?' warn':'');tag.textContent=text;td.append(tag);return td;}
+function chipsCell(labels,small){const td=document.createElement('td');if(labels.length){const row=document.createElement('span');row.className='badge-row';for(const label of labels){const tag=document.createElement('span');tag.className='badge';tag.textContent=label;row.append(tag);}td.append(row);}else td.textContent='—';if(small){const note=document.createElement('small');note.textContent=small;td.append(note);}return td;}
+function modelProbeState(result){
+ if(!result)return{label:'未探测',warn:true};
+ if(result.ok===true)return result.chatOnly?{label:'仅对话',warn:true}:{label:'可用',warn:false};
+ const category=typeof result.category==='string'?result.category:'';
+ return{label:modelFailureLabels[category]||category||'不可用',warn:true};
+}
+function formatProbeDuration(ms){const value=Number(ms);return Number.isFinite(value)&&value>=0?`${(value/1000).toFixed(1)} 秒`:'—';}
+function formatProbeTime(value){const date=new Date(value);return Number.isNaN(date.getTime())?'':date.toLocaleString('zh-CN',{timeZone:'Asia/Shanghai',hour12:false});}
+function modelCapabilityBadges(cap,fallback){
+ if(cap&&(cap.images!==undefined||cap.toolcall!==undefined||cap.reasoning!==undefined))return[cap.images?'图片':'',cap.toolcall?'工具':'',cap.reasoning?'推理':''].filter(Boolean);
+ return fallback||[];
+}
+function modelLimitText(cap){
+ if(!cap)return '';
+ const parts=[];
+ if(cap.context)parts.push(`上下文 ${cap.context}`);
+ if(cap.input)parts.push(`输入上限 ${cap.input}`);
+ if(cap.output)parts.push(`输出上限 ${cap.output}`);
+ return parts.join(' · ');
+}
+function modelVariantNames(source){const variants=source&&typeof source.variants==='object'?source.variants:null;return variants?Object.keys(variants):[];}
+// channelModelRows 把「模型清单」与「探测结果」并成同一批行。/v1/models 只返回可用项，
+// 探测过但不可用的模型仍按条保留并带失败原因，不让它们从界面上整体消失。
+function channelModelRows(channel,list,health){
+ const prefix=modelChannels[channel].namePrefix;
+ const results=health&&typeof health.modelResults==='object'&&health.modelResults?health.modelResults:{};
+ const caps=new Map();
+ if(health&&Array.isArray(health.models))for(const item of health.models){if(item&&item.name)caps.set(modelKey(item.name),item);}
+ const rows=new Map();
+ const ensure=label=>{const key=modelKey(label);if(!key)return null;if(!rows.has(key))rows.set(key,{key,label:String(label),cap:null,result:null,efforts:null});return rows.get(key);};
+ for(const item of(Array.isArray(list)?list:[])){
+  if(!item||!item.id)continue;
+  const row=ensure(item.id);if(!row)continue;
+  row.efforts=Array.isArray(item.reasoning_supported_efforts)?item.reasoning_supported_efforts:null;
+  row.cap=caps.get(row.key)||row.cap;
+ }
+ for(const[id,result]of Object.entries(results)){
+  const cap=caps.get(modelKey(id))||null;
+  const row=ensure(cap&&cap.name?`${prefix}${cap.name}`:id);if(!row)continue;
+  row.cap=cap||row.cap;
+  row.result=result&&typeof result==='object'?result:null;
+ }
+ return[...rows.values()].map(row=>{
+  const result=row.result;
+  const variants=[...new Set([...modelVariantNames(result),...modelVariantNames(row.cap)])];
+  return{label:row.label,state:modelProbeState(result),
+   caps:modelCapabilityBadges(row.cap,row.efforts&&row.efforts.length?['推理']:null),
+   limit:modelLimitText(row.cap),
+   variants:variants.length?`档位 ${variants.join(' / ')}`:'',
+   duration:result?formatProbeDuration(result.durationMs):'—',
+   source:result&&modelProbeSources[result.source]?modelProbeSources[result.source]:'',
+   note:result&&typeof result.error==='string'&&result.error?result.error:'—'};
+ });
+}
+function renderModelTable(channel,list,health){
+ const config=modelChannels[channel];
+ const body=$(config.body);body.replaceChildren();
+ const rows=channelModelRows(channel,list,health);
+ for(const row of rows){
+  const tr=document.createElement('tr');
+  tr.append(cell(row.label),chipsCell(row.caps,[row.limit,row.variants].filter(Boolean).join(' · ')),badgeCell(row.state.label,row.state.warn),cell(row.duration,row.source),cell(row.note));
+  body.append(tr);
+ }
+ $(config.empty).hidden=rows.length>0;
+ return rows;
+}
 function renderAccounts(data) {
  lastStatus = data;
  accounts = data.accounts || [];
@@ -198,6 +276,7 @@ async function refreshModels() {
   if (modelList.some(m=>m.id===previous)) $('model').value=previous;
   else {const available=modelList.find(m=>accounts.some(a=>m.id.startsWith(`${a.realm||'cn'}:`)));if(available)$('model').value=available.id;}
   renderAccessModelSelect();
+  renderModelTable('core',modelList,null);
   updateEfforts();renderAccess();
  } catch(e) { notice(e.message); }
 }
@@ -405,9 +484,7 @@ function renderZcode(status){
  $('zcode-model').replaceChildren();
  for(const id of zcodeModels)$('zcode-model').append(new Option(id,id));
  if(zcodeModels.includes(previous))$('zcode-model').value=previous;
- $('zcode-models-body').replaceChildren();
- for(const id of zcodeModels){const tr=document.createElement('tr');tr.append(cell(id));$('zcode-models-body').append(tr);}
- $('zcode-models-empty').hidden=zcodeModels.length>0;
+ renderModelTable('zcode',status.models,status.health);
  $('zcode-models-note').hidden=plan!=='start-plan';
  $('zcode-model').disabled=!zcodeModels.length||!!activeRequest;
  $('zcode-send').disabled=!zcodeModels.length||!!activeRequest;
@@ -567,9 +644,7 @@ function renderQoder(status){
  $('qoder-model').replaceChildren();
  for(const id of qoderModels)$('qoder-model').append(new Option(id,id));
  if(qoderModels.includes(previous))$('qoder-model').value=previous;
- $('qoder-models-body').replaceChildren();
- for(const id of qoderModels){const tr=document.createElement('tr');tr.append(cell(id),cell('Qoder'));$('qoder-models-body').append(tr);}
- $('qoder-models-empty').hidden=qoderModels.length>0;
+ renderModelTable('qoder',status.models,status.health);
  $('qoder-model').disabled=!qoderModels.length||!!activeRequest;
  $('qoder-send').disabled=!qoderModels.length||!!activeRequest;
  qoderControls();
@@ -710,6 +785,12 @@ function renderOpenCode(status){
    rows.push(['模型探测',`${ok}/${results.length} 通过`]);
   }
   if(health.probe&&health.probe.running)rows.push(['探测进行中',String(health.probe.current||'')]);
+  if(Array.isArray(health.availableModels))rows.push(['可用模型',`${health.availableModels.length} 个`]);
+  const sync=health.sync&&typeof health.sync==='object'?health.sync:null;
+  if(sync)rows.push(['模型同步',sync.skipped?'本次跳过':`已同步${Number.isFinite(Number(sync.count))?` ${Number(sync.count)} 个`:''}`]);
+  const last=health.lastRequest&&typeof health.lastRequest==='object'?health.lastRequest:null;
+  if(last&&last.model)rows.push(['最近请求',`${last.model} · ${last.ok===true?'成功':'失败'}${last.category?`（${modelFailureLabels[last.category]||last.category}）`:''}`]);
+  if(health.updatedAt)rows.push(['更新时间',formatProbeTime(health.updatedAt)]);
   for(const [k,v] of rows){
    if(v===undefined||v===null||v==='')continue;
    const tr=document.createElement('tr');
@@ -733,9 +814,7 @@ function renderOpenCode(status){
  $('opencode-model').replaceChildren();
  for(const id of opencodeModels)$('opencode-model').append(new Option(id,id));
  if(opencodeModels.includes(previous))$('opencode-model').value=previous;
- $('opencode-models-body').replaceChildren();
- for(const id of opencodeModels){const tr=document.createElement('tr');tr.append(cell(id),cell('OpenCode'));$('opencode-models-body').append(tr);}
- $('opencode-models-empty').hidden=opencodeModels.length>0;
+ renderModelTable('opencode',status.models,health);
  $('opencode-model').disabled=!opencodeModels.length||!!activeRequest;
  $('opencode-send').disabled=!opencodeModels.length||!!activeRequest;
  opencodeControls();
