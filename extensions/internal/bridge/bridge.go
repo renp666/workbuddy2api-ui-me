@@ -75,6 +75,7 @@ func New(ctx context.Context, cfg Config) http.Handler {
 	h.mux.HandleFunc("DELETE /internal/v1/owners/{owner}/flows", h.withOwner(h.cancelOwner))
 	h.mux.HandleFunc("GET /internal/v1/tasks", h.listTasks)
 	h.mux.HandleFunc("GET /internal/v1/usage", h.listUsage)
+	h.mux.HandleFunc("POST /internal/v1/usage/reports", h.reportUsage)
 	h.mux.HandleFunc("GET /internal/v1/pin", h.listPins)
 	h.mux.HandleFunc("POST /internal/v1/pin", h.pinAccount)
 	h.mux.HandleFunc("POST /internal/v1/unpin", h.unpinAccount)

@@ -51,14 +51,18 @@ func (h *server) zcodeProxy() *httputil.ReverseProxy {
 }
 
 // publicRouter dispatches the public /v1/* surface: glm-* model chat/messages/responses requests
-// go to zcode-proxy, qoder-* model requests go to qoder-proxy, everything else stays on core.
+// go to zcode-proxy, qoder-* model requests go to qoder-proxy, opencode-* model requests go to
+// the opencode sidecar, everything else stays on core.
 func (h *server) publicRouter(core *httputil.ReverseProxy) http.HandlerFunc {
-	var zcode, qoder *httputil.ReverseProxy
+	var zcode, qoder, opencode *httputil.ReverseProxy
 	if h.cfg.ZCodeURL != nil {
 		zcode = h.zcodeProxy()
 	}
 	if h.cfg.QoderURL != nil {
 		qoder = h.qoderProxy()
+	}
+	if h.cfg.OpenCodeURL != nil {
+		opencode = h.opencodeProxy()
 	}
 	return func(w http.ResponseWriter, r *http.Request) {
 		switch r.Method + " " + r.URL.Path {
@@ -77,7 +81,8 @@ func (h *server) publicRouter(core *httputil.ReverseProxy) http.HandlerFunc {
 				return
 			}
 			var envelope struct {
-				Model string `json:"model"`
+				Model  string `json:"model"`
+				Stream bool   `json:"stream"`
 			}
 			if json.Unmarshal(body, &envelope) != nil {
 				r.Body = io.NopCloser(bytes.NewReader(body))
@@ -91,7 +96,10 @@ func (h *server) publicRouter(core *httputil.ReverseProxy) http.HandlerFunc {
 				r.ContentLength = int64(len(body))
 				r.TransferEncoding = nil
 				r.Header.Del("Content-Length")
-				zcode.ServeHTTP(w, r)
+				// 旁路通道不经过 core，响应在这里捕获 usage 并异步回传 core 落账。
+				capture := h.newUsageCapture(w, envelope.Model, "zcode", envelope.Stream)
+				zcode.ServeHTTP(capture, r)
+				h.finishUsageCapture(capture)
 				return
 			}
 			if qoder != nil && strings.HasPrefix(envelope.Model, qoderModelPrefix) {
@@ -100,7 +108,22 @@ func (h *server) publicRouter(core *httputil.ReverseProxy) http.HandlerFunc {
 				r.ContentLength = int64(len(modified))
 				r.TransferEncoding = nil
 				r.Header.Del("Content-Length")
-				qoder.ServeHTTP(w, r)
+				// qoder 上报保留公共前缀模型名（剥前缀前的 envelope.Model）便于区分通道。
+				capture := h.newUsageCapture(w, envelope.Model, "qoder", envelope.Stream)
+				qoder.ServeHTTP(capture, r)
+				h.finishUsageCapture(capture)
+				return
+			}
+			if opencode != nil && strings.HasPrefix(envelope.Model, opencodeModelPrefix) {
+				modified := stripOpenCodeModelPrefix(body)
+				r.Body = io.NopCloser(bytes.NewReader(modified))
+				r.ContentLength = int64(len(modified))
+				r.TransferEncoding = nil
+				r.Header.Del("Content-Length")
+				// opencode 上报同样保留公共前缀模型名，便于与 zcode/core 区分通道。
+				capture := h.newUsageCapture(w, envelope.Model, "opencode", envelope.Stream)
+				opencode.ServeHTTP(capture, r)
+				h.finishUsageCapture(capture)
 				return
 			}
 			r.Body = io.NopCloser(bytes.NewReader(body))
@@ -207,11 +230,12 @@ func (h *server) mergedModels(w http.ResponseWriter, r *http.Request, core *http
 		coreReq.Header.Set("Authorization", auth)
 	}
 	var (
-		wg       sync.WaitGroup
-		coreResp upstreamResponse
-		zcodeRaw []json.RawMessage
-		qoderRaw []json.RawMessage
-		zcodePlan string
+		wg          sync.WaitGroup
+		coreResp    upstreamResponse
+		zcodeRaw    []json.RawMessage
+		qoderRaw    []json.RawMessage
+		opencodeRaw []json.RawMessage
+		zcodePlan   string
 	)
 	wg.Add(1)
 	go func() {
@@ -276,6 +300,42 @@ func (h *server) mergedModels(w http.ResponseWriter, r *http.Request, core *http
 			}
 		}()
 	}
+	if h.cfg.OpenCodeURL != nil {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			opencodeURL := *h.cfg.OpenCodeURL
+			opencodeURL.Path = "/v1/models"
+			opencodeReq, err := http.NewRequestWithContext(r.Context(), "GET", opencodeURL.String(), nil)
+			if err != nil {
+				return
+			}
+			// OW Bridge guards every route (incl. /v1/models) with Bearer auth.
+			if h.cfg.OpenCodeKey != "" {
+				opencodeReq.Header.Set("Authorization", "Bearer "+h.cfg.OpenCodeKey)
+			}
+			list, _ := h.fetchModels(opencodeReq)
+			for _, item := range list {
+				// Add routing prefix so public /v1/models entries match the opencode-* dispatch.
+				var entry map[string]any
+				if json.Unmarshal(item, &entry) != nil || entry == nil {
+					continue
+				}
+				id, ok := entry["id"].(string)
+				if !ok || id == "" {
+					continue
+				}
+				if !strings.HasPrefix(id, opencodeModelPrefix) {
+					entry["id"] = opencodeModelPrefix + id
+				}
+				tagged, err := json.Marshal(entry)
+				if err != nil {
+					continue
+				}
+				opencodeRaw = append(opencodeRaw, tagModelRealm(tagged, "opencode"))
+			}
+		}()
+	}
 	wg.Wait()
 	zcodeRaw = filterZcodeModels(zcodeRaw, zcodePlan)
 	coreList, ok := parseModelList(coreResp)
@@ -291,11 +351,12 @@ func (h *server) mergedModels(w http.ResponseWriter, r *http.Request, core *http
 		w.Write(coreResp.body)
 		return
 	}
-	totalLen := len(coreList) + len(zcodeRaw) + len(qoderRaw)
+	totalLen := len(coreList) + len(zcodeRaw) + len(qoderRaw) + len(opencodeRaw)
 	seen := make(map[string]bool, totalLen)
 	merged := make([]json.RawMessage, 0, totalLen)
 	all := append(append([]json.RawMessage{}, coreList...), zcodeRaw...)
 	all = append(all, qoderRaw...)
+	all = append(all, opencodeRaw...)
 	for _, item := range all {
 		var entry struct {
 			ID    string `json:"id"`

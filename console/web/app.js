@@ -8,6 +8,7 @@ let taskState = {items:[],active_run:null,latest_runs:[]}, taskHistory = [], tas
 let usageRange = 'today', usageGeneration = 0;
 let zcodeModels = [], zcodeHistory = [], zcodeStatus = null, zcodePollTimer, zcodeBusy = false, zcodeAuthURL = '', zcodeLogoutArmed = false, zcodeProviderTouched = false, zcodePlanTouched = false, zcodeView = 'status', zcodeViewTouched = false, zcodeEnabled = false;
 let qoderModels = [], qoderHistory = [], qoderStatus = null, qoderPollTimer, qoderBusy = false, qoderAuthURL = '', qoderLogoutArmed = false, qoderControl = false, qoderLoggedIn = false, qoderLoginTimer = null, qoderView = 'status', qoderViewTouched = false, qoderEnabled = false;
+let opencodeModels = [], opencodeHistory = [], opencodeStatus = null, opencodeBusy = false, opencodeView = 'status', opencodeEnabled = false;
 let selectedTaskRun, historyGeneration = 0, historyLoading = false, taskHistoryKey;
 const taskIntents = new Map(), taskReads = new Set();
 function newConversation() { return `web-${Date.now()}-${Math.random().toString(36).slice(2)}`; }
@@ -34,6 +35,7 @@ function signedOut() {
  protocol='openai';$('prompt').value='';$('max-tokens').value='1024';$('usage').textContent='用量将在上游返回后显示';usageGeneration++;renderAccess();
  zcodeModels=[];zcodeHistory=[];zcodeStatus=null;zcodeAuthURL='';zcodeLogoutArmed=false;zcodeBusy=false;zcodeProviderTouched=false;zcodePlanTouched=false;zcodeView='status';zcodeViewTouched=false;zcodeEnabled=false;clearTimeout(zcodePollTimer);zcodePollTimer=undefined;$('zcode-model').replaceChildren();$('zcode-messages').replaceChildren();$('zcode-prompt').value='';$('zcode-usage').textContent='用量将在上游返回后显示';$('zcode-disabled').hidden=true;$('zcode-content').hidden=true;$('nav-zcode').classList.remove('nav-muted');
  qoderModels=[];qoderHistory=[];qoderStatus=null;qoderEnabled=false;qoderControl=false;qoderLoggedIn=false;qoderAuthURL='';qoderBusy=false;qoderLogoutArmed=false;qoderView='status';qoderViewTouched=false;clearTimeout(qoderPollTimer);qoderPollTimer=undefined;clearTimeout(qoderLoginTimer);qoderLoginTimer=null;$('qoder-model').replaceChildren();$('qoder-messages').replaceChildren();$('qoder-prompt').value='';$('qoder-usage').textContent='用量将在上游返回后显示';$('qoder-disabled').hidden=true;$('qoder-content').hidden=true;$('nav-qoder').classList.remove('nav-muted');$('qoder-auth-row').hidden=true;$('qoder-pane-login').hidden=true;$('qoder-login-hint').textContent='';
+ opencodeModels=[];opencodeHistory=[];opencodeStatus=null;opencodeEnabled=false;opencodeBusy=false;opencodeView='status';$('opencode-model').replaceChildren();$('opencode-messages').replaceChildren();$('opencode-prompt').value='';$('opencode-usage').textContent='用量将在上游返回后显示';$('opencode-disabled').hidden=true;$('opencode-content').hidden=true;$('nav-opencode').classList.remove('nav-muted');$('opencode-health-wrap').hidden=true;$('opencode-health-body').replaceChildren();
  pinState={cn:null,global:null};lastStatus=null;renderPinBanner();
 }
 async function signedIn(session) {
@@ -44,6 +46,8 @@ async function signedIn(session) {
  $('nav-qoder').classList.toggle('nav-muted', !session.qoder_enabled);
  qoderEnabled = !!session.qoder_enabled;
  qoderControl = !!session.qoder_control;
+ $('nav-opencode').classList.toggle('nav-muted', !session.opencode_enabled);
+ opencodeEnabled = !!session.opencode_enabled;
  await refreshStatus(); await refreshModels(); await loadPins();
 }
 function showPage(value) {
@@ -52,16 +56,18 @@ function showPage(value) {
  page = value;
  document.querySelectorAll('[data-page]').forEach(el => el.hidden = el.dataset.page !== page);
  document.querySelectorAll('.nav').forEach(el => el.classList.toggle('active', el.dataset.view === page));
- $('breadcrumb-name').textContent = {overview:'运行概览',accounts:'账号管理',tasks:'自动任务',usage:'调用统计',chat:'对话测试',zcode:'Zcode 通道',qoder:'Qoder 通道',access:'API 接入'}[page];
+ $('breadcrumb-name').textContent = {overview:'运行概览',accounts:'账号管理',tasks:'自动任务',usage:'调用统计',chat:'对话测试',zcode:'Zcode 通道',qoder:'Qoder 通道',opencode:'OpenCode 通道',access:'API 接入'}[page];
  if (page !== 'access') { $('api-key').value = ''; $('api-key').type = 'password'; }
  if (page === 'tasks') loadTaskPage();
  if (page === 'usage') loadUsage();
  if (page === 'zcode') loadZcode();
  if (page === 'qoder') loadQoder();
+ if (page === 'opencode') loadOpenCode();
  // The access tab lists GLM and Qoder channel models too; fetch statuses once lazily
  // so its select is complete even when the operator never opens those tabs.
  if (page === 'access' && zcodeEnabled && !zcodeStatus) loadZcode();
  if (page === 'access' && qoderEnabled && !qoderStatus) loadQoder();
+ if (page === 'access' && opencodeEnabled && !opencodeStatus) loadOpenCode();
 }
 document.querySelectorAll('[data-view]').forEach(button => button.addEventListener('click', () => showPage(button.dataset.view)));
 $('login-form').addEventListener('submit', async event => {
@@ -164,8 +170,8 @@ document.addEventListener?.('click', e => {
  if (btn) return pinAction(btn);
 });
 async function refreshStatus() { try { renderAccounts(await jsonAPI('status')); } catch(e) { notice(e.message); } }
-function realmLabel(realm) { return realm === 'global' ? '国际版' : realm === 'cn' ? '国内版' : realm === 'glm' ? 'GLM·智谱' : realm === 'qoder' ? 'Qoder' : ''; }
-function modelRealm(model) { return model.realm || (model.id.startsWith('global:') ? 'global' : model.id.startsWith('glm-') ? 'glm' : model.id.startsWith('qoder-') ? 'qoder' : 'cn'); }
+function realmLabel(realm) { return realm === 'global' ? '国际版' : realm === 'cn' ? '国内版' : realm === 'glm' ? 'GLM·智谱' : realm === 'qoder' ? 'Qoder' : realm === 'opencode' ? 'OpenCode' : ''; }
+function modelRealm(model) { return model.realm || (model.id.startsWith('global:') ? 'global' : model.id.startsWith('glm-') ? 'glm' : model.id.startsWith('qoder-') ? 'qoder' : model.id.startsWith('opencode-') ? 'opencode' : 'cn'); }
 function modelOption(model) { const label = realmLabel(modelRealm(model)); const n = Array.isArray(model.accounts) ? model.accounts.length : 0; return `${label ? `${label} · ` : ''}${model.id}${n > 1 ? ` · ${n}账号` : ''}`; }
 // accessModelOptions feeds the API-access select: core models plus the GLM
 // channel models (the public /v1/models merges them, but /admin/models only
@@ -174,6 +180,7 @@ function accessModelOptions() {
  const items = modelList.map(m => ({...m}));
  for (const id of zcodeModels) if (id && !items.some(m => m.id === id)) items.push({id, realm: 'glm'});
  for (const id of qoderModels) if (id && !items.some(m => m.id === id)) items.push({id, realm: 'qoder'});
+ for (const id of opencodeModels) if (id && !items.some(m => m.id === id)) items.push({id, realm: 'opencode'});
  return items;
 }
 function renderAccessModelSelect() {
@@ -676,6 +683,104 @@ $('qoder-form').addEventListener('submit',async event=>{
  finally{controller.abort();activeRequest=undefined;qoderControls();}
 });
 
+async function loadOpenCode(){
+ if(!csrf)return;
+ try{renderOpenCode(await jsonAPI('opencode'));}
+ catch(error){notice(error.message);}
+}
+function renderOpenCode(status){
+ opencodeStatus=status;
+ const enabled=!!status.enabled;
+ $('opencode-disabled').hidden=enabled;
+ $('opencode-content').hidden=!enabled;
+ if(!enabled)return;
+ const badge=$('opencode-status-badge');
+ badge.textContent=status.reachable?'在线':'不可达';
+ badge.className='badge'+(status.reachable?'':' warn');
+ let statusText=status.reachable?`OW Bridge 可达 · ${status.model_count} 个免费模型`:'OW Bridge 当前不可达，请确认容器已启动（首次启动需下载 opencode 运行时，可能耗时数分钟）。';
+ const health=status.health;
+ if(health){
+  const message=typeof health.message==='string'?health.message:'';
+  if(message)statusText+=` · ${message}`;
+  const body=$('opencode-health-body');body.replaceChildren();
+  const rows=[['phase',health.phase],['version',health.version],['opencode 版本',health.opencodeVersion],['endpoint',health.endpoint]];
+  const results=health.modelResults&&typeof health.modelResults==='object'?Object.entries(health.modelResults):[];
+  if(results.length){
+   const ok=results.filter(([,r])=>r&&r.ok===true).length;
+   rows.push(['模型探测',`${ok}/${results.length} 通过`]);
+  }
+  if(health.probe&&health.probe.running)rows.push(['探测进行中',String(health.probe.current||'')]);
+  for(const [k,v] of rows){
+   if(v===undefined||v===null||v==='')continue;
+   const tr=document.createElement('tr');
+   tr.append(cell(String(k)),cell(String(v)));
+   body.append(tr);
+  }
+ }
+ $('opencode-health-wrap').hidden=!health;
+ $('opencode-status-text').textContent=statusText;
+ const dataTab=!!status.reachable;
+ if(opencodeView!=='status'&&!dataTab)opencodeView='status';
+ $('opencode-view-models').hidden=!dataTab;
+ $('opencode-view-chat').hidden=!dataTab;
+ for(const view of ['status','models','chat']){
+  $('opencode-view-'+view).classList.toggle('active',view===opencodeView);
+  $('opencode-pane-'+view).hidden=view!==opencodeView;
+ }
+ opencodeModels=(status.models||[]).map(item=>item.id).filter(Boolean);
+ renderAccessModelSelect();renderAccess();
+ const previous=$('opencode-model').value;
+ $('opencode-model').replaceChildren();
+ for(const id of opencodeModels)$('opencode-model').append(new Option(id,id));
+ if(opencodeModels.includes(previous))$('opencode-model').value=previous;
+ $('opencode-models-body').replaceChildren();
+ for(const id of opencodeModels){const tr=document.createElement('tr');tr.append(cell(id),cell('OpenCode'));$('opencode-models-body').append(tr);}
+ $('opencode-models-empty').hidden=opencodeModels.length>0;
+ $('opencode-model').disabled=!opencodeModels.length||!!activeRequest;
+ $('opencode-send').disabled=!opencodeModels.length||!!activeRequest;
+ opencodeControls();
+ opencodeActionControls();
+}
+function opencodeControls(){
+ for(const id of ['opencode-model','opencode-prompt','opencode-send'])$(id).disabled=!!activeRequest;
+ $('opencode-stop').hidden=!activeRequest;
+}
+function opencodeActionControls(){
+ $('opencode-refresh').disabled=opencodeBusy;
+}
+$('opencode-refresh').addEventListener('click',async()=>{
+ if(opencodeBusy)return;
+ const generation=sessionGeneration;opencodeBusy=true;opencodeActionControls();
+ try{await loadOpenCode();}finally{if(generation===sessionGeneration){opencodeBusy=false;opencodeActionControls();}}
+});
+for(const view of ['status','models','chat'])$('opencode-view-'+view).addEventListener('click',()=>{opencodeView=view;if(opencodeStatus)renderOpenCode(opencodeStatus);});
+$('opencode-stop').addEventListener('click',()=>activeRequest?.abort());
+$('opencode-form').addEventListener('submit',async event=>{
+ event.preventDefault();if(activeRequest)return;const text=$('opencode-prompt').value.trim();if(!text||!$('opencode-model').value)return;
+ const generation=sessionGeneration;
+ notice('');message('user',text,$('opencode-messages'));$('opencode-prompt').value='';const answer=message('assistant','正在等待模型…',$('opencode-messages'));
+ const controller=new AbortController();activeRequest=controller;opencodeControls();
+ let content='',usage,finished=false;const outgoing=[...opencodeHistory,{role:'user',content:text}];
+ try{
+  const response=await api('opencode/chat',{model:$('opencode-model').value,messages:outgoing,stream:true},controller.signal);
+  if(!response.ok){const err=await response.json();throw new Error(err.error?.message||err.error||`HTTP ${response.status}`);}
+  const reader=response.body.getReader(),decoder=new TextDecoder();let buffer='';
+  const processFrame=frame=>{
+   const payload=frame.split('\n').filter(l=>l.startsWith('data:')).map(l=>l.slice(5).trimStart()).join('\n');if(!payload)return;
+   if(payload==='[DONE]'){finished=true;return;}
+   const part=JSON.parse(payload);if(part.error)throw new Error(part.error.message||'上游流式响应发生错误');
+   content+=part.choices?.[0]?.delta?.content||'';answer.content.textContent=content||'模型正在思考…';
+   if(part.usage)usage=part.usage;
+  };
+  while(true){const{value,done}=await reader.read();if(controller.signal.aborted){const error=new Error('已停止生成');error.name='AbortError';throw error;}buffer+=done?decoder.decode():decoder.decode(value,{stream:true});buffer=buffer.replace(/\r\n/g,'\n');let split;while((split=buffer.indexOf('\n\n'))>=0){processFrame(buffer.slice(0,split));buffer=buffer.slice(split+2);}if(done){if(buffer.trim())processFrame(buffer);break;}}
+  if(!finished)throw new Error('响应提前中断，可重新发送问题');
+  if(!content)answer.content.textContent='模型未返回文本内容。';
+  opencodeHistory=[...outgoing,{role:'assistant',content}];
+  $('opencode-usage').textContent=(usage?`输入 ${usage.prompt_tokens??'—'} · 输出 ${usage.completion_tokens??'—'} · 总计 ${usage.total_tokens??'—'} tokens`:'上游未返回用量')+' · 本次通道：OpenCode（免费模型）';
+ }catch(e){if(generation===sessionGeneration){const msg=e.name==='AbortError'?'已停止生成':e.message;answer.content.textContent=(content?content+'\n\n':'')+msg;$('opencode-usage').textContent=msg;}}
+ finally{controller.abort();activeRequest=undefined;opencodeControls();}
+});
+
 $('add-account').addEventListener('submit',async event=>{
  event.preventDefault();clearTimeout(flowTimer);const button=event.submitter;button.disabled=true;notice('');
  const popup=window.open('about:blank','_blank');if(popup)popup.opener=null;
@@ -729,13 +834,15 @@ function renderAccess(){
  if(!available){$('api-example').textContent='暂无可选模型，请先刷新模型列表。';return;}
  const isGlm=model.startsWith('glm-');
  const isQoder=model.startsWith('qoder-');
- if(anthropic&&(isGlm||isQoder)){$('copy-example').disabled=true;$('api-example').textContent=(isGlm?'GLM':'Qoder')+' 通道仅支持 OpenAI 协议（/v1/chat/completions），请切换协议后复制示例。';return;}
+ const isOpenCode=model.startsWith('opencode-');
+ if(anthropic&&(isGlm||isQoder||isOpenCode)){$('copy-example').disabled=true;$('api-example').textContent=(isGlm?'GLM':isQoder?'Qoder':'OpenCode')+' 通道仅支持 OpenAI 协议（/v1/chat/completions），请切换协议后复制示例。';return;}
  const body={model,...(anthropic?{max_tokens:1024}:{}),messages:[{role:'user',content:'你好'}],stream:true};
  const auth=anthropic?'  -H "x-api-key: <你的 API Key>" \\\n  -H "anthropic-version: 2023-06-01"':'  -H "Authorization: Bearer <你的 API Key>"';
  const json=JSON.stringify(body,null,2).replace(/'/g,"'\\''");
  let prefix='';
  if(isGlm) prefix='# GLM 模型经 zcode 通道转发（按 glm- 前缀分流），账号为容器登录态\ncurl ';
  else if(isQoder) prefix='# Qoder 模型经 qoder 通道转发（按 qoder- 前缀分流）\ncurl ';
+ else if(isOpenCode) prefix='# OpenCode 免费模型经 OW Bridge sidecar 转发（按 opencode- 前缀分流）\ncurl ';
  else if(!anthropic) prefix='# 成功响应头 X-Account / X-Account-Realm 标明本次服务的账号与平台\ncurl ';
  else prefix='curl ';
  $('api-example').textContent=prefix+$('api-endpoint').value+` \\\n${auth} \\\n  -H "Content-Type: application/json" \\\n  -d '${json}'`;
@@ -743,7 +850,7 @@ function renderAccess(){
 document.querySelectorAll('[data-protocol]').forEach(button=>button.addEventListener('click',()=>setProtocol(button.dataset.protocol)));
 $('access-model').addEventListener('change',renderAccess);
 $('copy-example').addEventListener('click',async()=>{if($('copy-example').disabled)return;try{await navigator.clipboard.writeText($('api-example').textContent);notice('调用示例已复制，请替换 API Key 占位符');}catch{notice('浏览器不允许自动复制，请手动复制下方示例');}});
-$('go-chat').addEventListener('click',()=>{if(activeRequest||$('go-chat').disabled)return;const model=$('access-model').value;if(model.startsWith('glm-')){if(zcodeModels.includes(model))$('zcode-model').value=model;showPage('zcode');return;}if(model.startsWith('qoder-')){if(qoderModels.includes(model))$('qoder-model').value=model;showPage('qoder');return;}$('model').value=model;updateEfforts();showPage('chat');});
+$('go-chat').addEventListener('click',()=>{if(activeRequest||$('go-chat').disabled)return;const model=$('access-model').value;if(model.startsWith('glm-')){if(zcodeModels.includes(model))$('zcode-model').value=model;showPage('zcode');return;}if(model.startsWith('qoder-')){if(qoderModels.includes(model))$('qoder-model').value=model;showPage('qoder');return;}if(model.startsWith('opencode-')){if(opencodeModels.includes(model))$('opencode-model').value=model;showPage('opencode');return;}$('model').value=model;updateEfforts();showPage('chat');});
 function chatControls(){
  for(const id of ['model','access-model','clear-chat','send-chat','max-tokens'])$(id).disabled=!!activeRequest;
  $('stop-chat').hidden=!activeRequest;
@@ -762,7 +869,7 @@ function accountNote(response) {
  const platform = realm === 'global' ? '国际版' : realm === 'cn' ? '国内版' : realm;
  return ` · 本次账号：${account || '—'}${platform ? `（${platform}）` : ''}`;
 }
-for(const [inputId,formId] of [['prompt','chat-form'],['zcode-prompt','zcode-form'],['qoder-prompt','qoder-form']])$(inputId).addEventListener('keydown',event=>{
+for(const [inputId,formId] of [['prompt','chat-form'],['zcode-prompt','zcode-form'],['qoder-prompt','qoder-form'],['opencode-prompt','opencode-form']])$(inputId).addEventListener('keydown',event=>{
  if(event.key!=='Enter'||event.shiftKey||event.isComposing)return;
  event.preventDefault();$(formId).requestSubmit();
 });

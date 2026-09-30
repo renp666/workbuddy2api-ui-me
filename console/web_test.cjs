@@ -1065,3 +1065,123 @@ test('qoder login tab stays hidden without a usable control endpoint',async()=>{
   assert.equal(down.get('qoder-view-login').hidden,true,'login tab showed while the control endpoint is down');
   assert.match(down.get('qoder-status-text').textContent,/登录控制端不可达/);
 });
+
+function opencodeFixture(opencodeStatus) {
+  const response=body=>({ok:true,status:200,json:async()=>body});
+  const {ctx,get,opened}=taskFixture(url=>{
+    if(url==='/admin/session')return new Promise(()=>{});
+    if(url==='/admin/status')return response({total:0,healthy:0,cooling:0,disabled:0,accounts:[]});
+    if(url==='/admin/models')return response({data:[]});
+    if(url==='/admin/opencode')return response(opencodeStatus);
+    throw new Error('unexpected '+url);
+  });
+  get('realm').querySelector=()=>({disabled:false});
+  return {ctx,get,opened};
+}
+
+test('opencode tab greys out and shows the disabled notice when the channel is off',async()=>{
+  const {ctx,get}=opencodeFixture({enabled:false});
+  await vm.runInContext("signedIn({csrf:'c',global_enabled:true,zcode_enabled:false,qoder_enabled:false,opencode_enabled:false})",ctx);
+  assert.equal(get('nav-opencode').classList.toggled['nav-muted'],true,'disabled channel left the tab fully lit');
+  await vm.runInContext('loadOpenCode()',ctx);
+  assert.equal(get('opencode-disabled').hidden,false,'disabled notice stayed hidden');
+  assert.equal(get('opencode-content').hidden,true,'enabled content showed while disabled');
+});
+
+test('opencode tab renders badge, health table, model table and select when reachable',async()=>{
+  const {ctx,get}=opencodeFixture({enabled:true,reachable:true,model_count:2,
+    models:[{id:'opencode-OC · Free',realm:'opencode'},{id:'opencode-OC · Big',realm:'opencode'}],
+    health:{phase:'ready',version:'1.2.3',opencodeVersion:'1.4.5',endpoint:'https://opencode.ai/zen/v1',
+      modelResults:{'OC · Free':{ok:true},'OC · Big':{ok:false}},probe:{running:true,current:'OC · Big'}}});
+  await vm.runInContext("signedIn({csrf:'c',global_enabled:true,zcode_enabled:false,qoder_enabled:false,opencode_enabled:true})",ctx);
+  assert.equal(get('nav-opencode').classList.toggled['nav-muted'],false,'enabled channel greyed the tab');
+  await vm.runInContext('loadOpenCode()',ctx);
+  assert.equal(get('opencode-disabled').hidden,true);
+  assert.equal(get('opencode-content').hidden,false);
+  assert.equal(get('opencode-status-badge').textContent,'在线');
+  assert.match(get('opencode-status-text').textContent,/OW Bridge 可达 · 2 个免费模型/);
+  assert.equal(get('opencode-health-wrap').hidden,false,'health table hidden while /health returned');
+  const healthRows=get('opencode-health-body').children.map(tr=>tr.children[0].textContent);
+  assert.deepEqual(healthRows,['phase','version','opencode 版本','endpoint','模型探测','探测进行中']);
+  const probeRow=get('opencode-health-body').children[4].children[1].textContent;
+  assert.equal(probeRow,'1/2 通过','model probe summary row');
+  assert.equal(get('opencode-view-models').hidden,false,'models tab missing when reachable');
+  assert.equal(get('opencode-view-chat').hidden,false,'chat tab missing when reachable');
+  assert.equal(get('opencode-models-body').children.length,2,'model table row count');
+  assert.deepEqual(get('opencode-model').children.map(option=>option.value),['opencode-OC · Free','opencode-OC · Big']);
+});
+
+test('opencode tab reports an unreachable channel and hides data tabs without health',async()=>{
+  const {ctx,get}=opencodeFixture({enabled:true,reachable:false,model_count:0,models:[]});
+  await vm.runInContext("signedIn({csrf:'c',global_enabled:true,zcode_enabled:false,qoder_enabled:false,opencode_enabled:true})",ctx);
+  await vm.runInContext('loadOpenCode()',ctx);
+  assert.equal(get('opencode-content').hidden,false);
+  assert.equal(get('opencode-status-badge').textContent,'不可达');
+  assert.equal(get('opencode-status-badge').className,'badge warn');
+  assert.match(get('opencode-status-text').textContent,/OW Bridge 当前不可达/);
+  assert.equal(get('opencode-health-wrap').hidden,true,'health table showed without a health payload');
+  assert.equal(get('opencode-view-models').hidden,true,'models tab offered while unreachable');
+  assert.equal(get('opencode-view-chat').hidden,true,'chat tab offered while unreachable');
+});
+
+test('opencode tab falls back to the status view when the channel drops mid-session',async()=>{
+  const {ctx,get}=opencodeFixture({enabled:true,reachable:true,model_count:1,models:[{id:'opencode-OC · Free',realm:'opencode'}]});
+  await vm.runInContext("signedIn({csrf:'c',global_enabled:true,zcode_enabled:false,qoder_enabled:false,opencode_enabled:true})",ctx);
+  await vm.runInContext('loadOpenCode()',ctx);
+  get('opencode-view-chat').handlers.click();
+  assert.equal(get('opencode-pane-chat').hidden,false,'chat pane did not open');
+  ctx.fetch=async()=>({ok:true,status:200,json:async()=>({enabled:true,reachable:false,model_count:0,models:[]})});
+  await vm.runInContext('loadOpenCode()',ctx);
+  assert.equal(vm.runInContext('opencodeView',ctx),'status','view stayed on chat after the channel dropped');
+  assert.equal(get('opencode-pane-chat').hidden,true,'chat pane stayed open after the channel dropped');
+});
+
+test('access model select merges opencode models and routes opencode go-chat to the opencode tab',async()=>{
+  const {ctx,get}=opencodeFixture({enabled:true,reachable:true,model_count:1,models:[{id:'opencode-OC · Free',realm:'opencode'}]});
+  vm.runInContext("modelList=[{id:'cn:workbuddy',realm:'cn'}]",ctx);
+  await vm.runInContext('loadOpenCode()',ctx);
+  assert.deepEqual(get('access-model').children.map(o=>o.value),['cn:workbuddy','opencode-OC · Free'],'opencode model missing from access select');
+  assert.deepEqual(get('access-model').children.map(o=>o.textContent),['国内版 · cn:workbuddy','OpenCode · opencode-OC · Free']);
+  get('access-model').value='opencode-OC · Free';vm.runInContext('renderAccess()',ctx);
+  assert.equal(get('copy-example').disabled,false,'opencode example stayed disabled');
+  assert.match(get('api-example').textContent,/OW Bridge sidecar/);
+  vm.runInContext("protocol='anthropic'",ctx);
+  vm.runInContext('renderAccess()',ctx);
+  assert.match(get('api-example').textContent,/仅支持 OpenAI 协议/,'anthropic opencode example not rejected');
+  vm.runInContext("protocol='openai'",ctx);
+  get('go-chat').handlers.click();
+  assert.equal(vm.runInContext('page',ctx),'opencode','opencode go-chat did not route to the opencode tab');
+  assert.equal(get('opencode-model').value,'opencode-OC · Free','go-chat did not preselect the model');
+});
+
+test('opencode dialog posts an opencode model to the admin proxy and streams the answer',async()=>{
+  const requests=[];
+  const {ctx,get}=opencodeFixture({enabled:true,reachable:true,model_count:1,models:[{id:'opencode-OC · Free',realm:'opencode'}]});
+  ctx.fetch=async(url,options={})=>{
+    if(url==='/admin/opencode/chat'){
+      requests.push({url,...options});
+      const chunks=[new TextEncoder().encode('data: '+JSON.stringify({choices:[{delta:{content:'Free'} }]})+'\n\n'),new TextEncoder().encode('data: '+JSON.stringify({choices:[{delta:{content:' model'} }],usage:{prompt_tokens:5,completion_tokens:6,total_tokens:11}})+'\n\n'),new TextEncoder().encode('data: [DONE]\n\n')];
+      let index=0;
+      return {ok:true,status:200,body:{getReader:()=>({read:async()=>index<chunks.length?{value:chunks[index++],done:false}:{done:true}})}};
+    }
+    if(url==='/admin/status')return {ok:true,status:200,json:async()=>({total:0,healthy:0,cooling:0,disabled:0,accounts:[]})};
+    if(url==='/admin/models')return {ok:true,status:200,json:async()=>({data:[]})};
+    if(url==='/admin/opencode')return {ok:true,status:200,json:async()=>({enabled:true,reachable:true,model_count:1,models:[{id:'opencode-OC · Free',realm:'opencode'}]})};
+    if(url==='/admin/session')return new Promise(()=>{});
+    throw new Error('unexpected '+url);
+  };
+  await vm.runInContext("signedIn({csrf:'c',global_enabled:true,zcode_enabled:false,qoder_enabled:false,opencode_enabled:true})",ctx);
+  await vm.runInContext('loadOpenCode()',ctx);
+  get('opencode-model').value='opencode-OC · Free';
+  get('opencode-prompt').value='你好';
+  await get('opencode-form').handlers.submit({preventDefault(){}});
+  assert.equal(requests.length,1,'opencode dialog issued no request');
+  const body=JSON.parse(requests[0].body);
+  assert.equal(body.model,'opencode-OC · Free');
+  assert.deepEqual(body.messages,[{role:'user',content:'你好'}]);
+  assert.equal(body.stream,true);
+  assert.match(vm.runInContext('opencodeHistory[1].content',ctx),/Free model/);
+  assert.match(get('opencode-usage').textContent,/输入 5 · 输出 6 · 总计 11/);
+  assert.match(get('opencode-usage').textContent,/本次通道：OpenCode（免费模型）/);
+  assert.equal(vm.runInContext('activeRequest',ctx),undefined,'opencode request left controls locked');
+});

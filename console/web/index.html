@@ -14,7 +14,7 @@
 </main>
 <div id="console-view" class="shell" hidden>
  <aside class="sidebar"><div class="brand"><span class="brand-icon">W</span> WorkBuddy</div><p class="sidebar-label">WORKSPACE CONSOLE</p>
-  <nav aria-label="主要导航"><button data-view="overview" class="nav active">◫ <span>运行概览</span></button><button data-view="accounts" class="nav">◎ <span>账号管理</span></button><button data-view="tasks" class="nav">◷ <span>自动任务</span></button><button data-view="usage" class="nav">≣ <span>调用统计</span></button><button data-view="chat" class="nav">↗ <span>对话测试</span></button><button data-view="zcode" class="nav" id="nav-zcode">◈ <span>Zcode</span></button><button data-view="qoder" class="nav" id="nav-qoder">⬡ <span>Qoder</span></button><button data-view="access" class="nav">⌘ <span>API 接入</span></button></nav>
+  <nav aria-label="主要导航"><button data-view="overview" class="nav active">◫ <span>运行概览</span></button><button data-view="accounts" class="nav">◎ <span>账号管理</span></button><button data-view="tasks" class="nav">◷ <span>自动任务</span></button><button data-view="usage" class="nav">≣ <span>调用统计</span></button><button data-view="chat" class="nav">↗ <span>对话测试</span></button><button data-view="zcode" class="nav" id="nav-zcode">◈ <span>Zcode</span></button><button data-view="qoder" class="nav" id="nav-qoder">⬡ <span>Qoder</span></button><button data-view="opencode" class="nav" id="nav-opencode">▣ <span>OpenCode</span></button><button data-view="access" class="nav">⌘ <span>API 接入</span></button></nav>
   <div class="sidebar-bottom"><span class="status-dot"></span> 自托管网关<button id="logout" class="quiet">退出登录</button></div>
  </aside>
  <main class="workspace"><header class="topbar"><span class="breadcrumb">控制台 <span>/</span> <span id="breadcrumb-name">运行概览</span></span><span class="badge" id="service-state">正在连接</span></header>
@@ -99,6 +99,26 @@
     <div class="panel chat-panel" id="qoder-chat-panel"><div class="chat-settings"><label for="qoder-model">模型</label><select id="qoder-model"></select></div>
      <div id="qoder-messages" class="messages" aria-live="polite"><div class="chat-empty">选择一个 Qoder 模型，在下方输入问题。<small>对话只保留在当前页面，刷新即清空。</small></div></div>
      <form id="qoder-form"><label class="sr-only" for="qoder-prompt">你的问题</label><textarea id="qoder-prompt" rows="2" placeholder="输入一个问题…（回车发送，Shift+回车换行）" required></textarea><div class="composer-footer"><span id="qoder-usage" class="muted small" role="status" aria-live="polite">用量将在上游返回后显示</span><button id="qoder-stop" class="secondary" type="button" hidden>停止生成</button><button id="qoder-send" class="primary" type="submit">发送 ↑</button></div></form></div>
+    </div>
+   </div>
+  </section>
+  <section class="page" data-page="opencode" hidden><div class="page-heading"><div><p class="eyebrow">OPENCODE CHANNEL</p><h1>OpenCode 通道</h1><p class="muted">可选的 OpenCode 免费模型旁路（OW Bridge sidecar）。模型目录与运行状态由容器自持，本控制台只负责查看与测试。</p></div><button id="opencode-refresh" class="secondary">↻ 刷新状态</button></div>
+   <p id="opencode-disabled" class="empty" hidden>OpenCode 通道未启用。在部署目录用 <code>deploy/compose.opencode.yml</code> overlay 启动后，这里会显示通道状态、模型列表与对话测试。</p>
+   <div id="opencode-content" hidden>
+    <div class="opencode-tabs" role="tablist" aria-label="OpenCode 子页"><button id="opencode-view-status" class="opencode-tab active" role="tab" type="button">◫ 通道状态</button><button id="opencode-view-models" class="opencode-tab" role="tab" type="button" hidden>☰ OpenCode 模型</button><button id="opencode-view-chat" class="opencode-tab" role="tab" type="button" hidden>↗ 对话测试</button></div>
+    <div id="opencode-pane-status">
+    <article class="panel"><div class="section-title"><h2>通道状态</h2><span class="badge" id="opencode-status-badge">未知</span></div><p id="opencode-status-text" class="muted small" role="status" aria-live="polite">正在读取通道状态…</p>
+     <div class="panel table-wrap" id="opencode-health-wrap" hidden><table><thead><tr><th>字段</th><th>值</th></tr></thead><tbody id="opencode-health-body"></tbody></table></div></article>
+    </div>
+    <div id="opencode-pane-models" hidden>
+    <div class="section-title"><h2>OpenCode 模型</h2><span class="muted small">来自 OW Bridge 的 <code>/v1/models</code>（仅列出探测通过的免费模型）</span></div>
+    <div class="panel table-wrap"><table><thead><tr><th>模型 ID</th><th>归属</th></tr></thead><tbody id="opencode-models-body"></tbody></table><p id="opencode-models-empty" class="empty">暂无模型。</p></div>
+    </div>
+    <div id="opencode-pane-chat" hidden>
+    <div class="section-title"><h2>对话测试</h2><span class="muted small">OpenAI 流式协议，真实请求转发给 OW Bridge sidecar</span></div>
+    <div class="panel chat-panel" id="opencode-chat-panel"><div class="chat-settings"><label for="opencode-model">模型</label><select id="opencode-model"></select></div>
+     <div id="opencode-messages" class="messages" aria-live="polite"><div class="chat-empty">选择一个 OpenCode 模型，在下方输入问题。<small>对话只保留在当前页面，刷新即清空。</small></div></div>
+     <form id="opencode-form"><label class="sr-only" for="opencode-prompt">你的问题</label><textarea id="opencode-prompt" rows="2" placeholder="输入一个问题…（回车发送，Shift+回车换行）" required></textarea><div class="composer-footer"><span id="opencode-usage" class="muted small" role="status" aria-live="polite">用量将在上游返回后显示</span><button id="opencode-stop" class="secondary" type="button" hidden>停止生成</button><button id="opencode-send" class="primary" type="submit">发送 ↑</button></div></form></div>
     </div>
    </div>
   </section>

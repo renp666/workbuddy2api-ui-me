@@ -1,0 +1,31 @@
+# Optional OpenCode free-model sidecar: docker compose -f docker-compose.yml -f deploy/compose.opencode.yml up -d
+# The container joins console's network namespace (network_mode: service:console): OW Bridge
+# binds 127.0.0.1 only, so its API is reachable from console at 127.0.0.1:41980, never from the
+# Compose network or the host. Console injects WB2A_OPENCODE_KEY as the Bearer token (the
+# entrypoint pre-writes it to <data>/api-key so both sides share one key) and routes public /v1
+# requests whose model starts with "opencode-" to the sidecar. Everything else stays on core.
+# BUDDY_NO_SYNC=1 keeps the sidecar from writing any WorkBuddy models.json; the console OpenCode
+# tab is read-only (status + chat test). The opencode binary downloads on first start into
+# ./runtime/opencode, so restarts do not re-download.
+services:
+  opencode-proxy:
+    build:
+      context: .
+      dockerfile: deploy/opencode.Dockerfile
+    platform: linux/amd64
+    restart: unless-stopped
+    network_mode: service:console
+    environment:
+      TZ: Asia/Shanghai
+      # 数据面密钥（console -> OW Bridge:41980 的 Bearer）；entrypoint 预写 <data>/api-key。
+      WB2A_OPENCODE_KEY: ${WB2A_OPENCODE_KEY:-}
+    volumes:
+      - ./runtime/opencode:/data
+
+  console:
+    environment:
+      WB2A_OPENCODE_URL: http://127.0.0.1:41980
+      WB2A_OPENCODE_KEY: ${WB2A_OPENCODE_KEY:-}
+    depends_on:
+      core:
+        condition: service_started

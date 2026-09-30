@@ -156,11 +156,25 @@ qoder-proxy 容器与 console 共享网络命名空间，只监听 `127.0.0.1`�
 
 之后客户端用法不变：`/v1/models` 里选 `qoder-*` 模型即可，OpenAI 与 Anthropic 两种协议都支持分流。控制台 **Qoder 页签**展示通道状态与模型列表，并可直接做流式对话测试；未叠加该 overlay 时页签置灰并提示未启用。不想要该通道时回到 `docker compose -f docker-compose.yml up -d` 启动即可，不影响原有服务。Qoder 通道的可用性、额度和模型行为由 qoder-proxy 与其上游决定，本仓未对其做真实上游验收。
 
+## 可选：接入 OpenCode 免费模型
+
+本部署还可以并列挂一个 [OW Bridge](https://github.com/louchi1984-coder/ow-bridge) sidecar 容器，把 OpenCode Zen 的免费模型变成第五个模型来源。与前两条旁路相同，启用后仍是同一个 `:7863` 出口：控制台 `/v1/models` 会合并显示 OpenCode 模型（统一加 `opencode-` 前缀并标注 `realm: opencode`），客户端请求 `model` 以 `opencode-` 开头时由 console 自动剥前缀转发给 OW Bridge，其余模型仍走 WorkBuddy 账号池；本服务不管理 OpenCode 账号，模型目录与运行状态由容器自持。
+
+OW Bridge 把 OpenCode Zen 的免费模型（`opencode/*` 系列）代理成 OpenAI 兼容接口，无需申请密钥或登录。本部署通过 `BUDDY_NO_SYNC=1` 关闭它「反向写入 WorkBuddy 配置」的行为，所有运行数据只落在容器自己的持久卷 `runtime/opencode/` 内。旁路调用会异步记入控制台「调用统计」，账号列显示「OpenCode 通道」。
+
+```bash
+docker compose -f docker-compose.yml -f deploy/compose.opencode.yml up -d
+```
+
+镜像由 `deploy/opencode.Dockerfile` 从 OW Bridge 源码构建。首次启动会在持久卷 `runtime/opencode/` 内下载 opencode 运行时二进制，可能需要数分钟，期间控制台 **OpenCode 页签**显示「不可达」属正常现象。console 到 OW Bridge 的内部调用使用 `WB2A_OPENCODE_KEY` 作为 Bearer 密钥（overlay 启动时由宿主环境变量传入，entrypoint 与 console 共享同一密钥）；留空则不校验——由于代理只监听 console 网络命名空间内的回环地址，外部无法直连。
+
+OpenCode 通道没有登录/启停生命周期，页签为只读模式：「通道状态」展示 OW Bridge 的运行阶段、版本与逐模型探测结果（哪些免费模型当前可用、探测是否仍在进行），「OpenCode 模型」列出可用免费模型，「对话测试」可直接流式验证。未叠加该 overlay 时页签置灰并提示未启用。不想要该通道时回到 `docker compose -f docker-compose.yml up -d` 启动即可，不影响原有服务。OpenCode 免费模型的可用性、限额和模型行为由 OW Bridge 与其上游决定，本仓未对其做真实上游验收。
+
 ## 配套 Web 控制台
 
 ### 对话测试
 
-选择 OpenAI 或 Anthropic 协议、模型并发送问题，直接检查模型响应与流式显示。Anthropic 模式可设置最大输出 tokens，默认 1024；切换协议会清空当前测试对话，生成中可停止。回答完成后用量行会显示本次服务请求的账号与平台（来自响应归属头），Zcode 与 Qoder 页签的测试则分别标明 GLM 与 Qoder 通道。真实部署中的测试会消耗账号额度；页面内的对话刷新后清空。
+选择 OpenAI 或 Anthropic 协议、模型并发送问题，直接检查模型响应与流式显示。Anthropic 模式可设置最大输出 tokens，默认 1024；切换协议会清空当前测试对话，生成中可停止。回答完成后用量行会显示本次服务请求的账号与平台（来自响应归属头），Zcode、Qoder 与 OpenCode 页签的测试则分别标明 GLM、Qoder 与 OpenCode 通道。真实部署中的测试会消耗账号额度；页面内的对话刷新后清空。
 
 ![对话测试页面：选择模型并查看流式回答](docs/superpowers/verification/2026-09-16-openai-chat-playground.jpg)
 
