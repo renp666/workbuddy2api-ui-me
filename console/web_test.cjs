@@ -102,7 +102,7 @@ function taskFixture(fetch, cryptoImpl={randomUUID:()=> '11111111-2222-4333-8444
     location:{origin:'http://console.test'},AbortController,TextDecoder,TextEncoder,Option:function(text,value){return {textContent:text,value};},
     setInterval(){},clearTimeout(){},setTimeout(){},fetch,crypto:cryptoImpl,navigator:{clipboard:{writeText:async()=>{}}},window:{open(url){const w={closed:false,location:{href:url||''},close(){this.closed=true;}};opened.push(w);return w;}}});
   vm.runInContext(readFileSync(__dirname+'/web/app.js','utf8'),ctx);
-  vm.runInContext("csrf='active-csrf';page='tasks';taskState={items:[{id:'checkin',enabled:true,hours:[9,21],timezone:'Asia/Shanghai',next_at:null}],active_run:null,latest_runs:[]};",ctx);
+  vm.runInContext("csrf='active-csrf';page='workbuddy';workbuddyView='tasks';taskState={items:[{id:'checkin',enabled:true,hours:[9,21],timezone:'Asia/Shanghai',next_at:null}],active_run:null,latest_runs:[]};",ctx);
   return {ctx,get,opened};
 }
 
@@ -459,7 +459,7 @@ test('protocol buttons synchronize, preserve same-protocol history and generate 
   assert.equal(vm.runInContext('conversation',ctx),conversation);
   let copied;ctx.navigator.clipboard.writeText=async value=>{copied=value;};
   await get('copy-example').handlers.click();assert.equal(copied,get('api-example').textContent);
-  get('go-chat').handlers.click();assert.equal(vm.runInContext('page',ctx),'chat');assert.equal(get('model').value,'global:real-model');
+  get('go-chat').handlers.click();assert.equal(vm.runInContext('page',ctx),'workbuddy');assert.equal(vm.runInContext('workbuddyView',ctx),'chat');assert.equal(get('model').value,'global:real-model');
   get('prompt').value='private draft';get('usage').textContent='private stream error';
   vm.runInContext('signedOut()',ctx);assert.equal(vm.runInContext('protocol',ctx),'openai');assert.equal(get('api-key').value,'');assert.equal(get('prompt').value,'');assert.equal(get('usage').textContent,'用量将在上游返回后显示');
   assert.doesNotMatch(get('protocol-support').textContent,/Beta 测试/);
@@ -1266,3 +1266,105 @@ test('opencode dialog posts an opencode model to the admin proxy and streams the
   assert.match(get('opencode-usage').textContent,/本次通道：OpenCode（免费模型）/);
   assert.equal(vm.runInContext('activeRequest',ctx),undefined,'opencode request left controls locked');
 });
+
+test('model table sorts by probe outcome first and ascending latency second',async()=>{
+  // The catalog order is deliberately misleading: the healthy model is the slowest one, and the
+  // fastest probe fails. Availability has to win over latency, latency only breaks ties inside a band.
+  const {ctx,get}=opencodeFixture({enabled:true,reachable:true,model_count:3,
+    models:[{id:'opencode-OC · Alpha',realm:'opencode'},{id:'opencode-OC · Bravo',realm:'opencode'},{id:'opencode-OC · Charlie',realm:'opencode'}],
+    health:{phase:'ready',
+      modelResults:{'OC · Alpha':{ok:true,category:'available',durationMs:9000,source:'probe'},
+        'OC · Bravo':{ok:false,category:'timeout',durationMs:120,source:'probe'},
+        'OC · Charlie':{ok:true,chatOnly:true,durationMs:5000,source:'probe'}}}});
+  await vm.runInContext("signedIn({csrf:'c',global_enabled:true,zcode_enabled:false,qoder_enabled:false,opencode_enabled:true})",ctx);
+  await vm.runInContext('loadOpenCode()',ctx);
+  const rows=get('opencode-models-body').children;
+  assert.deepEqual(rows.map(tr=>tr.children[0].textContent),['opencode-OC · Alpha','opencode-OC · Charlie','opencode-OC · Bravo'],'rows are not ordered 可用 → 仅对话 → 不可用');
+  assert.deepEqual(rows.map(tr=>tr.children[2].children[0].textContent),['可用','仅对话','探测超时']);
+  assert.equal(rows[0].children[3].textContent,'9.0 秒');
+  assert.equal(rows[2].children[3].textContent,'0.1 秒','a faster failing probe must not outrank a healthy one');
+});
+
+test('the three most called models get red, orange and yellow stars on every channel, the rest show —',async()=>{
+  // The catalog ids carry realm prefixes (cn:/global:) but the ledger stores the bare model name;
+  // heat must still line up, otherwise every core row falls back to —.
+  const models=[{id:'cn:workbuddy'},{id:'global:claude'},{id:'cn:other'}];
+  const {ctx,get}=taskFixture(url=>url==='/admin/models'?Promise.resolve({ok:true,status:200,json:async()=>({data:models})}):new Promise(()=>{}));
+  await vm.runInContext('refreshModels()',ctx);
+  // Ledger of the current month: workbuddy 2 calls, claude 1, opencode Big Pickle 1 (tie broken by name).
+  await vm.runInContext("applyModelHeat([{model:'workbuddy'},{model:'workbuddy'},{model:'claude'},{model:'opencode-OC · Big Pickle'}])",ctx);
+  const heatOf=td=>td.children.length?[td.children[0].className,td.children[0].textContent,td.children[1].textContent]:[null,'—',''];
+  const rows=get('core-models-body').children;
+  assert.deepEqual(rows.map(tr=>heatOf(tr.children[5])),[['heat-stars heat-1','★','2 次'],['heat-stars heat-3','★','1 次'],[null,'—','']],'core heat cells');
+  await vm.runInContext("renderModelTable('opencode',[{id:'opencode-OC · Big Pickle'}],{modelResults:{'OC · Big Pickle':{ok:true,category:'available',durationMs:800,source:'probe'}}})",ctx);
+  assert.deepEqual(heatOf(get('opencode-models-body').children[0].children[5]),['heat-stars heat-2','★','1 次'],'heat ranking is not shared across channels');
+});
+
+function routeFixture(routeState) {
+  const response=body=>({ok:true,status:200,json:async()=>body});
+  const posts=[];
+  const {ctx,get}=taskFixture((url,options={})=>{
+    if(url==='/admin/session')return new Promise(()=>{});
+    if(url==='/admin/status')return response({total:0,healthy:0,cooling:0,disabled:0,accounts:[]});
+    if(url==='/admin/models')return response({data:[]});
+    if(url==='/admin/route')return response(routeState);
+    if(url==='/admin/route/save'){posts.push(JSON.parse(options.body));return response(routeState);}
+    throw new Error('unexpected '+url);
+  });
+  get('realm').querySelector=()=>({disabled:false});
+  return {ctx,get,posts};
+}
+
+test('Agent 接入 tab hides the editor and shows the disabled notice when routing is off',async()=>{
+  const {ctx,get}=routeFixture({enabled:false});
+  await vm.runInContext("signedIn({csrf:'c',global_enabled:true,zcode_enabled:false,qoder_enabled:false,opencode_enabled:false})",ctx);
+  await vm.runInContext('loadRoutes()',ctx);
+  assert.equal(get('routes-disabled').hidden,false,'disabled notice stayed hidden');
+  assert.equal(get('routes-content').hidden,true,'editor showed while routing is off');
+});
+
+test('Agent 接入 tab renders auto preview, alias table, channel sources and a client snippet',async()=>{
+  const {ctx,get}=routeFixture({enabled:true,auto_model:'auto',auto_fallback:'',default_auto_fallback:'cn:auto',
+    auto_preview:{routed_model:'opencode-OC · Free',channel:'opencode',reason:'探测可用 · 0.8 秒',fallback:false},
+    aliases:[{alias:'my-fast',channel:'opencode',model:'OC · Free',public_model:'opencode-OC · Free',enabled:true,note:'日常'}],
+    channels:[{channel:'core',enabled:true,reachable:true,models:['cn:workbuddy']},
+      {channel:'opencode',enabled:true,reachable:true,models:['opencode-OC · Free']},
+      {channel:'qoder',enabled:false,reachable:false,models:[]}]});
+  await vm.runInContext("signedIn({csrf:'c',global_enabled:true,zcode_enabled:false,qoder_enabled:false,opencode_enabled:true})",ctx);
+  await vm.runInContext('loadRoutes()',ctx);
+  assert.equal(get('routes-content').hidden,false,'editor hidden while routing is on');
+  assert.equal(get('routes-auto-badge').textContent,'自动优选');
+  assert.equal(get('routes-auto-badge').className,'badge');
+  assert.match(get('routes-auto-text').textContent,/现在自动挑中的是 opencode-OC · Free（OpenCode 通道）/);
+  assert.equal(get('routes-default-fallback').textContent,'cn:auto');
+  const rows=get('routes-alias-body').children;
+  assert.equal(rows.length,1,'alias row missing');
+  assert.deepEqual(rows[0].children.slice(0,6).map(td=>td.textContent),['my-fast','OpenCode 通道','OC · Free','opencode-OC · Free','','日常']);
+  assert.equal(rows[0].children[4].children[0].textContent,'启用','alias state badge');
+  assert.equal(rows[0].children[4].children[0].className,'badge');
+  // Only enabled channels are offered; the disabled qoder channel must not be selectable.
+  assert.deepEqual(get('routes-alias-channel').children.map(option=>option.value),['core','opencode']);
+  const channelTitles=get('routes-channels').children.map(article=>article.children[0].textContent);
+  assert.deepEqual(channelTitles,['核心账号池','OpenCode 通道','Qoder 通道']);
+  assert.match(get('routes-example').textContent,/"model": "my-fast"/);
+});
+
+test('Agent 接入 tab posts the whole alias list when adding an alias',async()=>{
+  const {ctx,get,posts}=routeFixture({enabled:true,auto_model:'auto',auto_fallback:'',default_auto_fallback:'cn:auto',
+    auto_preview:{routed_model:'cn:auto',channel:'core',reason:'无探测结论，回退核心通道',fallback:true},
+    aliases:[],
+    channels:[{channel:'core',enabled:true,reachable:true,models:['cn:workbuddy']}]});
+  await vm.runInContext("signedIn({csrf:'c',global_enabled:true,zcode_enabled:false,qoder_enabled:false,opencode_enabled:false})",ctx);
+  await vm.runInContext('loadRoutes()',ctx);
+  assert.equal(get('routes-auto-badge').textContent,'用兜底模型');
+  assert.equal(get('routes-auto-badge').className,'badge warn');
+  get('routes-alias-name').value='daily';
+  get('routes-alias-channel').value='core';
+  get('routes-alias-model').value='cn:workbuddy';
+  get('routes-alias-note').value='主力';
+  await get('routes-alias-form').handlers.submit({preventDefault(){}});
+  assert.equal(posts.length,1,'alias save issued no request');
+  assert.deepEqual(posts[0].models,[{alias:'daily',channel:'core',model:'cn:workbuddy',enabled:true,note:'主力'}]);
+  assert.equal(posts[0].auto_fallback,'');
+});
+

@@ -2,13 +2,14 @@ const $ = (id) => document.getElementById(id);
 let csrf = '', modelList = [], accounts = [], history = [], conversation = newConversation(), activeRequest, flowID, flowTimer;
 // pinState：{cn:{uid,nickname,exists}|null, global:null|...}，null=该平台未锁定。
 let pinState = {cn:null, global:null}, lastStatus = null;
-let page = 'overview', sessionGeneration = 0;
+let page = 'overview', workbuddyView = 'accounts', sessionGeneration = 0;
 let protocol = 'openai';
 let taskState = {items:[],active_run:null,latest_runs:[]}, taskHistory = [], taskBefore = null, taskStarting = false, taskPollTimer, taskRenderKey, detailController, detailGeneration = 0;
 let usageRange = 'today', usageGeneration = 0;
 let zcodeModels = [], zcodeHistory = [], zcodeStatus = null, zcodePollTimer, zcodeBusy = false, zcodeAuthURL = '', zcodeLogoutArmed = false, zcodeProviderTouched = false, zcodePlanTouched = false, zcodeView = 'status', zcodeViewTouched = false, zcodeEnabled = false;
 let qoderModels = [], qoderHistory = [], qoderStatus = null, qoderPollTimer, qoderBusy = false, qoderAuthURL = '', qoderLogoutArmed = false, qoderControl = false, qoderLoggedIn = false, qoderLoginTimer = null, qoderView = 'status', qoderViewTouched = false, qoderEnabled = false;
 let opencodeModels = [], opencodeHistory = [], opencodeStatus = null, opencodeBusy = false, opencodeView = 'status', opencodeEnabled = false;
+let routesState = null, routesBusy = false, routesEditing = null;
 let selectedTaskRun, historyGeneration = 0, historyLoading = false, taskHistoryKey;
 const taskIntents = new Map(), taskReads = new Set();
 function newConversation() { return `web-${Date.now()}-${Math.random().toString(36).slice(2)}`; }
@@ -32,10 +33,11 @@ function signedOut() {
  sessionGeneration++;
  csrf = ''; activeRequest?.abort(); clearTimeout(flowTimer); flowID = undefined; history = []; conversation = newConversation(); stopTaskReads(); taskIntents.clear(); taskState={items:[],active_run:null,latest_runs:[]};taskHistory=[];taskBefore=null;taskStarting=false;taskRenderKey=undefined;
  $('messages').replaceChildren();$('task-list').replaceChildren();$('task-history-body').replaceChildren();$('task-detail').hidden=true;$('task-accounts').textContent='';$('task-log').textContent=''; $('api-key').value = ''; $('api-key').type = 'password'; $('admin-key').value = ''; $('console-view').hidden = true; $('login-view').hidden = false;
- protocol='openai';$('prompt').value='';$('max-tokens').value='1024';$('usage').textContent='用量将在上游返回后显示';usageGeneration++;renderAccess();
+ protocol='openai';$('prompt').value='';$('max-tokens').value='1024';$('usage').textContent='用量将在上游返回后显示';usageGeneration++;workbuddyView='accounts';renderAccess();
  zcodeModels=[];zcodeHistory=[];zcodeStatus=null;zcodeAuthURL='';zcodeLogoutArmed=false;zcodeBusy=false;zcodeProviderTouched=false;zcodePlanTouched=false;zcodeView='status';zcodeViewTouched=false;zcodeEnabled=false;clearTimeout(zcodePollTimer);zcodePollTimer=undefined;$('zcode-model').replaceChildren();$('zcode-messages').replaceChildren();$('zcode-prompt').value='';$('zcode-usage').textContent='用量将在上游返回后显示';$('zcode-disabled').hidden=true;$('zcode-content').hidden=true;$('nav-zcode').classList.remove('nav-muted');
  qoderModels=[];qoderHistory=[];qoderStatus=null;qoderEnabled=false;qoderControl=false;qoderLoggedIn=false;qoderAuthURL='';qoderBusy=false;qoderLogoutArmed=false;qoderView='status';qoderViewTouched=false;clearTimeout(qoderPollTimer);qoderPollTimer=undefined;clearTimeout(qoderLoginTimer);qoderLoginTimer=null;$('qoder-model').replaceChildren();$('qoder-messages').replaceChildren();$('qoder-prompt').value='';$('qoder-usage').textContent='用量将在上游返回后显示';$('qoder-disabled').hidden=true;$('qoder-content').hidden=true;$('nav-qoder').classList.remove('nav-muted');$('qoder-auth-row').hidden=true;$('qoder-pane-login').hidden=true;$('qoder-login-hint').textContent='';
  opencodeModels=[];opencodeHistory=[];opencodeStatus=null;opencodeEnabled=false;opencodeBusy=false;opencodeView='status';$('opencode-model').replaceChildren();$('opencode-messages').replaceChildren();$('opencode-prompt').value='';$('opencode-usage').textContent='用量将在上游返回后显示';$('opencode-disabled').hidden=true;$('opencode-content').hidden=true;$('nav-opencode').classList.remove('nav-muted');$('opencode-health-wrap').hidden=true;$('opencode-health-body').replaceChildren();
+ routesState=null;routesBusy=false;routesEditing=null;$('routes-disabled').hidden=true;$('routes-content').hidden=true;$('routes-alias-body').replaceChildren();$('routes-channels').replaceChildren();$('routes-model-options').replaceChildren();$('routes-example').textContent='';$('routes-alias-name').value='';$('routes-alias-model').value='';$('routes-alias-note').value='';$('routes-auto-fallback').value='';
  pinState={cn:null,global:null};lastStatus=null;renderPinBanner();
 }
 async function signedIn(session) {
@@ -49,27 +51,52 @@ async function signedIn(session) {
  $('nav-opencode').classList.toggle('nav-muted', !session.opencode_enabled);
  opencodeEnabled = !!session.opencode_enabled;
  await refreshStatus(); await refreshModels(); await loadPins();
+ void loadModelHeat();
+}
+const pageNames = {overview:'运行概览',workbuddy:'WorkBuddy 通道',zcode:'Zcode 通道',qoder:'Qoder 通道',opencode:'OpenCode 通道',routes:'Agent 接入',access:'API 接入'};
+const workbuddyNames = {accounts:'账号管理',tasks:'自动任务',usage:'调用统计',chat:'对话测试'};
+function setWorkBuddyView(view) {
+ workbuddyView = view;
+ for (const name of ['accounts','tasks','usage','chat']) {
+  $('workbuddy-view-'+name).classList.toggle('active', name === view);
+  $('workbuddy-pane-'+name).hidden = name !== view;
+ }
+ renderBreadcrumb();
+}
+function renderBreadcrumb() {
+ const base = pageNames[page] || page;
+ $('breadcrumb-name').textContent = page === 'workbuddy' ? `${base} / ${workbuddyNames[workbuddyView] || ''}` : base;
 }
 function showPage(value) {
- if (page === 'tasks' && value !== 'tasks') stopTaskReads(true);
+ if (page === 'workbuddy' && value !== 'workbuddy') stopTaskReads(true);
  if (page === 'zcode' && value !== 'zcode') stopZcodePoll();
  page = value;
  document.querySelectorAll('[data-page]').forEach(el => el.hidden = el.dataset.page !== page);
  document.querySelectorAll('.nav').forEach(el => el.classList.toggle('active', el.dataset.view === page));
- $('breadcrumb-name').textContent = {overview:'运行概览',accounts:'账号管理',tasks:'自动任务',usage:'调用统计',chat:'对话测试',zcode:'Zcode 通道',qoder:'Qoder 通道',opencode:'OpenCode 通道',access:'API 接入'}[page];
+ renderBreadcrumb();
  if (page !== 'access') { $('api-key').value = ''; $('api-key').type = 'password'; }
- if (page === 'tasks') loadTaskPage();
- if (page === 'usage') loadUsage();
+ if (page === 'workbuddy') setWorkBuddyView(workbuddyView);
+ if (page === 'workbuddy' && workbuddyView === 'tasks') loadTaskPage();
+ if (page === 'workbuddy' && workbuddyView === 'usage') loadUsage();
  if (page === 'zcode') loadZcode();
  if (page === 'qoder') loadQoder();
  if (page === 'opencode') loadOpenCode();
+ if (page === 'routes') loadRoutes();
  // The access tab lists GLM and Qoder channel models too; fetch statuses once lazily
  // so its select is complete even when the operator never opens those tabs.
  if (page === 'access' && zcodeEnabled && !zcodeStatus) loadZcode();
  if (page === 'access' && qoderEnabled && !qoderStatus) loadQoder();
  if (page === 'access' && opencodeEnabled && !opencodeStatus) loadOpenCode();
 }
-document.querySelectorAll('[data-view]').forEach(button => button.addEventListener('click', () => showPage(button.dataset.view)));
+document.querySelectorAll('[data-view]').forEach(button => button.addEventListener('click', () => {
+ if (button.dataset.sub && button.dataset.view === 'workbuddy') setWorkBuddyView(button.dataset.sub);
+ showPage(button.dataset.view);
+}));
+for (const name of ['accounts','tasks','usage','chat']) $('workbuddy-view-'+name).addEventListener('click', () => {
+ setWorkBuddyView(name);
+ if (name === 'tasks') loadTaskPage();
+ if (name === 'usage') loadUsage();
+});
 $('login-form').addEventListener('submit', async event => {
  event.preventDefault(); const button = event.submitter; button.disabled = true; $('login-error').textContent = '';
  try { const session = await jsonAPI('login', {key:$('admin-key').value}); await signedIn(session); } catch(error) { $('login-error').textContent = error.message; } finally { button.disabled = false; }
@@ -78,21 +105,24 @@ $('logout').addEventListener('click', async () => {$('login-error').textContent=
 function cell(text, small) { const td = document.createElement('td'); td.textContent = text; if (small) { const s=document.createElement('small');s.textContent=small;td.append(s); } return td; }
 // zcode / qoder / opencode / core 共用的模型表渲染。能力与探测结论都取自上游探测结果；
 // 没有探测数据的通道显式显示「未探测」而不是隐藏列，后续上游补上同构数据即可直接复用。
+// modelHeat 是调用统计账本按 modelKey 聚合的调用次数，供「热度」列排名。
+let modelHeat=new Map(),modelHeatRank=new Map();
 const modelChannels={zcode:{body:'zcode-models-body',empty:'zcode-models-empty',namePrefix:'GLM · '},
  qoder:{body:'qoder-models-body',empty:'qoder-models-empty',namePrefix:'Qoder · '},
  opencode:{body:'opencode-models-body',empty:'opencode-models-empty',namePrefix:'opencode-OC · '},
  core:{body:'core-models-body',empty:'core-models-empty',namePrefix:''}};
 const modelFailureLabels={timeout:'探测超时',access:'地区限制',error:'调用失败',model_error:'模型错误',auth:'未授权',rate_limit:'限流'};
 const modelProbeSources={probe:'探测',request:'真实请求'};
-// 公共模型名带通道前缀（opencode-OC · X / glm-X / opencode/x），去掉前缀与分隔符后作为跨源对齐键。
-function modelKey(id){return String(id||'').replace(/^opencode-OC · /,'').replace(/^OC · /,'').replace(/^opencode\//,'').replace(/^glm-/,'').replace(/^qoder-/,'').toLowerCase().replace(/[^a-z0-9\u4e00-\u9fa5]+/g,'');}
+// 公共模型名带通道前缀（opencode-OC · X / glm-X / opencode/x）与 realm 前缀（cn:/global:），去掉后作为跨源对齐键。
+function modelKey(id){return String(id||'').replace(/^opencode-OC · /,'').replace(/^OC · /,'').replace(/^opencode\//,'').replace(/^(?:cn|global):/,'').replace(/^glm-/,'').replace(/^qoder-/,'').toLowerCase().replace(/[^a-z0-9\u4e00-\u9fa5]+/g,'');}
 function badgeCell(text,warn){const td=document.createElement('td');const tag=document.createElement('span');tag.className='badge'+(warn?' warn':'');tag.textContent=text;td.append(tag);return td;}
 function chipsCell(labels,small){const td=document.createElement('td');if(labels.length){const row=document.createElement('span');row.className='badge-row';for(const label of labels){const tag=document.createElement('span');tag.className='badge';tag.textContent=label;row.append(tag);}td.append(row);}else td.textContent='—';if(small){const note=document.createElement('small');note.textContent=small;td.append(note);}return td;}
+// order 是排序档位：可用最优，其次仅对话，再次未探测（没有探测数据），最后才是真不可用。
 function modelProbeState(result){
- if(!result)return{label:'未探测',warn:true};
- if(result.ok===true)return result.chatOnly?{label:'仅对话',warn:true}:{label:'可用',warn:false};
+ if(!result)return{label:'未探测',warn:true,order:2};
+ if(result.ok===true)return result.chatOnly?{label:'仅对话',warn:true,order:1}:{label:'可用',warn:false,order:0};
  const category=typeof result.category==='string'?result.category:'';
- return{label:modelFailureLabels[category]||category||'不可用',warn:true};
+ return{label:modelFailureLabels[category]||category||'不可用',warn:true,order:3};
 }
 function formatProbeDuration(ms){const value=Number(ms);return Number.isFinite(value)&&value>=0?`${(value/1000).toFixed(1)} 秒`:'—';}
 function formatProbeTime(value){const date=new Date(value);return Number.isNaN(date.getTime())?'':date.toLocaleString('zh-CN',{timeZone:'Asia/Shanghai',hour12:false});}
@@ -109,6 +139,36 @@ function modelLimitText(cap){
  return parts.join(' · ');
 }
 function modelVariantNames(source){const variants=source&&typeof source.variants==='object'?source.variants:null;return variants?Object.keys(variants):[];}
+// 热度来自调用统计账本：按 modelKey 聚合调用次数，前三名分获红/橙/黄星。
+// 排名是跨通道的公共口径，同一模型在四张表里拿到同一颗星；账本无记录时如实留「—」。
+const modelHeatSources={};
+function modelHeatCell(key){
+ const td=document.createElement('td');
+ const rank=modelHeatRank.get(key);
+ if(!rank){td.textContent='—';return td;}
+ const star=document.createElement('span');
+ star.className='heat-stars heat-'+rank;
+ star.textContent='★';
+ const note=document.createElement('small');
+ note.textContent=(modelHeat.get(key)||0)+' 次';
+ td.append(star,note);
+ return td;
+}
+function applyModelHeat(items){
+ const counts=new Map();
+ for(const entry of(Array.isArray(items)?items:[])){
+  const key=modelKey(entry&&entry.model);
+  if(key)counts.set(key,(counts.get(key)||0)+1);
+ }
+ modelHeat=counts;
+ const top=[...counts.entries()].sort((a,b)=>b[1]-a[1]||(a[0]<b[0]?-1:1)).slice(0,3);
+ modelHeatRank=new Map(top.map(([key],index)=>[key,index+1]));
+ for(const channel of Object.keys(modelHeatSources)){const source=modelHeatSources[channel];renderModelTable(channel,source.list,source.health);}
+}
+// 静默加载：账本不可用时保持「—」，不让热度缺失打扰模型表。
+async function loadModelHeat(){
+ try{applyModelHeat((await jsonAPI('usage?range=month')).items);}catch(error){}
+}
 // channelModelRows 把「模型清单」与「探测结果」并成同一批行。/v1/models 只返回可用项，
 // 探测过但不可用的模型仍按条保留并带失败原因，不让它们从界面上整体消失。
 function channelModelRows(channel,list,health){
@@ -133,22 +193,25 @@ function channelModelRows(channel,list,health){
  return[...rows.values()].map(row=>{
   const result=row.result;
   const variants=[...new Set([...modelVariantNames(result),...modelVariantNames(row.cap)])];
-  return{label:row.label,state:modelProbeState(result),
+  const ms=result?Number(result.durationMs):NaN;
+  return{key:row.key,label:row.label,state:modelProbeState(result),
    caps:modelCapabilityBadges(row.cap,row.efforts&&row.efforts.length?['推理']:null),
    limit:modelLimitText(row.cap),
    variants:variants.length?`档位 ${variants.join(' / ')}`:'',
    duration:result?formatProbeDuration(result.durationMs):'—',
+   durationMs:Number.isFinite(ms)&&ms>=0?ms:null,
    source:result&&modelProbeSources[result.source]?modelProbeSources[result.source]:'',
    note:result&&typeof result.error==='string'&&result.error?result.error:'—'};
- });
+ }).sort((a,b)=>a.state.order-b.state.order||((a.durationMs??Infinity)-(b.durationMs??Infinity)));
 }
 function renderModelTable(channel,list,health){
  const config=modelChannels[channel];
+ modelHeatSources[channel]={list,health};
  const body=$(config.body);body.replaceChildren();
  const rows=channelModelRows(channel,list,health);
  for(const row of rows){
   const tr=document.createElement('tr');
-  tr.append(cell(row.label),chipsCell(row.caps,[row.limit,row.variants].filter(Boolean).join(' · ')),badgeCell(row.state.label,row.state.warn),cell(row.duration,row.source),cell(row.note));
+  tr.append(cell(row.label),chipsCell(row.caps,[row.limit,row.variants].filter(Boolean).join(' · ')),badgeCell(row.state.label,row.state.warn),cell(row.duration,row.source),cell(row.note),modelHeatCell(row.key));
   body.append(tr);
  }
  $(config.empty).hidden=rows.length>0;
@@ -302,7 +365,7 @@ async function taskJSON(path){
  const controller=new AbortController();taskReads.add(controller);
  try{return await jsonAPI(path,undefined,controller.signal);}finally{taskReads.delete(controller);}
 }
-function taskPageVisible(){return page==='tasks'&&csrf&&!document.hidden;}
+function taskPageVisible(){return page==='workbuddy'&&workbuddyView==='tasks'&&csrf&&!document.hidden;}
 function scheduleTaskPoll(){
  clearTimeout(taskPollTimer);taskPollTimer=undefined;
  if(taskPageVisible())taskPollTimer=setTimeout(pollTaskRun,2000);
@@ -387,7 +450,7 @@ async function loadTaskDetail(id,scroll=true){
 $('task-refresh').addEventListener('click',loadTaskPage);
 $('task-more').addEventListener('click',()=>loadTaskHistory(false));
 $('task-detail-close').addEventListener('click',()=>cancelTaskDetail(true));
-document.addEventListener?.('visibilitychange',()=>{if(document.hidden)stopTaskReads();else if(page==='tasks')pollTaskRun();else if(page==='zcode'&&zcodeStatus&&zcodeStatus.control&&!zcodeStatus.logged_in)loadZcode();else if(page==='qoder'&&qoderStatus&&qoderStatus.control&&!qoderStatus.logged_in)loadQoder();});
+document.addEventListener?.('visibilitychange',()=>{if(document.hidden)stopTaskReads();else if(page==='workbuddy'&&workbuddyView==='tasks')pollTaskRun();else if(page==='zcode'&&zcodeStatus&&zcodeStatus.control&&!zcodeStatus.logged_in)loadZcode();else if(page==='qoder'&&qoderStatus&&qoderStatus.control&&!qoderStatus.logged_in)loadQoder();});
 
 const usageModeNames={stream:'流式',sync:'同步'};
 function formatUsageTokens(value){return value<0?'—':String(value);}
@@ -929,7 +992,7 @@ function renderAccess(){
 document.querySelectorAll('[data-protocol]').forEach(button=>button.addEventListener('click',()=>setProtocol(button.dataset.protocol)));
 $('access-model').addEventListener('change',renderAccess);
 $('copy-example').addEventListener('click',async()=>{if($('copy-example').disabled)return;try{await navigator.clipboard.writeText($('api-example').textContent);notice('调用示例已复制，请替换 API Key 占位符');}catch{notice('浏览器不允许自动复制，请手动复制下方示例');}});
-$('go-chat').addEventListener('click',()=>{if(activeRequest||$('go-chat').disabled)return;const model=$('access-model').value;if(model.startsWith('glm-')){if(zcodeModels.includes(model))$('zcode-model').value=model;showPage('zcode');return;}if(model.startsWith('qoder-')){if(qoderModels.includes(model))$('qoder-model').value=model;showPage('qoder');return;}if(model.startsWith('opencode-')){if(opencodeModels.includes(model))$('opencode-model').value=model;showPage('opencode');return;}$('model').value=model;updateEfforts();showPage('chat');});
+$('go-chat').addEventListener('click',()=>{if(activeRequest||$('go-chat').disabled)return;const model=$('access-model').value;if(model.startsWith('glm-')){if(zcodeModels.includes(model))$('zcode-model').value=model;showPage('zcode');return;}if(model.startsWith('qoder-')){if(qoderModels.includes(model))$('qoder-model').value=model;showPage('qoder');return;}if(model.startsWith('opencode-')){if(opencodeModels.includes(model))$('opencode-model').value=model;showPage('opencode');return;}$('model').value=model;updateEfforts();setWorkBuddyView('chat');showPage('workbuddy');});
 function chatControls(){
  for(const id of ['model','access-model','clear-chat','send-chat','max-tokens'])$(id).disabled=!!activeRequest;
  $('stop-chat').hidden=!activeRequest;
@@ -994,6 +1057,120 @@ $('chat-form').addEventListener('submit',async event=>{
  finally{controller.abort();activeRequest=undefined;chatControls();updateEfforts();if(generation===sessionGeneration)refreshStatus();}
 });
 renderAccess();
+// Agent 接入（路由别名）。后端契约见 console/route.go：
+// GET /admin/route 返回 {enabled, auto_model, auto_fallback, default_auto_fallback,
+// auto_preview, aliases, channels}；POST /admin/route/save 接收
+// {models:[{alias,channel,model,enabled,note}], auto_fallback}。
+// 路由判定完全在服务端，页面只负责展示与编辑；保存即生效，无需重启。
+const routeChannelLabels={core:'核心账号池',glm:'GLM 通道',qoder:'Qoder 通道',opencode:'OpenCode 通道'};
+function routeChannelLabel(channel){return routeChannelLabels[channel]||channel||'—';}
+async function loadRoutes(){
+ if(!csrf)return;
+ try{renderRoutes(await jsonAPI('route'));}
+ catch(error){notice(error.message);}
+}
+function renderRoutes(state){
+ routesState=state;
+ const enabled=!!state.enabled;
+ $('routes-disabled').hidden=enabled;$('routes-content').hidden=!enabled;
+ if(!enabled)return;
+ const preview=state.auto_preview||{};
+ const badge=$('routes-auto-badge');
+ if(preview.routed_model&&!preview.fallback){badge.textContent='自动优选';badge.className='badge';}
+ else if(preview.routed_model){badge.textContent='用兜底模型';badge.className='badge warn';}
+ else {badge.textContent='未知';badge.className='badge warn';}
+ $('routes-auto-text').textContent=preview.routed_model?`现在自动挑中的是 ${preview.routed_model}（${routeChannelLabel(preview.channel)}）· ${preview.reason||''}`:'暂时看不出 auto 会挑哪个模型。';
+ $('routes-default-fallback').textContent=state.default_auto_fallback||'cn:auto';
+ $('routes-auto-fallback').value=state.auto_fallback||'';
+ const select=$('routes-alias-channel'),previous=select.value;
+ select.replaceChildren();
+ for(const channel of state.channels||[])if(channel.enabled)select.appendChild(new Option(routeChannelLabel(channel.channel),channel.channel));
+ const enabledChannels=(state.channels||[]).filter(channel=>channel.enabled).map(channel=>channel.channel);
+ if(enabledChannels.includes(previous))select.value=previous;
+ fillRouteModelOptions(select.value);
+ renderRouteAliases(state.aliases||[]);
+ renderRouteChannels(state.channels||[]);
+ renderRouteExample(state);
+}
+function renderRouteAliases(aliases){
+ const body=$('routes-alias-body');body.replaceChildren();
+ $('routes-alias-empty').hidden=aliases.length>0;
+ for(const entry of aliases){
+  const tr=document.createElement('tr');
+  tr.append(cell(entry.alias),cell(routeChannelLabel(entry.channel)),cell(entry.model),cell(entry.public_model),badgeCell(entry.enabled?'启用':'停用',!entry.enabled),cell(entry.note||'—'));
+  const actions=document.createElement('td');
+  const edit=document.createElement('button');edit.className='secondary';edit.textContent='编辑';edit.addEventListener('click',()=>startRouteEdit(entry));
+  const toggle=document.createElement('button');toggle.className='secondary';toggle.textContent=entry.enabled?'停用':'启用';toggle.addEventListener('click',()=>saveRouteAliases(currentRouteAliases().map(item=>item.alias===entry.alias?{...item,enabled:!entry.enabled}:item)));
+  const remove=document.createElement('button');remove.className='quiet';remove.textContent='删除';remove.addEventListener('click',()=>saveRouteAliases(currentRouteAliases().filter(item=>item.alias!==entry.alias)));
+  actions.append(edit,toggle,remove);tr.append(actions);body.append(tr);
+ }
+}
+function currentRouteAliases(){
+ return ((routesState&&routesState.aliases)||[]).map(entry=>({alias:entry.alias,channel:entry.channel,model:entry.model,enabled:entry.enabled!==false,note:entry.note||''}));
+}
+function renderRouteChannels(channels){
+ const container=$('routes-channels');container.replaceChildren();
+ for(const channel of channels){
+  const article=document.createElement('article');article.className='panel';
+  const title=document.createElement('h3');title.textContent=routeChannelLabel(channel.channel);article.append(title);
+  const meta=document.createElement('p');meta.className='muted small';
+  meta.textContent=channel.enabled?(channel.reachable?`${(channel.models||[]).length} 个模型`:'通道当前不可达'):'通道未启用';
+  article.append(meta);
+  const list=document.createElement('p');list.className='badge-row';
+  for(const model of channel.models||[]){
+   const tag=document.createElement('button');tag.type='button';tag.className='badge';tag.textContent=model;
+   tag.addEventListener('click',()=>pickRouteModel(channel.channel,model));
+   list.append(tag);
+  }
+  article.append(list);container.append(article);
+ }
+}
+function pickRouteModel(channel,model){
+ $('routes-alias-channel').value=channel;fillRouteModelOptions(channel);$('routes-alias-model').value=model;
+}
+function fillRouteModelOptions(channel){
+ const list=$('routes-model-options');list.replaceChildren();
+ const source=((routesState&&routesState.channels)||[]).find(item=>item.channel===channel);
+ for(const model of (source&&source.models)||[])list.appendChild(new Option(model,model));
+}
+function renderRouteExample(state){
+ const alias=((state.aliases||[]).find(entry=>entry.enabled)||{}).alias||state.auto_model||'auto';
+ const body={model:alias,messages:[{role:'user',content:'你好'}],stream:true};
+ $('routes-example').textContent=`curl ${location.origin}/v1/chat/completions \\\n  -H "Authorization: Bearer <你的 API Key>" \\\n  -H "Content-Type: application/json" \\\n  -d '${JSON.stringify(body,null,2)}'`;
+}
+async function saveRouteAliases(models){
+ if(routesBusy)return;
+ const generation=sessionGeneration;routesBusy=true;$('routes-alias-save').disabled=true;
+ try{
+  const result=await jsonAPI('route/save',{models,auto_fallback:$('routes-auto-fallback').value.trim()});
+  if(generation!==sessionGeneration)return;
+  routesEditing=null;$('routes-alias-name').value='';$('routes-alias-model').value='';$('routes-alias-note').value='';
+  renderRoutes(result);notice('路由配置已保存，下一次请求即生效');
+ }catch(error){if(generation===sessionGeneration)notice(error.message);}
+ finally{if(generation===sessionGeneration){routesBusy=false;$('routes-alias-save').disabled=false;}}
+}
+function startRouteEdit(entry){
+ routesEditing=entry.alias;
+ $('routes-alias-name').value=entry.alias;$('routes-alias-channel').value=entry.channel;
+ fillRouteModelOptions(entry.channel);
+ $('routes-alias-model').value=entry.model;$('routes-alias-note').value=entry.note||'';
+}
+$('routes-alias-form').addEventListener('submit',async event=>{
+ event.preventDefault();if(routesBusy)return;
+ const alias=$('routes-alias-name').value.trim(),channel=$('routes-alias-channel').value,model=$('routes-alias-model').value.trim(),note=$('routes-alias-note').value.trim();
+ if(!alias||!model||!channel)return;
+ let models=currentRouteAliases();
+ if(routesEditing&&routesEditing!==alias)models=models.filter(item=>item.alias!==routesEditing);
+ const index=models.findIndex(item=>item.alias===alias);
+ if(index>=0)models[index]={...models[index],channel,model,note};
+ else models=[...models,{alias,channel,model,enabled:true,note}];
+ await saveRouteAliases(models);
+});
+$('routes-alias-reset').addEventListener('click',()=>{routesEditing=null;$('routes-alias-name').value='';$('routes-alias-model').value='';$('routes-alias-note').value='';});
+$('routes-fallback-form').addEventListener('submit',async event=>{event.preventDefault();await saveRouteAliases(currentRouteAliases());});
+$('routes-alias-channel').addEventListener('change',()=>fillRouteModelOptions($('routes-alias-channel').value));
+$('routes-refresh').addEventListener('click',()=>loadRoutes());
+$('routes-copy-example').addEventListener('click',async()=>{try{await navigator.clipboard.writeText($('routes-example').textContent);notice('配置片段已复制，请替换 API Key 占位符');}catch{notice('浏览器不允许自动复制，请手动复制下方片段');}});
 $('reveal-key').addEventListener('click',async()=>{try{$('api-key').value=(await jsonAPI('access',{})).api_key;$('api-key').type='text';}catch(e){notice(e.message);}});
 $('copy-key').addEventListener('click',async()=>{const generation=sessionGeneration;try{if(!$('api-key').value)$('api-key').value=(await jsonAPI('access',{})).api_key;await navigator.clipboard.writeText($('api-key').value);if(generation===sessionGeneration)notice('API Key 已复制');}catch{if(generation!==sessionGeneration)return;$('api-key').type='text';$('api-key').select();notice('浏览器不允许自动复制，请手动复制选中的密钥');}});
 jsonAPI('session').then(signedIn).catch(()=>{});
