@@ -26,6 +26,8 @@ services:
       - "0.0.0.0:7863:7863"
     volumes:
       - ./runtime/wb2api/keys:/run/wb2a:ro
+      # 路由别名配置（可写）：页面保存即生效，无需重启容器。
+      - ./runtime/wb2api/console:/app/console-data
     depends_on:
       core:
         condition: service_started

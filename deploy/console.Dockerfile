@@ -12,11 +12,12 @@ FROM alpine:3.20
 RUN test "$(apk --print-arch)" = x86_64 \
     && apk add --no-cache ca-certificates tzdata wget \
     && adduser -D -u 10001 app \
-    && mkdir -p /run/wb2a \
-    && chown -R app:app /run/wb2a
+    && mkdir -p /run/wb2a /app/console-data \
+    && chown -R app:app /run/wb2a /app/console-data
 COPY --from=build /out/console /app/console
 COPY LICENSE /app/LICENSE
-ENV WB2A_CORE_URL=http://core:7863 WB2A_LISTEN=:7863 WB2A_KEY_FILE=/run/wb2a/keys.json
+ENV WB2A_CORE_URL=http://core:7863 WB2A_LISTEN=:7863 WB2A_KEY_FILE=/run/wb2a/keys.json \
+    WB2A_ROUTE_FILE=/app/console-data/routes.json
 USER app
 EXPOSE 7863
 ENTRYPOINT ["/app/console"]
