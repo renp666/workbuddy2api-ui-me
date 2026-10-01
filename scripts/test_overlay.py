@@ -9,7 +9,7 @@ import unittest
 from unittest import mock
 from pathlib import Path
 
-from overlay import _fetch_candidate_snapshot, export_snapshot, materialize, overlay_identity, source_digest, update
+from overlay import _fetch_candidate_snapshot, _indexed_git_modes, export_snapshot, materialize, overlay_identity, source_digest, update
 
 
 CANONICAL_REPOSITORY = "https://github.com/Sliverkiss/workbuddy2api"
@@ -244,6 +244,28 @@ class MaterializeTests(unittest.TestCase):
             self.assertEqual(
                 "extension\n", (dest / "extra" / "new.txt").read_text(encoding="utf-8")
             )
+
+    def test_materialize_applies_crlf_patch_against_lf_snapshot(self):
+        # 补丁按字节匹配上下文，工作区里的 CRLF 补丁无法直接应用到 LF 快照。
+        # 显式写字节，不依赖平台的文本模式换行翻译，保证两个平台都覆盖同一场景。
+        with tempfile.TemporaryDirectory() as d:
+            root = Path(d)
+            make_overlay_root(root)
+            patch = root / "patches" / "change.patch"
+            patch.write_bytes(
+                b"diff --git a/base.txt b/base.txt\n"
+                b"--- a/base.txt\n"
+                b"+++ b/base.txt\n"
+                b"@@ -1 +1 @@\n"
+                b"-old\r\n"
+                b"+new\r\n"
+            )
+            (root / "patches" / "series").write_text("change.patch\n", encoding="utf-8")
+
+            dest = root / "build"
+            materialize(root, dest)
+
+            self.assertEqual("new\n", (dest / "base.txt").read_text(encoding="utf-8"))
 
     def test_materialize_without_overlay_is_reproducible_and_keeps_upstream_pristine(self):
         with tempfile.TemporaryDirectory() as d:
@@ -989,6 +1011,58 @@ class UpdateTests(unittest.TestCase):
             self.assertEqual(old_lock, (backup / "upstream.lock").read_bytes())
             self.assertEqual("old\n", (backup / "upstream" / "version.txt").read_text(encoding="utf-8"))
             self.assertTrue((root / ".upstream-update-journal.json").exists())
+
+
+class IndexedModeTests(unittest.TestCase):
+    """摘要计算使用调用方注入的 Git 索引 mode；未注入时仍按 st_mode 判定。
+
+    Windows 的 NTFS 不保存执行位，upstream.lock 里记录的 100755 在该平台上
+    无法由文件系统状态复现，只能以索引记录为准。
+    """
+
+    def test_digest_honours_injected_modes(self):
+        with tempfile.TemporaryDirectory() as d:
+            tree = Path(d) / "upstream"
+            tree.mkdir()
+            (tree / "notes.md").write_bytes(b"notes\n")
+            (tree / "run.sh").write_bytes(b"#!/bin/sh\nexit 0\n")
+            records = [
+                ["notes.md", "100644", hashlib.sha256(b"notes\n").hexdigest()],
+                ["run.sh", "100755", hashlib.sha256(b"#!/bin/sh\nexit 0\n").hexdigest()],
+            ]
+            expected = hashlib.sha256(
+                json.dumps(records, ensure_ascii=False, separators=(",", ":")).encode()
+            ).hexdigest()
+
+            modes = {"notes.md": "100644", "run.sh": "100755"}
+            self.assertEqual(expected, source_digest(tree, modes=modes))
+            self.assertNotEqual(expected, source_digest(tree))
+
+    @unittest.skipIf(os.name != "nt", "索引 mode 只在 NTFS 平台被采纳")
+    def test_indexed_modes_reports_cached_executable_bit(self):
+        with tempfile.TemporaryDirectory() as d:
+            root = Path(d)
+            tree = root / "upstream"
+            tree.mkdir()
+            run_git(root, "init", "-q")
+            (tree / "run.sh").write_bytes(b"#!/bin/sh\nexit 0\n")
+            run_git(root, "add", "--", "upstream/run.sh")
+            blob = run_git(root, "rev-parse", ":upstream/run.sh").decode().strip()
+            run_git(
+                root, "update-index", "--add", "--cacheinfo",
+                f"100755,{blob},upstream/run.sh",
+            )
+
+            self.assertEqual("100755", _indexed_git_modes(tree)["run.sh"])
+
+    @unittest.skipIf(os.name == "nt", "POSIX 平台以 st_mode 为准，不读索引")
+    def test_indexed_modes_empty_on_posix(self):
+        with tempfile.TemporaryDirectory() as d:
+            tree = Path(d) / "upstream"
+            tree.mkdir()
+            (tree / "run.sh").write_bytes(b"#!/bin/sh\nexit 0\n")
+
+            self.assertEqual({}, _indexed_git_modes(tree))
 
 
 class AcceptanceScriptTests(unittest.TestCase):

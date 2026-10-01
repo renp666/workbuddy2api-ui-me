@@ -30,10 +30,48 @@ BACKUP_NAME = ".upstream-update-backup"
 STAGED_NAME = ".upstream-update-new"
 
 
-def _tree_entries(root, ignore=None):
+def _indexed_git_modes(root: Path):
+    """读取 Git 索引记录的 mode，供调用方显式注入摘要计算。
+
+    Windows 的 NTFS 不保存执行位：os.chmod(0o755) 之后 st_mode 读回仍没有可执行位，
+    直接用 mode & 0o111 判定会把同一份快照误判成内容变更。该平台上改为以索引
+    记录的 mode 为准。ls-files 以 root 为 cwd，输出路径相对该目录，与摘要计算
+    使用的相对路径同一基准；不在索引中的路径不会出现在返回值里，由调用方回退
+    到 st_mode 判定。
+
+    这里刻意不参与 _tree_entries：摘要计算保持纯文件系统操作，只有 CLI 入口调用
+    本函数，故障注入测试对「不得执行任何命令」的断言不被破坏。
+    """
+    if os.name != "nt":
+        return {}
+    result = subprocess.run(
+        ["git", "ls-files", "-s", "-z"],
+        cwd=root,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.DEVNULL,
+    )
+    if result.returncode != 0:
+        return {}
+    modes = {}
+    for record in result.stdout.split(b"\0"):
+        if not record:
+            continue
+        metadata, _, raw = record.partition(b"\t")
+        fields = metadata.split()
+        if len(fields) != 3:
+            continue
+        relative = PurePosixPath(
+            raw.decode("utf-8", errors="surrogateescape")
+        ).as_posix()
+        modes[relative] = fields[0].decode("ascii", errors="replace")
+    return modes
+
+
+def _tree_entries(root, ignore=None, modes=None):
     if root.is_symlink() or not root.is_dir():
         raise ValueError(f"source is not a directory: {root}")
     root = root.resolve()
+    indexed_modes = modes or {}
     entries = []
 
     def visit(directory):
@@ -51,7 +89,13 @@ def _tree_entries(root, ignore=None):
                 if stat.S_ISDIR(mode):
                     visit(path)
                 elif stat.S_ISREG(mode):
-                    git_mode = "100755" if mode & 0o111 else "100644"
+                    indexed = indexed_modes.get(relative)
+                    if indexed == "100755":
+                        git_mode = "100755"
+                    elif indexed == "100644":
+                        git_mode = "100644"
+                    else:
+                        git_mode = "100755" if mode & 0o111 else "100644"
                     entries.append((relative, git_mode, path.read_bytes(), path))
                 elif stat.S_ISLNK(mode):
                     target = os.readlink(path)
@@ -66,10 +110,12 @@ def _tree_entries(root, ignore=None):
     return sorted(entries, key=lambda entry: entry[0])
 
 
-def source_digest(source: Path, ignore=None) -> str:
+def source_digest(source: Path, ignore=None, modes=None) -> str:
     records = [
         [relative, mode, hashlib.sha256(content).hexdigest()]
-        for relative, mode, content, _ in _tree_entries(Path(source), ignore=ignore)
+        for relative, mode, content, _ in _tree_entries(
+            Path(source), ignore=ignore, modes=modes
+        )
     ]
     payload = json.dumps(records, ensure_ascii=False, separators=(",", ":")).encode()
     return hashlib.sha256(payload).hexdigest()
@@ -240,7 +286,22 @@ def overlay_identity(root: Path) -> str:
     return digest.hexdigest()
 
 
-def materialize(root: Path, dest: Path) -> None:
+def _normalized_patch(patch: Path, scratch: Path) -> Path:
+    """返回可按字节应用的补丁路径，含 CRLF 时改用 LF 归一化副本。
+
+    Windows 工作区里 CRLF 补丁无法匹配 LF 快照的上下文，而补丁在 Git 索引与
+    HEAD 中都是 LF（.gitattributes 约定 eol=lf），所以这里只归一化副本，不改
+    仓库里的补丁文件。已是 LF 的补丁原样返回，POSIX 平台行为不变。
+    """
+    payload = patch.read_bytes()
+    if b"\r\n" not in payload:
+        return patch
+    normalized = scratch / patch.name
+    normalized.write_bytes(payload.replace(b"\r\n", b"\n"))
+    return normalized
+
+
+def materialize(root: Path, dest: Path, modes=None) -> None:
     root = Path(root).resolve()
     if (root / JOURNAL_NAME).exists():
         raise RuntimeError("unfinished upstream update; run update again to recover")
@@ -254,7 +315,7 @@ def materialize(root: Path, dest: Path) -> None:
         raise FileExistsError(dest)
     lock = _read_lock(root)
     upstream = root / "upstream"
-    if source_digest(upstream) != lock["source_sha256"]:
+    if source_digest(upstream, modes=modes) != lock["source_sha256"]:
         raise ValueError("upstream source digest does not match upstream.lock")
     patches = _read_series(root)
     if (root / "extensions").exists():
@@ -262,17 +323,21 @@ def materialize(root: Path, dest: Path) -> None:
 
     dest.parent.mkdir(parents=True, exist_ok=True)
     dest.mkdir()
+    scratch = Path(tempfile.mkdtemp(prefix="wb2a-patches-"))
     try:
         shutil.copytree(upstream, dest, symlinks=True, dirs_exist_ok=True)
         _copy_extensions(root, dest)
         apply_env = os.environ.copy()
         apply_env["GIT_CEILING_DIRECTORIES"] = str(dest.parent.resolve())
         for patch in patches:
-            _run_git(dest, "apply", "--check", str(patch), env=apply_env)
-            _run_git(dest, "apply", str(patch), env=apply_env)
+            applicable = _normalized_patch(patch, scratch)
+            _run_git(dest, "apply", "--check", str(applicable), env=apply_env)
+            _run_git(dest, "apply", str(applicable), env=apply_env)
     except Exception:
         _remove_created_directory(dest)
         raise
+    finally:
+        shutil.rmtree(scratch, ignore_errors=True)
 
 
 def _validate_ref(ref):
@@ -565,7 +630,7 @@ def _install_staged_candidate(root, candidate, old_lock, old_source_sha):
     journal_path.unlink()
 
 
-def update(root: Path, ref: str) -> None:
+def update(root: Path, ref: str, modes=None) -> None:
     root = Path(root).resolve()
     _validate_ref(ref)
     if _restore_interrupted_update(root):
@@ -575,7 +640,7 @@ def update(root: Path, ref: str) -> None:
         raise ValueError("upstream.lock repository is not the approved canonical URL")
     _check_update_paths_clean(root)
     old_lock = (root / "upstream.lock").read_bytes()
-    old_source_sha = source_digest(root / "upstream")
+    old_source_sha = source_digest(root / "upstream", modes=modes)
     old_inputs_identity = _candidate_inputs_identity(root)
     if old_source_sha != lock["source_sha256"]:
         raise ValueError("upstream source digest does not match upstream.lock")
@@ -600,7 +665,7 @@ def update(root: Path, ref: str) -> None:
         _check_update_paths_clean(root)
         if (
             (root / "upstream.lock").read_bytes() != old_lock
-            or source_digest(root / "upstream") != old_source_sha
+            or source_digest(root / "upstream", modes=modes) != old_source_sha
         ):
             raise RuntimeError("upstream snapshot or lock changed during candidate validation")
         if _candidate_inputs_identity(root) != old_inputs_identity:
@@ -627,11 +692,21 @@ def main():
     update_parser.add_argument("--ref", required=True)
     args = parser.parse_args()
     if args.command == "prepare":
-        materialize(Path(__file__).resolve().parent.parent, args.output)
+        repository = Path(__file__).resolve().parent.parent
+        materialize(
+            repository,
+            args.output,
+            modes=_indexed_git_modes(repository / "upstream"),
+        )
     elif args.command == "identity":
         print(overlay_identity(Path(__file__).resolve().parent.parent))
     else:
-        update(Path(__file__).resolve().parent.parent, args.ref)
+        repository = Path(__file__).resolve().parent.parent
+        update(
+            repository,
+            args.ref,
+            modes=_indexed_git_modes(repository / "upstream"),
+        )
 
 
 if __name__ == "__main__":
