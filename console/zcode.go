@@ -91,6 +91,16 @@ func (h *server) publicRouter(core *httputil.ReverseProxy) http.HandlerFunc {
 				core.ServeHTTP(w, r)
 				return
 			}
+			// 别名与 auto 虚拟模型在这一步解析：命中就把 model 改写成该链路的
+			// 公共形态（带通道前缀），下面的既有前缀分流就能原样复用。未命中
+			// 时 envelope.Model 不变，出口行为与没有该功能时完全一致。
+			if decision, ok := h.resolveAlias(r.Context(), envelope.Model); ok {
+				if rewritten, changed := rewriteModelField(body, decision.RoutedModel); changed {
+					body = rewritten
+				}
+				envelope.Model = decision.RoutedModel
+				w = withPrismHeaders(w, decision)
+			}
 			if zcode != nil && strings.HasPrefix(envelope.Model, zcodeModelPrefix) {
 				r.Body = io.NopCloser(bytes.NewReader(body))
 				r.ContentLength = int64(len(body))
@@ -370,6 +380,21 @@ func (h *server) mergedModels(w http.ResponseWriter, r *http.Request, core *http
 			item = tagModelRealm(item, "glm")
 		}
 		merged = append(merged, item)
+	}
+	// auto 是 console 自建的虚拟模型：它不在任何上游目录里，但客户端需要能在
+	// /v1/models 里看到并选中它，否则各 agent 无法把它写进配置。路由未启用
+	// （没有可写配置）时不能暴露它——那时没有解析器，请求会原样落到 core。
+	if h.routes != nil && !seen[autoModelName] {
+		if virtual, err := json.Marshal(map[string]any{
+			"id":       autoModelName,
+			"object":   "model",
+			"owned_by": "prism",
+			"realm":    "auto",
+			"virtual":  true,
+		}); err == nil {
+			seen[autoModelName] = true
+			merged = append(merged, virtual)
+		}
 	}
 	writeJSON(w, 200, modelsEnvelope{Object: "list", Data: merged})
 }
