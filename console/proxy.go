@@ -49,7 +49,7 @@ func (h *server) coreInfo(ctx context.Context) (coreInfo, error) {
 func stripPrivateHeaders(headers http.Header) {
 	for name := range headers {
 		lower := strings.ToLower(name)
-		if strings.HasPrefix(lower, "x-console-") || strings.HasPrefix(lower, "x-bridge-") || strings.HasPrefix(lower, "x-forwarded-") {
+		if strings.HasPrefix(lower, "x-console-") || strings.HasPrefix(lower, "x-bridge-") || strings.HasPrefix(lower, "x-forwarded-") || strings.HasPrefix(lower, "x-prism-") {
 			headers.Del(name)
 		}
 	}

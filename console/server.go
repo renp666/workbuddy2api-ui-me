@@ -42,9 +42,12 @@ type Config struct {
 	OpenCodeURL *url.URL
 	// OpenCodeKey replaces Authorization when forwarding to OpenCodeURL.
 	OpenCodeKey string
-	AdminKey string
-	APIKey   string // Only exposed by the authenticated, CSRF-protected access endpoint.
-	BridgeKey string
+	// RouteFile 是 console 自己可写的路由别名配置文件路径（容器内路径）。
+	// 为空时不启用别名功能，公共出口与现状完全一致。
+	RouteFile    string
+	AdminKey     string
+	APIKey       string // Only exposed by the authenticated, CSRF-protected access endpoint.
+	BridgeKey    string
 	PublicOrigin string
 	// TrustedProxyCIDRs lists proxies allowed to name the client in X-Forwarded-For.
 	// It is consumed by the login limiter only; same-origin and CSRF checks keep using the connection peer.
@@ -80,6 +83,11 @@ type server struct {
 	// 自动拉起协程在该标志为 true 时不再 startProxy，避免和管理员意图打架。
 	// 容器重启后内存归零，即恢复自动拉起。手动 enable 会清掉该标志。
 	zcodeUserStopped bool
+	// routes 是「对外别名 → 真实上游」的路由表，由控制台页面编辑、保存即生效。
+	// 为 nil 时公共出口与现状完全一致，不改变任何既有分流语义。
+	routes *routeStore
+	// probes 缓存各通道的模型探测结论，供 auto 虚拟模型挑选最优链路。
+	probes *probeCache
 }
 
 func NewServer(cfg Config) (http.Handler, error) {
@@ -147,6 +155,10 @@ func NewServer(cfg Config) (http.Handler, error) {
 		trusted = append(trusted, network)
 	}
 	h := &server{cfg: cfg, mux: http.NewServeMux(), sessions: map[string]*adminSession{}, limits: map[string]loginLimit{}, client: &http.Client{Timeout: 3 * time.Second, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}, zcodeClient: &http.Client{CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}, trusted: trusted, httpsEnabled: strings.HasPrefix(cfg.PublicOrigin, "https://")}
+	if cfg.RouteFile != "" {
+		h.routes = newRouteStore(cfg.RouteFile)
+	}
+	h.probes = &probeCache{}
 	assets, err := fs.Sub(webFiles, "web")
 	if err != nil {
 		return nil, err
@@ -160,7 +172,11 @@ func NewServer(cfg Config) (http.Handler, error) {
 		writeJSON(w, 200, map[string]string{"service": "workbuddy2api-console", "status": "running"})
 	})
 	public := h.proxy(false)
-	if cfg.ZCodeURL != nil || cfg.QoderURL != nil || cfg.OpenCodeURL != nil {
+	// 只要存在任一需要「先解析请求模型名再分流」的能力，就必须走 publicRouter：
+	// 旁路通道靠它按前缀分流，路由别名与 auto 虚拟模型也只在它内部生效。
+	// 只配了 core 的部署（RouteFile 非空但三个旁路 URL 全空）同样要挂上，
+	// 否则别名改写与 /v1/models 的 auto 条目会静默失效。
+	if cfg.ZCodeURL != nil || cfg.QoderURL != nil || cfg.OpenCodeURL != nil || cfg.RouteFile != "" {
 		routed := h.publicRouter(public)
 		h.mux.Handle("/v1/", routed)
 	} else {
@@ -192,6 +208,9 @@ func NewServer(cfg Config) (http.Handler, error) {
 	h.mux.HandleFunc("POST /admin/qoder/logout", h.withAdmin(h.adminQoderLogout))
 	h.mux.HandleFunc("GET /admin/opencode", h.withAdmin(h.adminOpenCodeStatus))
 	h.mux.HandleFunc("POST /admin/opencode/chat", h.withAdmin(h.adminOpenCodeChat))
+	// 路由别名：GET 读当前配置与各通道模型目录，POST 落盘并即时生效。
+	h.mux.HandleFunc("GET /admin/route", h.withAdmin(h.writeRouteState))
+	h.mux.HandleFunc("POST /admin/route/save", h.withAdmin(h.adminRouteSave))
 	h.mux.HandleFunc("POST /admin/access", h.withAdmin(func(w http.ResponseWriter, r *http.Request) {
 		if _, err := h.coreInfo(r.Context()); err != nil {
 			adminError(w, 503, err.Error())
