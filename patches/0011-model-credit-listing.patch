@@ -1,0 +1,485 @@
+模型积分消耗规则透出（补丁 0011）：把上游模型目录接口（CN /console/enterprises/personal/models、global /v2/enterprises/personal/models）返回的顶层 credits 字段解析并透出到 /v1/models 的每条模型条目，供控制台展示「积分消耗规则」列、按倍率倒序排序，并据此决定模型默认开关（倍率>0 或未知→默认关闭）。credits 是上游下发的**耗费价格规则原始串**（如 "x0.00 credits" 限时免费 / "x0.79" 倍率），不是调用后累计的积分账本；它随活动变化，因此只做只读透出，不落本地账本、不参与选号与调度。
+
+改动内容：
+1) internal/upstream/client.go：ModelInfo 增加 Credits 字段；FetchModels 的 env/dynEntry/搬运链与 out 组装同步带上 credits；Client 增加 credits map[string]map[string]string 分 realm 桶（与 efforts 共用 effortsMu，沿用 C-2 realm 隔离原则）；新增 creditsSnapshot/storeCredits/GlobalCreditSnapshot 三个 helper；FetchModels 尾部把非空倍率写入探测账号所属 realm 的桶（空桶跳过，防清既有桶）。
+2) internal/upstream/global_models.go：口径变更——原文件头声明「credits 数值一律不进入本包实现」改为**只读透出**；globalModelEntry 增加 Credits 字段；parseGlobalModelNames 扩为五值返回（新增 credits 桶，窄表形态与 effort 桶同为空）；probeGlobalModels/globalModelsOnce 同步扩签名；FetchGlobalModels 成功分支把探测到的倍率写入 global 桶（空桶跳过）。FetchGlobalModels 对外返回 []string 签名保持不变，避免破坏十余处单值接收调用点与既有 global 名单测试。
+3) internal/server/handler.go：modelList 的 CN 动态分支加 entry["credits"]（静态兜底分支无倍率数据，不加）；global 分支取 GlobalCreditSnapshot() 并逐模型加 entry["credits"]。缺失→省略字段，前端按「未知」处理。
+4) 测试：models_fields_test.go 新增 TestFetchModelsParsesCredits（CN 解析 + cn 桶写入）；global_effort_test.go 新增 TestParseGlobalModelNamesCredits 与 TestFetchGlobalModelsStoresCreditBucket；global_effort_test.go/global_e2e_test.go 既有 parseGlobalModelNames 调用点适配五值返回。
+
+验证方式：物化后 go -C <core> test ./internal/upstream ./internal/server（含上述新增用例与既有 effort/global 名单回归）。
+移除条件：上游自身在 /v1/models 输出 credits，或产品不再需要积分消耗规则展示与按倍率默认开关时，整体回退本补丁。
+
+diff --git a/internal/server/handler.go b/internal/server/handler.go
+index 1d852cc..ac03968 100644
+--- a/internal/server/handler.go
++++ b/internal/server/handler.go
+@@ -269,6 +269,11 @@ func (h *Handler) modelList() []map[string]any {
+ 			if mi.SupportsImages {
+ 				entry["supports_images"] = true // 多模态能力透出
+ 			}
++			// 补丁 0011：积分消耗规则透出——上游顶层 credits 原始串（如 "x0.00"/"x0.79 credits"）。
++			// 缺失→省略字段（前端标「未知」，按 >0 规则默认关闭）。静态兜底分支无倍率数据。
++			if mi.Credits != "" {
++				entry["credits"] = mi.Credits
++			}
+ 			// P0：effort 能力透出——远端 supportedEfforts 权威，缺失落到 CN 静态兜底表
+ 			// （issue #84 客户端可发现档位，不再盲传）。无档位→省略字段（非空数组）。
+ 			if efforts, def := upstream.EffortListing("cn", mi.ID, mi.Efforts, mi.DefaultEffort); efforts != nil {
+@@ -317,6 +322,8 @@ func (h *Handler) modelList() []map[string]any {
+ 			// 先 fetchGlobalModels（内部探测并落 effort 桶），再按 id 取快照。
+ 			globalIDs := h.fetchGlobalModels()
+ 			globalEfforts, globalDefaults := h.cfg.Upstream.GlobalEffortSnapshot()
++			// 补丁 0011：global 域积分消耗规则快照（探测下发，只读展示）。
++			globalCredits := h.cfg.Upstream.GlobalCreditSnapshot()
+ 			for _, id := range globalIDs {
+ 				accs := h.cfg.Pool.AvailableAccountsForModelRealm(id, "global")
+ 				if len(accs) == 0 {
+@@ -337,6 +344,10 @@ func (h *Handler) modelList() []map[string]any {
+ 						entry["reasoning_default_effort"] = def
+ 					}
+ 				}
++				// 补丁 0011：global 域积分消耗规则透出（探测缺失→省略，前端标「未知」）。
++				if cr := globalCredits[id]; cr != "" {
++					entry["credits"] = cr
++				}
+ 				out = append(out, entry)
+ 			}
+ 		}
+diff --git a/internal/upstream/client.go b/internal/upstream/client.go
+index 06d4f9e..2497c76 100644
+--- a/internal/upstream/client.go
++++ b/internal/upstream/client.go
+@@ -428,6 +428,11 @@ type Client struct {
+ 	// 与 efforts 同 realm 分层桶（同 C-2 隔离原则），共用 effortsMu。
+ 	defaultEfforts map[string]map[string]string
+ 
++	// credits 缓存各模型积分消耗规则原始串（顶层 credits，FetchModels / global 探测刷新），
++	// 供 /v1/models 透出积分倍率（前端据此排序与默认开关）。与 efforts 同 realm 分层桶
++	// （同 C-2 隔离原则），共用 effortsMu。
++	credits map[string]map[string]string
++
+ 	// globalModels 缓存 global 模型名目录探测结果（成功 ∩ 静态 overlay；
+ 	// 1h TTL + 5min 负缓存），见 global_models.go。按实例持有，测试新建 Client 即隔离。
+ 	globalModels fetchGlobalModelsCache
+@@ -642,6 +647,45 @@ func (c *Client) GlobalEffortSnapshot() (efforts map[string][]string, defaults m
+ 	return c.effortsSnapshot("global"), c.defaultEffortsSnapshot("global")
+ }
+ 
++// creditsSnapshot 返回指定 realm 的积分消耗规则缓存副本；该域无探测 → nil（前端标「未知」）。
++func (c *Client) creditsSnapshot(realm string) map[string]string {
++	c.effortsMu.RLock()
++	defer c.effortsMu.RUnlock()
++	bucket, ok := c.credits[realmKey(realm)]
++	if !ok || len(bucket) == 0 {
++		return nil
++	}
++	cp := make(map[string]string, len(bucket))
++	for k, v := range bucket {
++		cp[k] = v
++	}
++	return cp
++}
++
++// storeCredits 按 realm 写入积分消耗规则缓存桶（原始串），并发安全。
++// 供 CN FetchModels 与 global 探测共用：拉取到的模型倍率落桶后，/v1/models 才能透出。
++// 空桶时删除该 realm 桶（等价「该域无倍率数据」）；调用方负责在「无新数据」时跳过写
++// （避免某探测无倍率数据清掉既有桶，见 FetchModels 尾部与 global_models.go）。
++func (c *Client) storeCredits(realm string, credits map[string]string) {
++	c.effortsMu.Lock()
++	defer c.effortsMu.Unlock()
++	if c.credits == nil {
++		c.credits = make(map[string]map[string]string)
++	}
++	k := realmKey(realm)
++	if len(credits) == 0 {
++		delete(c.credits, k)
++		return
++	}
++	c.credits[k] = credits
++}
++
++// GlobalCreditSnapshot 导出 global 域积分消耗规则缓存，供 /v1/models 输出 credits。
++// 返回副本；桶未填充（无 global 账号或从未探测）→ nil（前端标「未知」）。
++func (c *Client) GlobalCreditSnapshot() map[string]string {
++	return c.creditsSnapshot("global")
++}
++
+ func (c *Client) billingBase(a *auth.Auth) string {
+ 	if c.globalOn(a) {
+ 		return c.globalBillingBase()
+@@ -877,6 +921,7 @@ type ModelInfo struct {
+ 	Efforts        []string // reasoning.supportedEfforts（空=未知/固定档）
+ 	DefaultEffort  string   // reasoning.defaultEffort（空=未声明，thinking.go 回退硬编码）
+ 	SupportsImages bool     // 顶层 supportsImages（多模态能力，透出到 /v1/models）
++	Credits        string   // 顶层 credits（积分消耗规则原始串，如 "x0.79 credits"；空=未声明）
+ }
+ 
+ // 模型目录端点路径常量（按 realm 切）：
+@@ -953,6 +998,7 @@ func (c *Client) FetchModels(a *auth.Auth) ([]ModelInfo, error) {
+ 				Disabled        bool     `json:"disabled"`
+ 				SupportsImages  bool     `json:"supportsImages"`
+ 				Tags            []string `json:"tags"`
++				Credits         string   `json:"credits"`
+ 				Reasoning       struct {
+ 					Effort           string   `json:"effort"`
+ 					DefaultEffort    string   `json:"defaultEffort"`
+@@ -993,6 +1039,7 @@ func (c *Client) FetchModels(a *auth.Auth) ([]ModelInfo, error) {
+ 		Efforts         []string
+ 		DefaultEffort   string
+ 		SupportsImages  bool
++		Credits         string
+ 	}
+ 	dynMap := make(map[string]dynEntry, len(env.Data.Models))
+ 	for _, m := range env.Data.Models {
+@@ -1004,6 +1051,7 @@ func (c *Client) FetchModels(a *auth.Auth) ([]ModelInfo, error) {
+ 			MaxInputTokens: m.MaxInputTokens, MaxOutputTokens: m.MaxOutputTokens,
+ 			Disabled: m.Disabled, Efforts: m.Reasoning.SupportedEfforts,
+ 			DefaultEffort: m.Reasoning.DefaultEffort, SupportsImages: m.SupportsImages,
++			Credits: m.Credits,
+ 		}
+ 	}
+ 	out := make([]ModelInfo, 0, len(cliIDs))
+@@ -1020,6 +1068,7 @@ func (c *Client) FetchModels(a *auth.Auth) ([]ModelInfo, error) {
+ 			Efforts:        m.Efforts,
+ 			DefaultEffort:  m.DefaultEffort,
+ 			SupportsImages: m.SupportsImages,
++			Credits:        m.Credits,
+ 		})
+ 	}
+ 	if len(out) == 0 {
+@@ -1029,6 +1078,7 @@ func (c *Client) FetchModels(a *auth.Auth) ([]ModelInfo, error) {
+ 	// 空桶时跳过写：避免「某探测无档位数据」清掉既有桶（例：cn 桶已有档位，再次探测返回全无等级 → 不应清空）。
+ 	cache := make(map[string][]string, len(out))
+ 	defCache := make(map[string]string, len(out))
++	creditCache := make(map[string]string, len(out))
+ 	for _, mi := range out {
+ 		if len(mi.Efforts) > 0 {
+ 			cache[mi.ID] = mi.Efforts
+@@ -1036,6 +1086,13 @@ func (c *Client) FetchModels(a *auth.Auth) ([]ModelInfo, error) {
+ 		if mi.DefaultEffort != "" {
+ 			defCache[mi.ID] = mi.DefaultEffort
+ 		}
++		if mi.Credits != "" {
++			creditCache[mi.ID] = mi.Credits
++		}
++	}
++	// 倍率桶独立写：即便该模型无 effort 档位也要透出积分规则；空桶跳过（防清既有桶）。
++	if len(creditCache) > 0 {
++		c.storeCredits(a.Realm(), creditCache)
+ 	}
+ 	if len(cache) == 0 && len(defCache) == 0 {
+ 		return out, nil
+diff --git a/internal/upstream/global_e2e_test.go b/internal/upstream/global_e2e_test.go
+index 8c69f64..414ec5f 100644
+--- a/internal/upstream/global_e2e_test.go
++++ b/internal/upstream/global_e2e_test.go
+@@ -464,7 +464,7 @@ func TestGlobalE2EFetchModels(t *testing.T) {
+ 		captureNonZeroCodes(t, "models:"+p, status, body)
+ 		if status == 200 {
+ 			logResp(t, "GlobalModels "+p, status, body, 1200)
+-			names, _, _, perr := parseGlobalModelNames(body)
++			names, _, _, _, perr := parseGlobalModelNames(body)
+ 			if perr != nil {
+ 				t.Logf("结论#5: %s 200 但解析失败: %v", p, perr)
+ 			} else {
+diff --git a/internal/upstream/global_effort_test.go b/internal/upstream/global_effort_test.go
+index d6a1959..f941880 100644
+--- a/internal/upstream/global_effort_test.go
++++ b/internal/upstream/global_effort_test.go
+@@ -18,7 +18,7 @@ func TestParseGlobalModelNamesEfforts(t *testing.T) {
+ 		{"id":"deepseek-v4.1-flash","reasoning":{"supportedEfforts":["high"]}},
+ 		{"id":"no-effort"}
+ 	]}}`
+-	names, efforts, defaults, err := parseGlobalModelNames([]byte(raw))
++	names, efforts, defaults, _, err := parseGlobalModelNames([]byte(raw))
+ 	if err != nil {
+ 		t.Fatalf("parse: %v", err)
+ 	}
+@@ -44,7 +44,7 @@ func TestParseGlobalModelNamesSingleEffort(t *testing.T) {
+ 	raw := `{"code":0,"data":{"models":[
+ 		{"id":"glm-5.2","reasoning":{"effort":"high"}}
+ 	]}}`
+-	_, efforts, defaults, err := parseGlobalModelNames([]byte(raw))
++	_, efforts, defaults, _, err := parseGlobalModelNames([]byte(raw))
+ 	if err != nil {
+ 		t.Fatalf("parse: %v", err)
+ 	}
+@@ -81,6 +81,57 @@ func TestFetchGlobalModelsStoresEffortBucket(t *testing.T) {
+ 	}
+ }
+ 
++// TestParseGlobalModelNamesCredits 对象形态：顶层 credits 解析进积分桶（补丁 0011）。
++func TestParseGlobalModelNamesCredits(t *testing.T) {
++	raw := `{"code":0,"data":{"models":[
++		{"id":"hy4-preview","credits":"x0.00"},
++		{"id":"glm-5.3","credits":"x0.79 credits"},
++		{"id":"no-credits"}
++	]}}`
++	names, _, _, credits, err := parseGlobalModelNames([]byte(raw))
++	if err != nil {
++		t.Fatalf("parse: %v", err)
++	}
++	if len(names) != 3 {
++		t.Fatalf("names=%v want 3", names)
++	}
++	if credits["hy4-preview"] != "x0.00" {
++		t.Errorf("hy4-preview credits=%q want x0.00", credits["hy4-preview"])
++	}
++	if credits["glm-5.3"] != "x0.79 credits" {
++		t.Errorf("glm-5.3 credits=%q want 'x0.79 credits'", credits["glm-5.3"])
++	}
++	if _, ok := credits["no-credits"]; ok {
++		t.Error("no-credits should not appear in credits bucket")
++	}
++}
++
++// TestFetchGlobalModelsStoresCreditBucket 探测下发 credits → global 积分桶写入 (storeCredits)。
++func TestFetchGlobalModelsStoresCreditBucket(t *testing.T) {
++	auth.SetGlobalEnabled(true)
++	t.Cleanup(func() { auth.SetGlobalEnabled(true) })
++
++	var calls []string
++	srv := globalModelsSrv(t, &calls, nil, func(path string) (int, string) {
++		return 200, `{"code":0,"data":{"models":[
++			{"id":"hy4-preview","credits":"x0.00"},
++			{"id":"glm-5.3","credits":"x0.79 credits"}
++		]}}`
++	})
++	defer srv.Close()
++
++	c := globalModelsClient(t, srv)
++	c.FetchGlobalModels(globalAcct())
++
++	credits := c.GlobalCreditSnapshot()
++	if credits["hy4-preview"] != "x0.00" {
++		t.Errorf("global credit bucket hy4-preview=%q want x0.00", credits["hy4-preview"])
++	}
++	if credits["glm-5.3"] != "x0.79 credits" {
++		t.Errorf("global credit bucket glm-5.3=%q want 'x0.79 credits'", credits["glm-5.3"])
++	}
++}
++
+ // globalEffortChatSrv 构造一个同时服务模型探测与 chat 的 global fake，并捕获出站 chat body。
+ func globalEffortChatSrv(t *testing.T, modelsBody string, capture func([]byte)) *httptest.Server {
+ 	t.Helper()
+diff --git a/internal/upstream/global_models.go b/internal/upstream/global_models.go
+index fcf3186..b09d61f 100644
+--- a/internal/upstream/global_models.go
++++ b/internal/upstream/global_models.go
+@@ -1,7 +1,9 @@
+-// global 模型名目录探测：只产模型名，不产倍率（PLAN §3.D2「模型名目录 ≠ 倍率表」）。
++// global 模型名目录探测：产模型名 + effort 档位 + 积分消耗规则（credits）。
+ //
+-// credits 数值一律不进入本包实现——探测端点即便返回倍率字段也忽略，名单只喂
+-// /v1/models 的 global: 前缀输出，不注入 costTier、不参与选号。
++// 口径变更（补丁 0011）：原设计「credits 数值一律不进入本包实现」改为**只读透出**——
++// 探测端点下发的顶层 credits 原始串（如 "x0.00"）写入 global 积分桶，供 /v1/models
++// 输出给前端做「积分消耗规则」展示与排序。credits 仍**不注入 costTier、不参与选号、
++// 不参与调度**，只作展示字段；缺失即「未知」。
+ package upstream
+ 
+ import (
+@@ -96,7 +98,7 @@ func (c *Client) FetchGlobalModels(a *auth.Auth) []string {
+ 	}
+ 	c.globalModels.Unlock()
+ 
+-	names, efforts, defaults, err := c.probeGlobalModels(a)
++	names, efforts, defaults, credits, err := c.probeGlobalModels(a)
+ 	if err != nil || len(names) == 0 {
+ 		// 探测失败：负缓存 + 回落静态名单（effort 桶不写，prepareBody 走 globalEffortMap 静态兜底）。
+ 		c.globalModels.Lock()
+@@ -111,8 +113,13 @@ func (c *Client) FetchGlobalModels(a *auth.Auth) []string {
+ 	if len(efforts) > 0 || len(defaults) > 0 {
+ 		c.storeEfforts("global", efforts, defaults)
+ 	}
++	// global 域积分消耗规则：探测下发的顶层 credits 原始串写入 global 积分桶（只读展示，
++	// 不参与选号/调度）。空探测不写（防清既有桶）。
++	if len(credits) > 0 {
++		c.storeCredits("global", credits)
++	}
+ 
+-	// 成功：静态名单为基底，追加探测独有（去重）。只取名字，倍率字段忽略。
++	// 成功：静态名单为基底，追加探测独有（去重）。倍率已单独写入 global 积分桶（见上）。
+ 	seen := make(map[string]bool, len(GlobalModelNames)+len(names))
+ 	merged := make([]string, 0, len(GlobalModelNames)+len(names))
+ 	for _, id := range GlobalModelNames {
+@@ -139,39 +146,40 @@ func (c *Client) FetchGlobalModels(a *auth.Auth) []string {
+ }
+ 
+ // probeGlobalModels 按候选路径序列发起一次探测，返回模型名列表（未去重、已滤 disabled）
+-// 及解析出的 effort 能力桶（supportedEfforts/defaultEffort，可为空）。家族端点全部非 2xx
+-// （等幂探活）才返回错误。
+-func (c *Client) probeGlobalModels(a *auth.Auth) (names []string, efforts map[string][]string, defaults map[string]string, err error) {
++// 及解析出的 effort 能力桶（supportedEfforts/defaultEffort）与积分消耗规则桶（credits），
++// 后两者可为空。家族端点全部非 2xx（等幂探活）才返回错误。
++func (c *Client) probeGlobalModels(a *auth.Auth) (names []string, efforts map[string][]string, defaults map[string]string, credits map[string]string, err error) {
+ 	var lastErr error
+ 	for _, path := range globalModelsProbePaths {
+-		names, efforts, defaults, err = c.globalModelsOnce(a, path)
++		names, efforts, defaults, credits, err = c.globalModelsOnce(a, path)
+ 		if err != nil {
+ 			lastErr = err
+ 			continue
+ 		}
+-		return names, efforts, defaults, nil
++		return names, efforts, defaults, credits, nil
+ 	}
+-	return nil, nil, nil, lastErr
++	return nil, nil, nil, nil, lastErr
+ }
+ 
+-// globalModelsOnce 单端点探测。2xx + 解析出非空名单 → (names, efforts, defaults, nil)；否则 (nil,...,err)。
+-func (c *Client) globalModelsOnce(a *auth.Auth, path string) ([]string, map[string][]string, map[string]string, error) {
++// globalModelsOnce 单端点探测。2xx + 解析出非空名单 → (names, efforts, defaults, credits, nil)；
++// 否则 (nil,...,err)。
++func (c *Client) globalModelsOnce(a *auth.Auth, path string) ([]string, map[string][]string, map[string]string, map[string]string, error) {
+ 	a = a.Snapshot()
+ 	url := c.chatBase(a) + path // 按 realm 切 base：global 账号 → global base
+ 	req, err := http.NewRequest(http.MethodGet, url, nil)
+ 	if err != nil {
+-		return nil, nil, nil, err
++		return nil, nil, nil, nil, err
+ 	}
+ 	c.CommonHeaders(req, a) // 共享请求头（Origin/Referer/UA），与 FetchModels 同款
+ 	req.Header.Set("Authorization", "Bearer "+a.AccessToken)
+ 	resp, err := c.HTTP.Do(req)
+ 	if err != nil {
+-		return nil, nil, nil, err
++		return nil, nil, nil, nil, err
+ 	}
+ 	defer resp.Body.Close()
+ 	raw, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+ 	if resp.StatusCode != http.StatusOK {
+-		return nil, nil, nil, fmt.Errorf("global models status %d: %s", resp.StatusCode, truncate(string(raw), 120))
++		return nil, nil, nil, nil, fmt.Errorf("global models status %d: %s", resp.StatusCode, truncate(string(raw), 120))
+ 	}
+ 	return parseGlobalModelNames(raw)
+ }
+@@ -181,6 +189,8 @@ type globalModelEntry struct {
+ 	ID       string `json:"id"`
+ 	Name     string `json:"name"`
+ 	Disabled bool   `json:"disabled"`
++	// 顶层积分消耗规则原始串（如 "x0.00" / "x0.79 credits"）；空=未声明。只读展示用。
++	Credits string `json:"credits"`
+ 	// 上游或仅下发 reasoning.effort（单档字符串）而非 supportedEfforts 数组——两形态都读，
+ 	// 数组优先。缺 reasoning / 缺档位 → 桶为空（调用方不写、回落静态兜底）。
+ 	Reasoning struct {
+@@ -196,26 +206,27 @@ type globalModelEntry struct {
+ //
+ // 对象形态额外解析 reasoning.supportedEfforts / defaultEffort（P0：global 域 effort 探测，
+ // 解析不到时调用方回落 staticEffortCap 兜底表——prepareBody 的 globalEffortMap 与
+-// /v1/models 的 EffortListing）。窄表形态无元数据 → 桶为空。
++// /v1/models 的 EffortListing）与顶层 credits（补丁 0011：global 域积分消耗规则透出）。
++// 窄表形态无元数据 → 两个桶都为空。
+ //
+ // 解析成功但名单为空 → 返回错误（调用方回落静态，等价"该端点没给全"）。
+-func parseGlobalModelNames(raw []byte) (names []string, efforts map[string][]string, defaults map[string]string, err error) {
++func parseGlobalModelNames(raw []byte) (names []string, efforts map[string][]string, defaults map[string]string, credits map[string]string, err error) {
+ 	var env struct {
+ 		Code int             `json:"code"`
+ 		Data json.RawMessage `json:"data"`
+ 	}
+ 	if err := json.Unmarshal(raw, &env); err != nil {
+-		return nil, nil, nil, fmt.Errorf("global models parse: %w", err)
++		return nil, nil, nil, nil, fmt.Errorf("global models parse: %w", err)
+ 	}
+ 	if env.Code != 0 {
+-		return nil, nil, nil, fmt.Errorf("global models code=%d", env.Code)
++		return nil, nil, nil, nil, fmt.Errorf("global models code=%d", env.Code)
+ 	}
+ 	trimmed := strings.TrimSpace(string(env.Data))
+ 	if strings.HasPrefix(trimmed, "[") {
+-		// 窄表形态：data 为字符串数组（无 effort 元数据）。
++		// 窄表形态：data 为字符串数组（无 effort/credits 元数据）。
+ 		var arr []string
+ 		if err := json.Unmarshal(env.Data, &arr); err != nil {
+-			return nil, nil, nil, fmt.Errorf("global models parse (narrow): %w", err)
++			return nil, nil, nil, nil, fmt.Errorf("global models parse (narrow): %w", err)
+ 		}
+ 		out := make([]string, 0, len(arr))
+ 		for _, id := range arr {
+@@ -224,16 +235,16 @@ func parseGlobalModelNames(raw []byte) (names []string, efforts map[string][]str
+ 			}
+ 		}
+ 		if len(out) == 0 {
+-			return nil, nil, nil, fmt.Errorf("global models empty list")
++			return nil, nil, nil, nil, fmt.Errorf("global models empty list")
+ 		}
+-		return out, nil, nil, nil
++		return out, nil, nil, nil, nil
+ 	}
+-	// 对象形态：data.models[].id/.name（id 优先），disabled 剔除，附带 parsing reasoning。
++	// 对象形态：data.models[].id/.name（id 优先），disabled 剔除，附带 parsing reasoning/credits。
+ 	var obj struct {
+ 		Models []globalModelEntry `json:"models"`
+ 	}
+ 	if err := json.Unmarshal(env.Data, &obj); err != nil {
+-		return nil, nil, nil, fmt.Errorf("global models parse: %w", err)
++		return nil, nil, nil, nil, fmt.Errorf("global models parse: %w", err)
+ 	}
+ 	out := make([]string, 0, len(obj.Models))
+ 	for _, m := range obj.Models {
+@@ -263,9 +274,16 @@ func parseGlobalModelNames(raw []byte) (names []string, efforts map[string][]str
+ 			}
+ 			defaults[id] = d
+ 		}
++		// 积分消耗规则桶：顶层 credits 原始串（补丁 0011），空则不入桶（前端标「未知」）。
++		if cr := strings.TrimSpace(m.Credits); cr != "" {
++			if credits == nil {
++				credits = make(map[string]string)
++			}
++			credits[id] = cr
++		}
+ 	}
+ 	if len(out) == 0 {
+-		return nil, nil, nil, fmt.Errorf("global models empty list")
++		return nil, nil, nil, nil, fmt.Errorf("global models empty list")
+ 	}
+-	return out, efforts, defaults, nil
++	return out, efforts, defaults, credits, nil
+ }
+diff --git a/internal/upstream/models_fields_test.go b/internal/upstream/models_fields_test.go
+index cffbd0b..30ea6b2 100644
+--- a/internal/upstream/models_fields_test.go
++++ b/internal/upstream/models_fields_test.go
+@@ -166,3 +166,40 @@ func TestFetchModelsKeepsNormalChatModels(t *testing.T) {
+ 		t.Fatalf("expected 3 normal chat models, got %d: %+v", len(infos), infos)
+ 	}
+ }
++
++// TestFetchModelsParsesCredits 补丁 0011：上游顶层 credits 应落到 ModelInfo.Credits，
++// 并按 realm 写入积分桶（GlobalCreditSnapshot 取 cn 桶需用 realm 谓词，此处直接查桶）。
++func TestFetchModelsParsesCredits(t *testing.T) {
++	c := testClient(func(r *http.Request) (*http.Response, error) {
++		return jsonResp(200, `{"code":0,"data":{"models":[
++			{"id":"hy3","name":"HY3","maxInputTokens":131072,"maxOutputTokens":8192,"credits":"x0.00 credits"},
++			{"id":"glm-5.3","name":"GLM","maxInputTokens":131072,"maxOutputTokens":8192,"credits":"x0.79"},
++			{"id":"no-credits","name":"NC","maxInputTokens":131072,"maxOutputTokens":8192}
++		],"agents":[{"name":"cli","models":["hy3","glm-5.3","no-credits"]}]}}`), nil
++	})
++	infos, err := c.FetchModels(authStub())
++	if err != nil {
++		t.Fatalf("fetch models: %v", err)
++	}
++	got := make(map[string]string, len(infos))
++	for _, mi := range infos {
++		got[mi.ID] = mi.Credits
++	}
++	if got["hy3"] != "x0.00 credits" {
++		t.Errorf("hy3 Credits=%q want 'x0.00 credits'", got["hy3"])
++	}
++	if got["glm-5.3"] != "x0.79" {
++		t.Errorf("glm-5.3 Credits=%q want x0.79", got["glm-5.3"])
++	}
++	if got["no-credits"] != "" {
++		t.Errorf("no-credits Credits=%q want empty", got["no-credits"])
++	}
++	// 积分桶按探测账号 realm（authStub 为 CN 缺省 → cn 桶）写入。
++	bucket := c.creditsSnapshot("cn")
++	if bucket["hy3"] != "x0.00 credits" {
++		t.Errorf("cn credit bucket hy3=%q want 'x0.00 credits'", bucket["hy3"])
++	}
++	if _, ok := bucket["no-credits"]; ok {
++		t.Error("no-credits should not enter cn credit bucket")
++	}
++}
