@@ -101,6 +101,12 @@ func (h *server) publicRouter(core *httputil.ReverseProxy) http.HandlerFunc {
 				envelope.Model = decision.RoutedModel
 				w = withPrismHeaders(w, decision)
 			}
+			// 模型积分开关：停用（含默认停用）的模型在这里拒绝，与 /v1/models
+			// 的隐藏共用同一口径。auto 解析后的目标同样受检。
+			if !h.modelGate(r.Context(), envelope.Model) {
+				writeModelDisabledError(w, r, envelope.Model)
+				return
+			}
 			if zcode != nil && strings.HasPrefix(envelope.Model, zcodeModelPrefix) {
 				r.Body = io.NopCloser(bytes.NewReader(body))
 				r.ContentLength = int64(len(body))
@@ -367,6 +373,10 @@ func (h *server) mergedModels(w http.ResponseWriter, r *http.Request, core *http
 	all := append(append([]json.RawMessage{}, coreList...), zcodeRaw...)
 	all = append(all, qoderRaw...)
 	all = append(all, opencodeRaw...)
+	// 用刚拿到的 core 目录刷新倍率缓存，省掉 modelGate 判定的一次重复抓取。
+	if h.credits != nil {
+		h.credits.store(creditRulesFromList(coreList))
+	}
 	for _, item := range all {
 		var entry struct {
 			ID    string `json:"id"`
@@ -378,6 +388,11 @@ func (h *server) mergedModels(w http.ResponseWriter, r *http.Request, core *http
 		seen[entry.ID] = true
 		if entry.Realm == "" && strings.HasPrefix(entry.ID, zcodeModelPrefix) {
 			item = tagModelRealm(item, "glm")
+		}
+		// 隐藏语义：停用（含默认停用）的模型不出现在公共 /v1/models 里，
+		// 与对话出口的拒绝共用 modelGate 同一口径。
+		if !h.modelGate(r.Context(), entry.ID) {
+			continue
 		}
 		merged = append(merged, item)
 	}

@@ -1300,6 +1300,47 @@ test('the three most called models get red, orange and yellow stars on every cha
   assert.deepEqual(heatOf(get('opencode-models-body').children[0].children[5]),['heat-stars heat-2','★','1 次'],'heat ranking is not shared across channels');
 });
 
+test('credit column shows the multiplier, defaults the switch from it, and sorts paid models first',async()=>{
+  // Catalog order is deliberately misleading: the free model sits in the middle. creditSort has to
+  // put the paid one on top, keep free above unknown, and leave same-band rows in catalog order.
+  const models=[{id:'cn:paid',credits:'x3.47'},{id:'cn:free',credits:'x0.00'},{id:'cn:unknown'}];
+  const posts=[];
+  const {ctx,get}=taskFixture((url,options={})=>{
+    if(url==='/admin/models')return Promise.resolve({ok:true,status:200,json:async()=>({data:models})});
+    if(url==='/admin/model-switch'){posts.push(JSON.parse(options.body));return Promise.resolve({ok:true,status:200,json:async()=>({enabled:true,overrides:{'cn:paid':true,'cn:free':false}})});}
+    return new Promise(()=>{});
+  });
+  await vm.runInContext("renderModelTable('core',[{id:'cn:paid',credits:'x3.47'},{id:'cn:free',credits:'x0.00'},{id:'cn:unknown'}])",ctx);
+  const rows=get('core-models-body').children;
+  assert.deepEqual(rows.map(tr=>tr.children[0].textContent),['cn:paid','cn:free','cn:unknown'],'credit order must be 倍率倒序 with unknown last');
+  assert.deepEqual(rows.map(tr=>tr.children[6].textContent),['×3.47','×0','未知'],'credit cell must not fake an unknown multiplier as zero');
+  // 默认态：倍率>0 与未知默认停用，倍率=0 默认启用。
+  assert.deepEqual(rows.map(tr=>tr.children[7].children[0].textContent),['已停用','已启用','已停用'],'switch badge must follow the credit rule');
+  assert.deepEqual(rows.map(tr=>tr.children[7].children[2].dataset.action),['enable-model','disable-model','enable-model'],'switch button must offer the opposite action');
+  assert.deepEqual(rows.map(tr=>tr.children[7].children[2].dataset.model),['cn:paid','cn:free','cn:unknown'],'switch button must carry the public model name');
+  // 免费通道不加积分列与开关列，保持原有六列。
+  await vm.runInContext("renderModelTable('opencode',[{id:'opencode-OC · Free'}],{modelResults:{}})",ctx);
+  assert.equal(get('opencode-models-body').children[0].children.length,6,'opencode must stay exempt from the credit columns');
+  // 点击委托：停用中的模型点「启用」应 POST 一次开关（closest 按选择器区分 pin 与开关两条委托）。
+  const enableButton=rows[0].children[7].children[2];
+  await ctx.document.handlers.click({target:{closest:sel=>sel.includes('enable-model')?enableButton:null}});
+  assert.deepEqual(posts,[{model:'cn:paid',enabled:true}],'switch click did not reach the admin endpoint');
+  // 人工覆盖优先于倍率默认态，并重渲染。
+  assert.deepEqual(rows.map(tr=>tr.children[0].textContent),['cn:paid','cn:free','cn:unknown']);
+  assert.deepEqual(get('core-models-body').children.map(tr=>tr.children[7].children[0].textContent),['已启用','已停用','已停用'],'manual override must beat the credit default');
+});
+
+test('credit rule parsing matches the server and never invents a zero',()=>{
+  const {ctx}=logoutFixture(()=>new Promise(()=>{}));
+  assert.equal(vm.runInContext("parseCreditRule('x0.79 credits')",ctx),0.79);
+  assert.equal(vm.runInContext("parseCreditRule('x0.00')",ctx),0);
+  assert.equal(vm.runInContext("parseCreditRule('X1.5')",ctx),1.5);
+  assert.equal(vm.runInContext("parseCreditRule('')",ctx),null);
+  assert.equal(vm.runInContext("parseCreditRule('free')",ctx),null);
+  assert.equal(vm.runInContext("parseCreditRule('x-1')",ctx),null);
+  assert.equal(vm.runInContext("parseCreditRule(undefined)",ctx),null);
+});
+
 function routeFixture(routeState) {
   const response=body=>({ok:true,status:200,json:async()=>body});
   const posts=[];

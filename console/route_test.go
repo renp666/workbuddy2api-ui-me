@@ -49,6 +49,41 @@ func saveRoutes(t *testing.T, h http.Handler, models []routeEntry, fallback stri
 	return adminRequest(h, "POST", "/admin/route/save", string(payload), cookie, csrf)
 }
 
+// switchModel 通过管理端点切换单个模型的积分开关。
+func switchModel(t *testing.T, h http.Handler, model string, enabled bool) *httptest.ResponseRecorder {
+	t.Helper()
+	cookie, csrf := login(t, h)
+	payload, err := json.Marshal(map[string]any{"model": model, "enabled": enabled})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return adminRequest(h, "POST", "/admin/model-switch", string(payload), cookie, csrf)
+}
+
+// readSwitch 读取当前人工覆盖表。
+func readSwitch(t *testing.T, h http.Handler) map[string]bool {
+	t.Helper()
+	cookie, csrf := login(t, h)
+	rec := adminRequest(h, "GET", "/admin/model-switch", "", cookie, csrf)
+	if rec.Code != 200 {
+		t.Fatalf("read switch: %d %s", rec.Code, rec.Body)
+	}
+	var state struct {
+		Overrides map[string]bool `json:"overrides"`
+	}
+	if json.Unmarshal(rec.Body.Bytes(), &state) != nil {
+		t.Fatalf("switch state not JSON: %s", rec.Body)
+	}
+	return state.Overrides
+}
+
+// gateChat 向公共对话出口发一次请求，用于验证积分开关的放行与拒绝。
+func gateChat(h http.Handler, model string) *httptest.ResponseRecorder {
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, httptest.NewRequest("POST", "/v1/chat/completions", strings.NewReader(chatBody(model))))
+	return rec
+}
+
 func TestRouteAliasRewritesModelAndAddsHeaders(t *testing.T) {
 	var mu sync.Mutex
 	var coreModel string
@@ -63,6 +98,10 @@ func TestRouteAliasRewritesModelAndAddsHeaders(t *testing.T) {
 	}, nil)
 	if got := saveRoutes(t, h, []routeEntry{{Alias: "fast", Channel: channelGLM, Model: "glm-5.3", Enabled: true}}, ""); got.Code != 200 {
 		t.Fatalf("save: %d %s", got.Code, got.Body)
+	}
+	// glm- 通道不下发倍率，按「未知默认关闭」会被积分开关拦下；先人工启用再验证别名改写。
+	if got := switchModel(t, h, "glm-5.3", true); got.Code != 200 {
+		t.Fatalf("model-switch enable: %d %s", got.Code, got.Body)
 	}
 	// 保存成功后配置立即生效，且是落盘过的。
 	rec := httptest.NewRecorder()
@@ -394,4 +433,204 @@ func modelOf(t *testing.T, r *http.Request) string {
 		return ""
 	}
 	return envelope.Model
+}
+
+// TestParseCreditRule 覆盖上游 credits 原始串的解析口径：带/不带后缀、
+// 零值、非法值与缺失都不能被当成可用倍率，未知不得伪造零。
+func TestParseCreditRule(t *testing.T) {
+	cases := []struct {
+		in   string
+		want float64
+		ok   bool
+	}{
+		{"x0.79 credits", 0.79, true},
+		{"x0.00 credits", 0, true},
+		{"x0.00", 0, true},
+		{"x3.47", 3.47, true},
+		{"X1.5", 1.5, true},
+		{"", 0, false},
+		{"credits", 0, false},
+		{"free", 0, false},
+		{"x-1", 0, false},
+	}
+	for _, tc := range cases {
+		got, ok := parseCreditRule(tc.in)
+		if ok != tc.ok || (ok && got != tc.want) {
+			t.Errorf("parseCreditRule(%q)=(%v,%v) want (%v,%v)", tc.in, got, ok, tc.want, tc.ok)
+		}
+	}
+}
+
+// creditConsole 建一个带可写路由配置的 console，core 的 /v1/models 用给定 JSON 回应。
+func creditConsole(t *testing.T, coreModels string) http.Handler {
+	t.Helper()
+	h, _ := routeConsole(t, func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/v1/models" {
+			fmt.Fprint(w, coreModels)
+			return
+		}
+		fmt.Fprint(w, `{"core":true}`)
+	}, nil)
+	return h
+}
+
+// TestModelSwitchDefaultsFromCredits 验证「倍率=0 默认开 / 倍率>0 或未知默认关」：
+// 免费模型放行、付费模型与未知倍率模型既被对话出口拒绝，也从 /v1/models 隐藏。
+func TestModelSwitchDefaultsFromCredits(t *testing.T) {
+	coreModels := `{"object":"list","data":[
+		{"id":"cn:free","credits":"x0.00"},
+		{"id":"cn:paid","credits":"x0.79"},
+		{"id":"cn:unknown"}]}`
+	h := creditConsole(t, coreModels)
+	// 对话出口：免费放行、付费与未知拒绝。
+	if rec := gateChat(h, "cn:free"); rec.Code != 200 {
+		t.Fatalf("free model rejected: %d %s", rec.Code, rec.Body)
+	}
+	for _, model := range []string{"cn:paid", "cn:unknown"} {
+		rec := gateChat(h, model)
+		if rec.Code != 404 {
+			t.Fatalf("%s should be gated off: %d %s", model, rec.Code, rec.Body)
+		}
+	}
+	// /v1/models：免费可见，付费与未知隐藏。
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, httptest.NewRequest("GET", "/v1/models", nil))
+	body := rec.Body.String()
+	if !strings.Contains(body, "cn:free") {
+		t.Fatalf("free model hidden from list: %s", body)
+	}
+	if strings.Contains(body, "cn:paid") || strings.Contains(body, "cn:unknown") {
+		t.Fatalf("disabled models leaked into list: %s", body)
+	}
+}
+
+// TestModelSwitchManualOverridePersists 验证人工开关优先于默认态并落盘：
+// 强制启用付费模型、强制停用免费模型，读取状态回显一致。
+func TestModelSwitchManualOverridePersists(t *testing.T) {
+	coreModels := `{"object":"list","data":[{"id":"cn:free","credits":"x0.00"},{"id":"cn:paid","credits":"x0.79"}]}`
+	h := creditConsole(t, coreModels)
+	if got := switchModel(t, h, "cn:paid", true); got.Code != 200 {
+		t.Fatalf("enable paid: %d %s", got.Code, got.Body)
+	}
+	if got := switchModel(t, h, "cn:free", false); got.Code != 200 {
+		t.Fatalf("disable free: %d %s", got.Code, got.Body)
+	}
+	overrides := readSwitch(t, h)
+	if overrides["cn:paid"] != true || overrides["cn:free"] != false {
+		t.Fatalf("overrides=%v want paid=true free=false", overrides)
+	}
+	if rec := gateChat(h, "cn:paid"); rec.Code != 200 {
+		t.Fatalf("manually enabled model rejected: %d %s", rec.Code, rec.Body)
+	}
+	if rec := gateChat(h, "cn:free"); rec.Code != 404 {
+		t.Fatalf("manually disabled model allowed: %d %s", rec.Code, rec.Body)
+	}
+}
+
+// TestModelSwitchOpenCodeExempt 验证 opencode 免费通道完全不受开关约束。
+func TestModelSwitchOpenCodeExempt(t *testing.T) {
+	var ocModel string
+	var mu sync.Mutex
+	h, _ := routeConsole(t, func(w http.ResponseWriter, r *http.Request) {
+		fmt.Fprint(w, `{"core":true}`)
+	}, func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/v1/chat/completions" {
+			mu.Lock()
+			ocModel = modelOf(t, r)
+			mu.Unlock()
+		}
+		fmt.Fprint(w, `{"opencode":true}`)
+	})
+	if got := saveRoutes(t, h, []routeEntry{{Alias: "oc", Channel: channelOpenCode, Model: "OC · Free", Enabled: true}}, ""); got.Code != 200 {
+		t.Fatalf("save: %d %s", got.Code, got.Body)
+	}
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, httptest.NewRequest("POST", "/v1/chat/completions", strings.NewReader(chatBody("opencode-OC · Free"))))
+	if rec.Code != 200 || rec.Body.String() != `{"opencode":true}` {
+		t.Fatalf("opencode gated despite exemption: %d %s", rec.Code, rec.Body)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if ocModel != "OC · Free" {
+		t.Fatalf("opencode model=%q", ocModel)
+	}
+}
+
+// TestModelSwitchAutoExempt 验证 auto 虚拟名本身不被开关拦下：
+// 目标免费则放行；目标付费则按解析后的目标名拒绝，而不是按 auto 拒绝。
+func TestModelSwitchAutoExempt(t *testing.T) {
+	h := creditConsole(t, `{"object":"list","data":[{"id":"cn:auto","credits":"x0.00"}]}`)
+	if got := saveRoutes(t, h, nil, "cn:auto"); got.Code != 200 {
+		t.Fatalf("save fallback: %d %s", got.Code, got.Body)
+	}
+	if rec := gateChat(h, "auto"); rec.Code != 200 {
+		t.Fatalf("auto with a free target rejected: %d %s", rec.Code, rec.Body)
+	}
+
+	paid := creditConsole(t, `{"object":"list","data":[{"id":"cn:auto","credits":"x0.79"}]}`)
+	if got := saveRoutes(t, paid, nil, "cn:auto"); got.Code != 200 {
+		t.Fatalf("save fallback: %d %s", got.Code, got.Body)
+	}
+	rec := gateChat(paid, "auto")
+	if rec.Code != 404 || !strings.Contains(rec.Body.String(), "cn:auto") {
+		t.Fatalf("auto must be judged by its resolved target: %d %s", rec.Code, rec.Body)
+	}
+}
+
+// TestModelSwitchRejectsAutoName 直接对 auto 名设开关应被拒（虚拟模型不参与开关）。
+func TestModelSwitchRejectsAutoName(t *testing.T) {
+	h := creditConsole(t, `{"object":"list","data":[]}`)
+	if got := switchModel(t, h, "auto", true); got.Code != 400 {
+		t.Fatalf("switching auto should be rejected: %d %s", got.Code, got.Body)
+	}
+}
+
+// TestModelSwitchSurvivesAliasSave 验证保存别名表不会清空模型开关覆盖表。
+func TestModelSwitchSurvivesAliasSave(t *testing.T) {
+	h := creditConsole(t, `{"object":"list","data":[{"id":"cn:paid","credits":"x0.79"}]}`)
+	if got := switchModel(t, h, "cn:paid", true); got.Code != 200 {
+		t.Fatalf("enable: %d %s", got.Code, got.Body)
+	}
+	if got := saveRoutes(t, h, []routeEntry{{Alias: "keep", Channel: channelCore, Model: "cn:auto", Enabled: true}}, ""); got.Code != 200 {
+		t.Fatalf("save aliases: %d %s", got.Code, got.Body)
+	}
+	overrides := readSwitch(t, h)
+	if overrides["cn:paid"] != true {
+		t.Fatalf("alias save wiped the switch table: overrides=%v", overrides)
+	}
+}
+
+// TestModelSwitchEndpointsRequireAdmin 验证开关端点受管理会话与 CSRF 保护。
+func TestModelSwitchEndpointsRequireAdmin(t *testing.T) {
+	h := creditConsole(t, `{"object":"list","data":[]}`)
+	if w := adminRequest(h, "GET", "/admin/model-switch", "", nil, ""); w.Code != 401 {
+		t.Fatalf("unauthenticated read should 401: %d", w.Code)
+	}
+	if w := adminRequest(h, "POST", "/admin/model-switch", `{"model":"cn:x","enabled":true}`, nil, ""); w.Code != 401 {
+		t.Fatalf("unauthenticated write should 401: %d", w.Code)
+	}
+	cookie, _ := login(t, h)
+	if w := adminRequest(h, "POST", "/admin/model-switch", `{"model":"cn:x","enabled":true}`, cookie, ""); w.Code != 403 {
+		t.Fatalf("missing CSRF should 403: %d", w.Code)
+	}
+}
+
+// TestModelSwitchDisabledWithoutRouteFile 未配置可写路由目录时开关端点应 409，
+// 且公共出口不因本功能改变行为（routes==nil 恒放行）。
+func TestModelSwitchDisabledWithoutRouteFile(t *testing.T) {
+	h, _ := testConsole(t, func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/v1/models" {
+			fmt.Fprint(w, `{"object":"list","data":[{"id":"cn:paid","credits":"x0.79"}]}`)
+			return
+		}
+		fmt.Fprint(w, `{"core":true}`)
+	})
+	cookie, csrf := login(t, h)
+	if w := adminRequest(h, "POST", "/admin/model-switch", `{"model":"cn:paid","enabled":false}`, cookie, csrf); w.Code != 409 {
+		t.Fatalf("switch without route file should 409: %d %s", w.Code, w.Body)
+	}
+	// 未启用路由时倍率>0 的模型也不该被拦，出口与现状一致。
+	if rec := gateChat(h, "cn:paid"); rec.Code != 200 {
+		t.Fatalf("gate must be inert without route file: %d %s", rec.Code, rec.Body)
+	}
 }

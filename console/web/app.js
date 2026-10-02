@@ -37,7 +37,7 @@ function signedOut() {
  zcodeModels=[];zcodeHistory=[];zcodeStatus=null;zcodeAuthURL='';zcodeLogoutArmed=false;zcodeBusy=false;zcodeProviderTouched=false;zcodePlanTouched=false;zcodeView='status';zcodeViewTouched=false;zcodeEnabled=false;clearTimeout(zcodePollTimer);zcodePollTimer=undefined;$('zcode-model').replaceChildren();$('zcode-messages').replaceChildren();$('zcode-prompt').value='';$('zcode-usage').textContent='用量将在上游返回后显示';$('zcode-disabled').hidden=true;$('zcode-content').hidden=true;$('nav-zcode').classList.remove('nav-muted');
  qoderModels=[];qoderHistory=[];qoderStatus=null;qoderEnabled=false;qoderControl=false;qoderLoggedIn=false;qoderAuthURL='';qoderBusy=false;qoderLogoutArmed=false;qoderView='status';qoderViewTouched=false;clearTimeout(qoderPollTimer);qoderPollTimer=undefined;clearTimeout(qoderLoginTimer);qoderLoginTimer=null;$('qoder-model').replaceChildren();$('qoder-messages').replaceChildren();$('qoder-prompt').value='';$('qoder-usage').textContent='用量将在上游返回后显示';$('qoder-disabled').hidden=true;$('qoder-content').hidden=true;$('nav-qoder').classList.remove('nav-muted');$('qoder-auth-row').hidden=true;$('qoder-pane-login').hidden=true;$('qoder-login-hint').textContent='';
  opencodeModels=[];opencodeHistory=[];opencodeStatus=null;opencodeEnabled=false;opencodeBusy=false;opencodeView='status';$('opencode-model').replaceChildren();$('opencode-messages').replaceChildren();$('opencode-prompt').value='';$('opencode-usage').textContent='用量将在上游返回后显示';$('opencode-disabled').hidden=true;$('opencode-content').hidden=true;$('nav-opencode').classList.remove('nav-muted');$('opencode-health-wrap').hidden=true;$('opencode-health-body').replaceChildren();
- routesState=null;routesBusy=false;routesEditing=null;$('routes-disabled').hidden=true;$('routes-content').hidden=true;$('routes-alias-body').replaceChildren();$('routes-channels').replaceChildren();$('routes-model-options').replaceChildren();$('routes-example').textContent='';$('routes-alias-name').value='';$('routes-alias-model').value='';$('routes-alias-note').value='';$('routes-auto-fallback').value='';
+ routesState=null;routesBusy=false;routesEditing=null;modelSwitchOverrides=new Map();$('routes-disabled').hidden=true;$('routes-content').hidden=true;$('routes-alias-body').replaceChildren();$('routes-channels').replaceChildren();$('routes-model-options').replaceChildren();$('routes-example').textContent='';$('routes-alias-name').value='';$('routes-alias-model').value='';$('routes-alias-note').value='';$('routes-auto-fallback').value='';
  pinState={cn:null,global:null};lastStatus=null;renderPinBanner();
 }
 async function signedIn(session) {
@@ -51,7 +51,7 @@ async function signedIn(session) {
  $('nav-opencode').classList.toggle('nav-muted', !session.opencode_enabled);
  opencodeEnabled = !!session.opencode_enabled;
  await refreshStatus(); await refreshModels(); await loadPins();
- void loadModelHeat();
+ void loadModelHeat(); void loadModelSwitch();
 }
 const pageNames = {overview:'运行概览',workbuddy:'WorkBuddy 通道',zcode:'Zcode 通道',qoder:'Qoder 通道',opencode:'OpenCode 通道',routes:'Agent 接入',access:'API 接入'};
 const workbuddyNames = {accounts:'账号管理',tasks:'自动任务',usage:'调用统计',chat:'对话测试'};
@@ -107,6 +107,28 @@ function cell(text, small) { const td = document.createElement('td'); td.textCon
 // 没有探测数据的通道显式显示「未探测」而不是隐藏列，后续上游补上同构数据即可直接复用。
 // modelHeat 是调用统计账本按 modelKey 聚合的调用次数，供「热度」列排名。
 let modelHeat=new Map(),modelHeatRank=new Map();
+// 模型积分开关：overrides 是服务端人工覆盖表（公共模型名 → 是否启用）。
+// 不在表里的模型按积分消耗规则取默认态：倍率已知且为 0 默认开启，倍率>0 或未知默认关闭。
+let modelSwitchOverrides=new Map();
+// parseCreditRule 解析上游 credits 原始串（实测形态 "x0.79 credits"/"x0.00"/"x3.47"），
+// 解析失败返回 null 按「未知」处理，不得伪造零——与服务端 parseCreditRule 同一口径。
+function parseCreditRule(raw){
+ if(typeof raw!=='string')return null;
+ let s=raw.trim().toLowerCase();
+ if(!s)return null;
+ if(s.endsWith('credits'))s=s.slice(0,-7).trim();
+ if(s.startsWith('x'))s=s.slice(1).trim();
+ if(!s)return null;
+ const value=Number(s);
+ return Number.isFinite(value)&&value>=0?value:null;
+}
+// modelSwitchEffective 报告行的当前生效状态：人工覆盖优先，其次按倍率取默认态。
+// opencode 通道免费，不参与开关（row.switchable=false 时恒放行）。
+function modelSwitchEffective(row){
+ if(!row.switchable)return true;
+ if(modelSwitchOverrides.has(row.id))return modelSwitchOverrides.get(row.id);
+ return row.creditValue===0;
+}
 const modelChannels={zcode:{body:'zcode-models-body',empty:'zcode-models-empty',namePrefix:'GLM · '},
  qoder:{body:'qoder-models-body',empty:'qoder-models-empty',namePrefix:'Qoder · '},
  opencode:{body:'opencode-models-body',empty:'opencode-models-empty',namePrefix:'opencode-OC · '},
@@ -169,6 +191,30 @@ function applyModelHeat(items){
 async function loadModelHeat(){
  try{applyModelHeat((await jsonAPI('usage?range=month')).items);}catch(error){}
 }
+// loadModelSwitch 拉取人工覆盖表并重渲染各通道。开关功能未启用（无覆盖数据）时
+// 静默降级：所有模型按倍率默认态展示，不影响渲染。
+async function loadModelSwitch(){
+ try{
+  const state=await jsonAPI('model-switch');
+  modelSwitchOverrides=new Map(Object.entries(state.overrides||{}));
+ }catch(error){modelSwitchOverrides=new Map();}
+ for(const channel of Object.keys(modelHeatSources)){const source=modelHeatSources[channel];renderModelTable(channel,source.list,source.health);}
+}
+// modelSwitchAction 切换单个模型并落盘，成功后刷新覆盖表重渲染。
+async function modelSwitchAction(btn){
+ const enable=btn.dataset.action==='enable-model';
+ const model=btn.dataset.model;
+ btn.disabled=true;
+ try{
+  const state=await jsonAPI('model-switch',{model,enabled:enable});
+  modelSwitchOverrides=new Map(Object.entries(state.overrides||{}));
+  for(const channel of Object.keys(modelHeatSources)){const source=modelHeatSources[channel];renderModelTable(channel,source.list,source.health);}
+  notice(`${model} 已${enable?'启用':'停用'}`);
+ }catch(e){
+  notice(e.message);
+  btn.disabled=false;
+ }
+}
 // channelModelRows 把「模型清单」与「探测结果」并成同一批行。/v1/models 只返回可用项，
 // 探测过但不可用的模型仍按条保留并带失败原因，不让它们从界面上整体消失。
 function channelModelRows(channel,list,health){
@@ -177,12 +223,15 @@ function channelModelRows(channel,list,health){
  const caps=new Map();
  if(health&&Array.isArray(health.models))for(const item of health.models){if(item&&item.name)caps.set(modelKey(item.name),item);}
  const rows=new Map();
- const ensure=label=>{const key=modelKey(label);if(!key)return null;if(!rows.has(key))rows.set(key,{key,label:String(label),cap:null,result:null,efforts:null});return rows.get(key);};
+ const switchable=channel!=='opencode';
+ const ensure=label=>{const key=modelKey(label);if(!key)return null;if(!rows.has(key))rows.set(key,{key,label:String(label),id:String(label),cap:null,result:null,efforts:null,credits:null,creditValue:null});return rows.get(key);};
  for(const item of(Array.isArray(list)?list:[])){
   if(!item||!item.id)continue;
   const row=ensure(item.id);if(!row)continue;
   row.efforts=Array.isArray(item.reasoning_supported_efforts)?item.reasoning_supported_efforts:null;
   row.cap=caps.get(row.key)||row.cap;
+  row.credits=typeof item.credits==='string'?item.credits:null;
+  row.creditValue=parseCreditRule(row.credits);
  }
  for(const[id,result]of Object.entries(results)){
   const cap=caps.get(modelKey(id))||null;
@@ -194,7 +243,7 @@ function channelModelRows(channel,list,health){
   const result=row.result;
   const variants=[...new Set([...modelVariantNames(result),...modelVariantNames(row.cap)])];
   const ms=result?Number(result.durationMs):NaN;
-  return{key:row.key,label:row.label,state:modelProbeState(result),
+  return{key:row.key,label:row.label,id:row.id,switchable,credits:row.credits,creditValue:row.creditValue,state:modelProbeState(result),
    caps:modelCapabilityBadges(row.cap,row.efforts&&row.efforts.length?['推理']:null),
    limit:modelLimitText(row.cap),
    variants:variants.length?`档位 ${variants.join(' / ')}`:'',
@@ -202,7 +251,18 @@ function channelModelRows(channel,list,health){
    durationMs:Number.isFinite(ms)&&ms>=0?ms:null,
    source:result&&modelProbeSources[result.source]?modelProbeSources[result.source]:'',
    note:result&&typeof result.error==='string'&&result.error?result.error:'—'};
- }).sort((a,b)=>a.state.order-b.state.order||((a.durationMs??Infinity)-(b.durationMs??Infinity)));
+ }).sort(switchable?creditSort:probeSort);
+}
+// creditSort 是积分开关通道的排序：按积分消耗倒序（倍率高在前），未知倍率排最后，
+// 已知且为 0（免费）排最末。倍率相同（含同为未知）保持上游目录的插入顺序，
+// Array.prototype.sort 在 V8 中稳定，不额外按名字打乱同档模型。
+function creditSort(a,b){
+ const av=a.creditValue??-1,bv=b.creditValue??-1;
+ return bv-av;
+}
+// probeSort 是 opencode 通道的原排序：免费通道不采集倍率，保持「探测状态 → 耗时」口径。
+function probeSort(a,b){
+ return a.state.order-b.state.order||((a.durationMs??Infinity)-(b.durationMs??Infinity));
 }
 function renderModelTable(channel,list,health){
  const config=modelChannels[channel];
@@ -212,10 +272,33 @@ function renderModelTable(channel,list,health){
  for(const row of rows){
   const tr=document.createElement('tr');
   tr.append(cell(row.label),chipsCell(row.caps,[row.limit,row.variants].filter(Boolean).join(' · ')),badgeCell(row.state.label,row.state.warn),cell(row.duration,row.source),cell(row.note),modelHeatCell(row.key));
+  // opencode 免费通道不采集倍率、不加开关列；其余通道追加「积分消耗」与「操作」两列。
+  if(row.switchable){ tr.append(creditCell(row),switchOpCell(row)); }
   body.append(tr);
  }
  $(config.empty).hidden=rows.length>0;
  return rows;
+}
+// creditCell 渲染积分消耗倍率：已知显示「×N」，未知显示「未知」。
+function creditCell(row){
+ if(row.creditValue===null||row.creditValue===undefined)return cell('未知');
+ return cell(`×${row.creditValue}`);
+}
+// switchOpCell 构造模型开关单元格：启用中的模型显示「停用」按钮，
+// 停用中的显示「启用」按钮，并带一个状态徽标说明当前生效态与默认来源。
+function switchOpCell(row){
+ const td=document.createElement('td');
+ const enabled=modelSwitchEffective(row);
+ const badge=document.createElement('span');
+ badge.className='badge'+(enabled?'':' warn');
+ badge.textContent=enabled?'已启用':'已停用';
+ const btn=document.createElement('button');
+ btn.className='secondary model-switch-btn';
+ btn.textContent=enabled?'停用':'启用';
+ btn.dataset.action=enabled?'disable-model':'enable-model';
+ btn.dataset.model=row.id;
+ td.append(badge,' ',btn);
+ return td;
 }
 function renderAccounts(data) {
  lastStatus = data;
@@ -309,6 +392,8 @@ async function pinAction(btn) {
 document.addEventListener?.('click', e => {
  const btn = e.target.closest?.('button[data-action="pin"], button[data-action="unpin"]');
  if (btn) return pinAction(btn);
+ const switchBtn = e.target.closest?.('button[data-action="enable-model"], button[data-action="disable-model"]');
+ if (switchBtn) return modelSwitchAction(switchBtn);
 });
 async function refreshStatus() { try { renderAccounts(await jsonAPI('status')); } catch(e) { notice(e.message); } }
 function realmLabel(realm) { return realm === 'global' ? '国际版' : realm === 'cn' ? '国内版' : realm === 'glm' ? 'GLM·智谱' : realm === 'qoder' ? 'Qoder' : realm === 'opencode' ? 'OpenCode' : ''; }

@@ -59,6 +59,12 @@ type routeFile struct {
 	// 核心通道的模型 ID 由上游动态下发，因此这个值由管理员在页面上声明，
 	// 缺省才用 defaultAutoFallback，不在代码里固化任何其他真实模型名。
 	AutoFallback string `json:"auto_fallback"`
+	// DisabledModels / EnabledModels 是模型积分开关的人工覆盖表，按公共模型名
+	// （带通道前缀的对外形态）记录。两张表互斥：一个模型最多出现在其中一张。
+	// 不在任何表里的模型按积分消耗规则取默认态：倍率已知且为 0 默认开启，
+	// 倍率大于 0 或规则未知默认关闭。
+	DisabledModels []string `json:"disabled_models,omitempty"`
+	EnabledModels  []string `json:"enabled_models,omitempty"`
 }
 
 // defaultAutoFallback 是 AutoFallback 缺省值，也是实测中 core 目录下唯一
@@ -129,7 +135,7 @@ func validateRouteEntries(models []routeEntry) error {
 			return fmt.Errorf("别名 %q 的通道必须是 core、glm、qoder 或 opencode", alias)
 		}
 		model := strings.TrimSpace(entry.Model)
-		if !validRouteName(model, 128, "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789._:- ·") {
+		if !validRouteName(model, 128, routeModelChars) {
 			return fmt.Errorf("别名 %q 的模型名不合法：只允许字母、数字、点、下划线、冒号、连字符、空格和中点，长度 1-128", alias)
 		}
 		// core 的模型 ID 由上游以 cn:/global: 命名空间下发，缺前缀的裸名字
@@ -189,6 +195,153 @@ func normalizeRoutes(models []routeEntry) []routeEntry {
 	return out
 }
 
+// routeModelChars 是合法公共模型名的字符集，别名模型名与模型开关表共用。
+const routeModelChars = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789._:- ·"
+
+// maxModelSwitchEntries 限制单张开关表的条目数。core 约 30 个模型、旁路通道各
+// 十来个，四通道合计远小于此上限，留足冗余同时防止失控写入撑满文件。
+const maxModelSwitchEntries = 200
+
+// validateModelSwitchList 校验一张开关表的模型名：数量有界、名字合法、去重。
+func validateModelSwitchList(name string, list []string) error {
+	if len(list) > maxModelSwitchEntries {
+		return fmt.Errorf("%s 不得超过 %d 条", name, maxModelSwitchEntries)
+	}
+	seen := make(map[string]bool, len(list))
+	for _, raw := range list {
+		model := strings.TrimSpace(raw)
+		if !validRouteName(model, 128, routeModelChars) {
+			return fmt.Errorf("%s 含非法模型名：只允许字母、数字、点、下划线、冒号、连字符、空格和中点，长度 1-128", name)
+		}
+		if seen[model] {
+			return fmt.Errorf("%s 含重复模型名 %q", name, model)
+		}
+		seen[model] = true
+	}
+	return nil
+}
+
+// normalizeSwitchList 去掉两端空白、丢弃空项并去重，保持首次出现的顺序。
+func normalizeSwitchList(list []string) []string {
+	out := make([]string, 0, len(list))
+	seen := make(map[string]bool, len(list))
+	for _, raw := range list {
+		model := strings.TrimSpace(raw)
+		if model == "" || seen[model] {
+			continue
+		}
+		seen[model] = true
+		out = append(out, model)
+	}
+	return out
+}
+
+// switchLists 返回当前生效的两张开关表副本，调用方可安全遍历。
+func (s *routeStore) switchLists() (disabled, enabled []string) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return append([]string{}, s.file.DisabledModels...), append([]string{}, s.file.EnabledModels...)
+}
+
+// modelOverride 报告某个公共模型名是否被人工设过开关，以及被设成什么。
+// 返回 (override, has) —— has=false 表示该模型不在任何表里，应按积分规则取默认态。
+func (s *routeStore) modelOverride(model string) (enabled bool, has bool) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	for _, m := range s.file.EnabledModels {
+		if m == model {
+			return true, true
+		}
+	}
+	for _, m := range s.file.DisabledModels {
+		if m == model {
+			return false, true
+		}
+	}
+	return false, false
+}
+
+// setModelSwitch 把某个公共模型名设为开启或关闭并落盘。开启时从禁用表移除、
+// 加入启用表；关闭时反之。auto 虚拟模型不受开关约束（它不是真实上游模型）。
+// 返回更新后的两张表副本，供端点回写状态。
+func (s *routeStore) setModelSwitch(model string, enable bool) error {
+	model = strings.TrimSpace(model)
+	if !validRouteName(model, 128, routeModelChars) {
+		return errors.New("模型名不合法：只允许字母、数字、点、下划线、冒号、连字符、空格和中点，长度 1-128")
+	}
+	if model == autoModelName {
+		return errors.New("auto 是虚拟模型，不参与积分开关")
+	}
+	current := s.snapshotFile()
+	disabled := removeModel(current.DisabledModels, model)
+	enabled := removeModel(current.EnabledModels, model)
+	if enable {
+		enabled = append(enabled, model)
+	} else {
+		disabled = append(disabled, model)
+	}
+	disabled = normalizeSwitchList(disabled)
+	enabled = normalizeSwitchList(enabled)
+	if err := validateModelSwitchList("禁用模型表", disabled); err != nil {
+		return err
+	}
+	if err := validateModelSwitchList("启用模型表", enabled); err != nil {
+		return err
+	}
+	next := routeFile{Version: routeFileVersion, Models: current.Models, AutoFallback: current.AutoFallback, DisabledModels: disabled, EnabledModels: enabled}
+	return s.saveFile(next)
+}
+
+// removeModel 返回去掉某个模型名后的新切片（不改原切片）。
+func removeModel(list []string, model string) []string {
+	out := make([]string, 0, len(list))
+	for _, m := range list {
+		if m != model {
+			out = append(out, m)
+		}
+	}
+	return out
+}
+
+// saveFile 原子落盘整份配置并替换内存快照，复用与 save() 相同的临时文件 +
+// rename 语义，只是入参已是组装好的 routeFile。
+func (s *routeStore) saveFile(next routeFile) error {
+	if next.Models == nil {
+		next.Models = []routeEntry{}
+	}
+	encoded, err := json.MarshalIndent(next, "", "  ")
+	if err != nil {
+		return errors.New("路由配置序列化失败")
+	}
+	encoded = append(encoded, '\n')
+	if err := os.MkdirAll(filepath.Dir(s.path), 0o700); err != nil {
+		return errors.New("路由配置目录不可创建")
+	}
+	tmp, err := os.CreateTemp(filepath.Dir(s.path), ".routes-*.json")
+	if err != nil {
+		return errors.New("路由配置临时文件不可创建")
+	}
+	tmpName := tmp.Name()
+	defer os.Remove(tmpName)
+	if _, err := tmp.Write(encoded); err != nil {
+		tmp.Close()
+		return errors.New("路由配置写入失败")
+	}
+	if err := tmp.Close(); err != nil {
+		return errors.New("路由配置写入失败")
+	}
+	if err := os.Chmod(tmpName, 0o600); err != nil {
+		return errors.New("路由配置文件权限设置失败")
+	}
+	if err := os.Rename(tmpName, s.path); err != nil {
+		return errors.New("路由配置替换失败")
+	}
+	s.mu.Lock()
+	s.file = next
+	s.mu.Unlock()
+	return nil
+}
+
 // routeStore 持有当前生效的路由配置快照。管理端点写入后原子替换内存快照并
 // 落盘，公共 /v1/* 每次解析都读这份快照——保存即生效，不需要重启容器。
 type routeStore struct {
@@ -237,6 +390,16 @@ func (s *routeStore) reload() routeFile {
 		logRouteWarn("auto 回退配置非法，沿用上一份配置：", err)
 		return s.snapshotFile()
 	}
+	file.DisabledModels = normalizeSwitchList(file.DisabledModels)
+	file.EnabledModels = normalizeSwitchList(file.EnabledModels)
+	if err := validateModelSwitchList("禁用模型表", file.DisabledModels); err != nil {
+		logRouteWarn("模型开关表非法，沿用上一份配置：", err)
+		return s.snapshotFile()
+	}
+	if err := validateModelSwitchList("启用模型表", file.EnabledModels); err != nil {
+		logRouteWarn("模型开关表非法，沿用上一份配置：", err)
+		return s.snapshotFile()
+	}
 	file.AutoFallback = strings.TrimSpace(file.AutoFallback)
 	if file.AutoFallback == "" {
 		file.AutoFallback = defaultAutoFallback
@@ -267,7 +430,10 @@ func (s *routeStore) save(models []routeEntry, autoFallback string) error {
 	if fallback == "" {
 		fallback = defaultAutoFallback
 	}
-	next := routeFile{Version: routeFileVersion, Models: normalized, AutoFallback: fallback}
+	// 开关表不属于别名编辑的范围，保存别名时必须原样带上，否则一次别名保存
+	// 会把模型开关的全部人工覆盖静默清空。
+	current := s.snapshotFile()
+	next := routeFile{Version: routeFileVersion, Models: normalized, AutoFallback: fallback, DisabledModels: current.DisabledModels, EnabledModels: current.EnabledModels}
 	encoded, err := json.MarshalIndent(next, "", "  ")
 	if err != nil {
 		return errors.New("路由配置序列化失败")
