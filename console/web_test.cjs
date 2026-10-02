@@ -1330,6 +1330,14 @@ test('credit column shows the multiplier, defaults the switch from it, and sorts
   assert.deepEqual(get('core-models-body').children.map(tr=>tr.children[7].children[0].textContent),['已启用','已停用','已停用'],'manual override must beat the credit default');
 });
 
+test('workbuddy models table lives in its own tab, not inside the chat pane',()=>{
+  const html=readFileSync(__dirname+'/web/index.html','utf8');
+  assert.match(html,/id="workbuddy-view-models"[^>]*>[^<]*模型列表/,'models sub-tab button missing');
+  assert.match(html,/id="workbuddy-pane-models"[\s\S]*?core-models-body[\s\S]*?<\/div>\s*<\/div>/,'core model table must sit in the models pane');
+  const chat=html.match(/id="workbuddy-pane-chat"[\s\S]*?<\/section>/)[0];
+  assert.ok(!chat.includes('core-models-body'),'core model table must not stay inside the chat pane');
+});
+
 test('credit rule parsing matches the server and never invents a zero',()=>{
   const {ctx}=logoutFixture(()=>new Promise(()=>{}));
   assert.equal(vm.runInContext("parseCreditRule('x0.79 credits')",ctx),0.79);

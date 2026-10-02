@@ -54,10 +54,10 @@ async function signedIn(session) {
  void loadModelHeat(); void loadModelSwitch();
 }
 const pageNames = {overview:'运行概览',workbuddy:'WorkBuddy 通道',zcode:'Zcode 通道',qoder:'Qoder 通道',opencode:'OpenCode 通道',routes:'Agent 接入',access:'API 接入'};
-const workbuddyNames = {accounts:'账号管理',tasks:'自动任务',usage:'调用统计',chat:'对话测试'};
+const workbuddyNames = {accounts:'账号管理',tasks:'自动任务',usage:'调用统计',models:'模型列表',chat:'对话测试'};
 function setWorkBuddyView(view) {
  workbuddyView = view;
- for (const name of ['accounts','tasks','usage','chat']) {
+ for (const name of ['accounts','tasks','usage','models','chat']) {
   $('workbuddy-view-'+name).classList.toggle('active', name === view);
   $('workbuddy-pane-'+name).hidden = name !== view;
  }
@@ -92,7 +92,7 @@ document.querySelectorAll('[data-view]').forEach(button => button.addEventListen
  if (button.dataset.sub && button.dataset.view === 'workbuddy') setWorkBuddyView(button.dataset.sub);
  showPage(button.dataset.view);
 }));
-for (const name of ['accounts','tasks','usage','chat']) $('workbuddy-view-'+name).addEventListener('click', () => {
+for (const name of ['accounts','tasks','usage','models','chat']) $('workbuddy-view-'+name).addEventListener('click', () => {
  setWorkBuddyView(name);
  if (name === 'tasks') loadTaskPage();
  if (name === 'usage') loadUsage();
