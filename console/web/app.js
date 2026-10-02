@@ -51,7 +51,7 @@ async function signedIn(session) {
  $('nav-opencode').classList.toggle('nav-muted', !session.opencode_enabled);
  opencodeEnabled = !!session.opencode_enabled;
  await refreshStatus(); await refreshModels(); await loadPins();
- void loadModelHeat(); void loadModelSwitch();
+ void loadModelHeat(); void loadModelSwitch(); void loadGlobalHeat();
 }
 const pageNames = {overview:'运行概览',workbuddy:'WorkBuddy 通道',zcode:'Zcode 通道',qoder:'Qoder 通道',opencode:'OpenCode 通道',routes:'Agent 接入',access:'API 接入'};
 const workbuddyNames = {accounts:'账号管理',tasks:'自动任务',usage:'调用统计',models:'模型列表',chat:'对话测试'};
@@ -107,6 +107,16 @@ function cell(text, small) { const td = document.createElement('td'); td.textCon
 // 没有探测数据的通道显式显示「未探测」而不是隐藏列，后续上游补上同构数据即可直接复用。
 // modelHeat 是调用统计账本按 modelKey 聚合的调用次数，供「热度」列排名。
 let modelHeat=new Map(),modelHeatRank=new Map();
+// globalHeat 是 OpenRouter 公开目录（sort=most-popular）的全球热度名次：modelKey → 名次（从 1 起）。
+// 名次来自服务端按 popularity 顺序下发的 ranks，先到先得即最高名次；匹配不到留「—」，不伪造。
+let globalHeat=new Map();
+// orModelKey 把 OpenRouter 的 id / canonical_slug 收敛成与本地 modelKey 同一口径的对齐键：
+// 去掉 vendor 前缀（第一个 / 之前）与 :variant 后缀，再走 modelKey，使 tencent/hy4-preview
+// 与本地 cn:hy4-preview 落到同一个键。日期后缀等差异不做强行归一，匹配不到就如实留空。
+function orModelKey(raw){
+ const last=String(raw||'').split('/').pop().split(':')[0];
+ return modelKey(last);
+}
 // 模型积分开关：overrides 是服务端人工覆盖表（公共模型名 → 是否启用）。
 // 不在表里的模型按积分消耗规则取默认态：倍率已知且为 0 默认开启，倍率>0 或未知默认关闭。
 let modelSwitchOverrides=new Map();
@@ -176,6 +186,14 @@ function modelHeatCell(key){
  td.append(star,note);
  return td;
 }
+// globalHeatCell 渲染「全球热度」列：OpenRouter most-popular 名次显示为 #N；
+// 对齐不到或源不可用时如实留「—」，不得伪造名次。
+function globalHeatCell(key){
+ const td=document.createElement('td');
+ const rank=globalHeat.get(key);
+ td.textContent=rank?'#'+rank:'—';
+ return td;
+}
 function applyModelHeat(items){
  const counts=new Map();
  for(const entry of(Array.isArray(items)?items:[])){
@@ -190,6 +208,24 @@ function applyModelHeat(items){
 // 静默加载：账本不可用时保持「—」，不让热度缺失打扰模型表。
 async function loadModelHeat(){
  try{applyModelHeat((await jsonAPI('usage?range=month')).items);}catch(error){}
+}
+// loadGlobalHeat 拉取 OpenRouter 名次表并按 modelKey 建索引（先到先得=最高名次），
+// 再重渲染各通道。源不可用或返回空时静默降级：globalHeat 清空，所有单元格留「—」。
+async function loadGlobalHeat(){
+ try{
+  const state=await jsonAPI('heat');
+  const map=new Map();
+  if(state&&state.available&&Array.isArray(state.ranks)){
+   state.ranks.forEach((entry,index)=>{
+    for(const raw of[entry&&entry.id,entry&&entry.canonical_slug]){
+     const key=orModelKey(raw);
+     if(key&&!map.has(key))map.set(key,index+1);
+    }
+   });
+  }
+  globalHeat=map;
+ }catch(error){globalHeat=new Map();}
+ for(const channel of Object.keys(modelHeatSources)){const source=modelHeatSources[channel];renderModelTable(channel,source.list,source.health);}
 }
 // loadModelSwitch 拉取人工覆盖表并重渲染各通道。开关功能未启用（无覆盖数据）时
 // 静默降级：所有模型按倍率默认态展示，不影响渲染。
@@ -271,7 +307,7 @@ function renderModelTable(channel,list,health){
  const rows=channelModelRows(channel,list,health);
  for(const row of rows){
   const tr=document.createElement('tr');
-  tr.append(cell(row.label),chipsCell(row.caps,[row.limit,row.variants].filter(Boolean).join(' · ')),badgeCell(row.state.label,row.state.warn),cell(row.duration,row.source),cell(row.note),modelHeatCell(row.key));
+  tr.append(cell(row.label),chipsCell(row.caps,[row.limit,row.variants].filter(Boolean).join(' · ')),badgeCell(row.state.label,row.state.warn),cell(row.duration,row.source),cell(row.note),modelHeatCell(row.key),globalHeatCell(row.key));
   // opencode 免费通道不采集倍率、不加开关列；其余通道追加「积分消耗」与「操作」两列。
   if(row.switchable){ tr.append(creditCell(row),switchOpCell(row)); }
   body.append(tr);

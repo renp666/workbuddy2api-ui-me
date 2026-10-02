@@ -91,6 +91,8 @@ type server struct {
 	// credits 缓存 core 下发的模型积分消耗规则（补丁 0011 的 credits 字段），
 	// 供模型开关判定默认态与页面展示。
 	credits *creditCache
+	// heat 缓存 OpenRouter 公开目录的全球热度名次，供「全球热度」列展示。
+	heat *heatCache
 }
 
 func NewServer(cfg Config) (http.Handler, error) {
@@ -163,6 +165,7 @@ func NewServer(cfg Config) (http.Handler, error) {
 	}
 	h.probes = &probeCache{}
 	h.credits = &creditCache{}
+	h.heat = &heatCache{}
 	assets, err := fs.Sub(webFiles, "web")
 	if err != nil {
 		return nil, err
@@ -218,6 +221,8 @@ func NewServer(cfg Config) (http.Handler, error) {
 	// 模型积分开关：GET 读人工覆盖表，POST 切换单个模型并即时生效。
 	h.mux.HandleFunc("GET /admin/model-switch", h.withAdmin(h.adminModelSwitchState))
 	h.mux.HandleFunc("POST /admin/model-switch", h.withAdmin(h.adminModelSwitch))
+	// 全球热度：GET 读 OpenRouter 公开目录的名次表（服务端 24h 缓存）。
+	h.mux.HandleFunc("GET /admin/heat", h.withAdmin(h.adminHeatRanks))
 	h.mux.HandleFunc("POST /admin/access", h.withAdmin(func(w http.ResponseWriter, r *http.Request) {
 		if _, err := h.coreInfo(r.Context()); err != nil {
 			adminError(w, 503, err.Error())

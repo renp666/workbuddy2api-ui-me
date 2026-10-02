@@ -49,7 +49,7 @@
    </div>
    <div id="workbuddy-pane-models" hidden>
     <div class="section-title"><h2>模型列表</h2><span class="muted small">来自 core 的 <code>/v1/models</code>；core 不提供探测结论，未探测的字段如实留空</span></div>
-    <div class="panel table-wrap"><table><thead><tr><th>模型 ID</th><th>能力</th><th>状态</th><th>耗时</th><th>说明</th><th>热度</th><th>积分消耗</th><th>操作</th></tr></thead><tbody id="core-models-body"></tbody></table><p id="core-models-empty" class="empty">暂无模型。</p></div>
+    <div class="panel table-wrap"><table><thead><tr><th>模型 ID</th><th>能力</th><th>状态</th><th>耗时</th><th>说明</th><th>热度</th><th>全球热度</th><th>积分消耗</th><th>操作</th></tr></thead><tbody id="core-models-body"></tbody></table><p id="core-models-empty" class="empty">暂无模型。</p></div>
    </div>
    <div id="workbuddy-pane-chat" hidden>
     <div class="section-title"><h2>对话测试</h2><span class="muted small">真实请求经过同一账号池；对话只保留在当前页面，刷新即清空</span><button id="clear-chat" class="secondary">清空对话</button></div>
@@ -75,7 +75,7 @@
     </div>
     <div id="zcode-pane-models" hidden>
     <div class="section-title" id="zcode-models-title"><h2>GLM 模型</h2><span class="muted small">来自 zcode-proxy 的 <code>/v1/models</code>；zcode 暂不提供探测结论，状态列如实显示「未探测」</span></div>
-    <div class="panel table-wrap" id="zcode-models-table"><table><thead><tr><th>模型 ID</th><th>能力</th><th>状态</th><th>耗时</th><th>说明</th><th>热度</th><th>积分消耗</th><th>操作</th></tr></thead><tbody id="zcode-models-body"></tbody></table><p id="zcode-models-empty" class="empty">暂无模型。</p></div>
+    <div class="panel table-wrap" id="zcode-models-table"><table><thead><tr><th>模型 ID</th><th>能力</th><th>状态</th><th>耗时</th><th>说明</th><th>热度</th><th>全球热度</th><th>积分消耗</th><th>操作</th></tr></thead><tbody id="zcode-models-body"></tbody></table><p id="zcode-models-empty" class="empty">暂无模型。</p></div>
     <p id="zcode-models-note" class="muted small" hidden>当前为 Start Plan 档位，仅展示可用的 <code>-flash</code> 模型。</p>
     </div>
     <div id="zcode-pane-chat" hidden>
@@ -102,7 +102,7 @@
     </div>
     <div id="qoder-pane-models" hidden>
     <div class="section-title"><h2>Qoder 模型</h2><span class="muted small">来自 qoder-proxy 的 <code>/v1/models</code>；qoder 暂不提供探测结论，状态列如实显示「未探测」</span></div>
-    <div class="panel table-wrap"><table><thead><tr><th>模型 ID</th><th>能力</th><th>状态</th><th>耗时</th><th>说明</th><th>热度</th><th>积分消耗</th><th>操作</th></tr></thead><tbody id="qoder-models-body"></tbody></table><p id="qoder-models-empty" class="empty">暂无模型。</p></div>
+    <div class="panel table-wrap"><table><thead><tr><th>模型 ID</th><th>能力</th><th>状态</th><th>耗时</th><th>说明</th><th>热度</th><th>全球热度</th><th>积分消耗</th><th>操作</th></tr></thead><tbody id="qoder-models-body"></tbody></table><p id="qoder-models-empty" class="empty">暂无模型。</p></div>
     </div>
     <div id="qoder-pane-chat" hidden>
     <div class="section-title"><h2>对话测试</h2><span class="muted small">OpenAI 流式协议，真实请求转发给 qoder-proxy</span></div>
@@ -122,7 +122,7 @@
     </div>
     <div id="opencode-pane-models" hidden>
     <div class="section-title"><h2>OpenCode 模型</h2><span class="muted small">来自 OW Bridge 的 <code>/v1/models</code>，并合并 <code>/health</code> 的探测结论（含探测未通过的模型）</span></div>
-    <div class="panel table-wrap"><table><thead><tr><th>模型 ID</th><th>能力</th><th>状态</th><th>耗时</th><th>说明</th><th>热度</th></tr></thead><tbody id="opencode-models-body"></tbody></table><p id="opencode-models-empty" class="empty">暂无模型。</p></div>
+    <div class="panel table-wrap"><table><thead><tr><th>模型 ID</th><th>能力</th><th>状态</th><th>耗时</th><th>说明</th><th>热度</th><th>全球热度</th></tr></thead><tbody id="opencode-models-body"></tbody></table><p id="opencode-models-empty" class="empty">暂无模型。</p></div>
     </div>
     <div id="opencode-pane-chat" hidden>
     <div class="section-title"><h2>对话测试</h2><span class="muted small">OpenAI 流式协议，真实请求转发给 OW Bridge sidecar</span></div>
