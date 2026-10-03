@@ -1363,6 +1363,42 @@ test('workbuddy models table lives in its own tab, not inside the chat pane',()=
   assert.ok(!chat.includes('core-models-body'),'core model table must not stay inside the chat pane');
 });
 
+test('usage statistics is a standalone sidebar page and left the workbuddy tabs',()=>{
+  const html=readFileSync(__dirname+'/web/index.html','utf8');
+  assert.match(html,/data-view="usage"[\s\S]*?调用统计/,'usage entry missing from the sidebar nav');
+  assert.match(html,/data-page="usage"[\s\S]*?id="usage-channel"[\s\S]*?id="usage-by-channel-body"[\s\S]*?id="usage-body"/,'standalone usage page missing channel filter, distribution and detail tables');
+  assert.ok(!/id="workbuddy-view-usage"/.test(html),'workbuddy still exposes a usage sub-tab');
+  assert.ok(!/id="workbuddy-pane-usage"/.test(html),'workbuddy still carries a usage pane');
+});
+
+test('usage page aggregates by channel, filters the detail list and keeps missing distinct from zero',async()=>{
+  const items=[
+    {ts:1000,uid:'u1',account:'alice',model:'cn:m',mode:'stream',prompt_tokens:100,completion_tokens:200,credit:1.5},
+    {ts:1001,uid:'zcode',account:'GLM 通道',model:'glm-5.3-flash',mode:'sync',prompt_tokens:10,completion_tokens:20,credit:null},
+    {ts:1002,uid:'qoder',account:'Qoder 通道',model:'qoder-x',mode:'stream',prompt_tokens:-1,completion_tokens:5,credit:0},
+    {ts:1003,uid:'opencode',account:'OpenCode 通道',model:'opencode-y',mode:'sync',prompt_tokens:3,completion_tokens:4,credit:2},
+  ];
+  const {ctx,get}=taskFixture(async(url)=>({ok:true,status:200,json:async()=>({range:'today',items,summary:{}})}));
+  await vm.runInContext('loadUsage()',ctx);
+  assert.equal(get('usage-calls').textContent,'4');
+  assert.equal(get('usage-tokens').textContent,'342');
+  assert.equal(get('usage-credit').textContent,'3.5');
+  assert.match(get('usage-note').textContent,/1 条记录未回报 token 用量/,'unknown token not surfaced');
+  assert.match(get('usage-note').textContent,/1 条记录未回报积分扣费/,'missing credit not surfaced');
+  const dist=get('usage-by-channel-body').children;
+  assert.deepEqual(dist.map(tr=>tr.children[0].textContent),['WorkBuddy','GLM（Zcode）','Qoder','OpenCode'],'distribution rows missing or misordered');
+  assert.deepEqual(dist[1].children.map(td=>td.textContent),['GLM（Zcode）','1','10','20','—'],'zcode missing credit must show dash, not 0');
+  assert.deepEqual(dist[2].children.map(td=>td.textContent),['Qoder','1','0','5','0'],'qoder unknown token counted as 0 observed, real 0 credit kept');
+  // Filtering narrows only the detail list; the distribution keeps the full picture.
+  ctx.USAGE_ITEMS=items;
+  vm.runInContext("usageChannel='zcode';renderUsage({items:USAGE_ITEMS})",ctx);
+  assert.equal(get('usage-calls').textContent,'1');
+  const detail=get('usage-body').children;
+  assert.equal(detail.length,1,'detail list not filtered to the selected channel');
+  assert.equal(detail[0].children[1].textContent,'GLM（Zcode）','detail channel column wrong');
+  assert.equal(get('usage-by-channel-body').children.length,4,'distribution must stay full while detail is filtered');
+});
+
 test('credit rule parsing matches the server and never invents a zero',()=>{
   const {ctx}=logoutFixture(()=>new Promise(()=>{}));
   assert.equal(vm.runInContext("parseCreditRule('x0.79 credits')",ctx),0.79);

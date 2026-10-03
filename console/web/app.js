@@ -5,7 +5,7 @@ let pinState = {cn:null, global:null}, lastStatus = null;
 let page = 'overview', workbuddyView = 'accounts', sessionGeneration = 0;
 let protocol = 'openai';
 let taskState = {items:[],active_run:null,latest_runs:[]}, taskHistory = [], taskBefore = null, taskStarting = false, taskPollTimer, taskRenderKey, detailController, detailGeneration = 0;
-let usageRange = 'today', usageGeneration = 0;
+let usageRange = 'today', usageChannel = 'all', usageGeneration = 0;
 let zcodeModels = [], zcodeHistory = [], zcodeStatus = null, zcodePollTimer, zcodeBusy = false, zcodeAuthURL = '', zcodeLogoutArmed = false, zcodeProviderTouched = false, zcodePlanTouched = false, zcodeView = 'status', zcodeViewTouched = false, zcodeEnabled = false;
 let qoderModels = [], qoderHistory = [], qoderStatus = null, qoderPollTimer, qoderBusy = false, qoderAuthURL = '', qoderLogoutArmed = false, qoderControl = false, qoderLoggedIn = false, qoderLoginTimer = null, qoderView = 'status', qoderViewTouched = false, qoderEnabled = false;
 let opencodeModels = [], opencodeHistory = [], opencodeStatus = null, opencodeBusy = false, opencodeView = 'status', opencodeEnabled = false;
@@ -53,11 +53,11 @@ async function signedIn(session) {
  await refreshStatus(); await refreshModels(); await loadPins();
  void loadModelHeat(); void loadModelSwitch(); void loadGlobalHeat();
 }
-const pageNames = {overview:'运行概览',workbuddy:'WorkBuddy 通道',zcode:'Zcode 通道',qoder:'Qoder 通道',opencode:'OpenCode 通道',routes:'Agent 接入',access:'API 接入'};
-const workbuddyNames = {accounts:'账号管理',tasks:'自动任务',usage:'调用统计',models:'模型列表',chat:'对话测试'};
+const pageNames = {overview:'运行概览',workbuddy:'WorkBuddy 通道',zcode:'Zcode 通道',qoder:'Qoder 通道',opencode:'OpenCode 通道',usage:'调用统计',routes:'Agent 接入',access:'API 接入'};
+const workbuddyNames = {accounts:'账号管理',tasks:'自动任务',models:'模型列表',chat:'对话测试'};
 function setWorkBuddyView(view) {
  workbuddyView = view;
- for (const name of ['accounts','tasks','usage','models','chat']) {
+ for (const name of ['accounts','tasks','models','chat']) {
   $('workbuddy-view-'+name).classList.toggle('active', name === view);
   $('workbuddy-pane-'+name).hidden = name !== view;
  }
@@ -77,7 +77,7 @@ function showPage(value) {
  if (page !== 'access') { $('api-key').value = ''; $('api-key').type = 'password'; }
  if (page === 'workbuddy') setWorkBuddyView(workbuddyView);
  if (page === 'workbuddy' && workbuddyView === 'tasks') loadTaskPage();
- if (page === 'workbuddy' && workbuddyView === 'usage') loadUsage();
+ if (page === 'usage') loadUsage();
  if (page === 'zcode') loadZcode();
  if (page === 'qoder') loadQoder();
  if (page === 'opencode') loadOpenCode();
@@ -92,10 +92,9 @@ document.querySelectorAll('[data-view]').forEach(button => button.addEventListen
  if (button.dataset.sub && button.dataset.view === 'workbuddy') setWorkBuddyView(button.dataset.sub);
  showPage(button.dataset.view);
 }));
-for (const name of ['accounts','tasks','usage','models','chat']) $('workbuddy-view-'+name).addEventListener('click', () => {
+for (const name of ['accounts','tasks','models','chat']) $('workbuddy-view-'+name).addEventListener('click', () => {
  setWorkBuddyView(name);
  if (name === 'tasks') loadTaskPage();
- if (name === 'usage') loadUsage();
 });
 $('login-form').addEventListener('submit', async event => {
  event.preventDefault(); const button = event.submitter; button.disabled = true; $('login-error').textContent = '';
@@ -574,21 +573,37 @@ $('task-detail-close').addEventListener('click',()=>cancelTaskDetail(true));
 document.addEventListener?.('visibilitychange',()=>{if(document.hidden)stopTaskReads();else if(page==='workbuddy'&&workbuddyView==='tasks')pollTaskRun();else if(page==='zcode'&&zcodeStatus&&zcodeStatus.control&&!zcodeStatus.logged_in)loadZcode();else if(page==='qoder'&&qoderStatus&&qoderStatus.control&&!qoderStatus.logged_in)loadQoder();});
 
 const usageModeNames={stream:'流式',sync:'同步'};
+// 通道归类：旁路通道用量由 console 以固定占位 uid 上报 core 账本（zcode/qoder/opencode），
+// 其余 uid 都是核心账号池的真实账号。分布表按此口径聚合，明细按当前筛选过滤。
+const usageChannelNames={workbuddy:'WorkBuddy',zcode:'GLM（Zcode）',qoder:'Qoder',opencode:'OpenCode'};
+const usageChannelOrder=['workbuddy','zcode','qoder','opencode'];
+function usageChannelOf(entry){const uid=entry.uid||'';return uid==='zcode'||uid==='qoder'||uid==='opencode'?uid:'workbuddy';}
+// summarizeUsage 复刻 core usagelog.Summarize 口径：token 未知（<0）不累加且计入 usage_missing，
+// credit 缺失（null）不累加且计入 credit_missing，缺失≠零。
+function summarizeUsage(items){const s={calls:items.length,prompt:0,completion:0,credit:0,creditMissing:0,usageMissing:0};for(const e of items){if(e.prompt_tokens>=0)s.prompt+=e.prompt_tokens;else s.usageMissing++;if(e.completion_tokens>=0)s.completion+=e.completion_tokens;if(e.credit!=null)s.credit+=e.credit;else s.creditMissing++;}return s;}
 function formatUsageTokens(value){return value<0?'—':String(value);}
 function formatUsageCredit(value){return value==null||value===undefined?'—':String(value);}
 function renderUsage(data){
- const items=(data.items||[]).slice().reverse(),summary=data.summary||{calls:0,prompt_tokens:0,completion_tokens:0,credit:0,credit_missing:0,usage_missing:0};
+ const all=(data.items||[]);
+ const items=all.filter(e=>usageChannel==='all'||usageChannelOf(e)===usageChannel).slice().reverse();
+ const summary=summarizeUsage(items);
  $('usage-calls').textContent=String(summary.calls);
- $('usage-tokens').textContent=String(summary.prompt_tokens+summary.completion_tokens);
+ $('usage-tokens').textContent=String(summary.prompt+summary.completion);
  $('usage-credit').textContent=String(summary.credit);
  const notes=[];
- if(summary.usage_missing)notes.push(`${summary.usage_missing} 条记录未回报 token 用量，明细按「—」展示`);
- if(summary.credit_missing)notes.push(`${summary.credit_missing} 条记录未回报积分扣费，未计入合计`);
+ if(summary.usageMissing)notes.push(`${summary.usageMissing} 条记录未回报 token 用量，明细按「—」展示`);
+ if(summary.creditMissing)notes.push(`${summary.creditMissing} 条记录未回报积分扣费，未计入合计`);
  $('usage-note').textContent=notes.join('；');$('usage-note').hidden=!notes.length;
+ const byChannel=new Map();
+ for(const e of all){const c=usageChannelOf(e);if(!byChannel.has(c))byChannel.set(c,[]);byChannel.get(c).push(e);}
+ const distBody=$('usage-by-channel-body');distBody.replaceChildren();
+ const distRows=usageChannelOrder.filter(c=>byChannel.has(c));
+ $('usage-by-channel-empty').hidden=distRows.length>0;
+	for(const c of distRows){const s=summarizeUsage(byChannel.get(c));const credit=s.creditMissing===s.calls?'—':String(s.credit);const tr=document.createElement('tr');tr.append(cell(usageChannelNames[c]),cell(String(s.calls)),cell(String(s.prompt)),cell(String(s.completion)),cell(credit));distBody.append(tr);}
  const body=$('usage-body');body.replaceChildren();$('usage-empty').hidden=items.length>0;
  for(const e of items){
   const tr=document.createElement('tr');
-  tr.append(cell(formatTaskTime(e.ts*1000)),cell(e.account||e.uid||'—'),cell(e.model||'—'),cell(usageModeNames[e.mode]||e.mode||'—'),cell(formatUsageTokens(e.prompt_tokens)),cell(formatUsageTokens(e.completion_tokens)),cell(formatUsageCredit(e.credit)));
+  tr.append(cell(formatTaskTime(e.ts*1000)),cell(usageChannelNames[usageChannelOf(e)]),cell(e.account||e.uid||'—'),cell(e.model||'—'),cell(usageModeNames[e.mode]||e.mode||'—'),cell(formatUsageTokens(e.prompt_tokens)),cell(formatUsageTokens(e.completion_tokens)),cell(formatUsageCredit(e.credit)));
   body.append(tr);
  }
 }
@@ -599,6 +614,7 @@ async function loadUsage(){
  catch(error){if(generation===usageGeneration)notice(error.message);}
 }
 $('usage-range').addEventListener('change',event=>{usageRange=event.target.value;usageGeneration++;loadUsage();});
+$('usage-channel').addEventListener('change',event=>{usageChannel=event.target.value;usageGeneration++;loadUsage();});
 $('usage-refresh').addEventListener('click',()=>{usageGeneration++;loadUsage();});
 
 async function loadZcode(){
