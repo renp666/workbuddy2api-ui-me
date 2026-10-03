@@ -10,3 +10,4 @@
 0009-model-availability-filter-and-account-attribution.patch
 0010-account-pin-lock.patch
 0011-model-credit-listing.patch
+0012-stream-interrupt-explicit.patch
