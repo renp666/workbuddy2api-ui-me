@@ -1,0 +1,85 @@
+diff --git a/cmd/server/main.go b/cmd/server/main.go
+index bd91b03..3d31899 100644
+--- a/cmd/server/main.go
++++ b/cmd/server/main.go
+@@ -203,6 +203,9 @@ func main() {
+ 		GlobalEnabled: cfg.Global.Enabled,
+ 		// 人工锁定（补丁 0010）：nil 接口安全，未锁定时 PinnedUID 恒空。
+ 		Pinned: pins,
++		// 补丁 0012b：流前瞬态失败同号短退避重试（内置固定参数，不进 JSON/env）。
++		// 同一账号最多 2 次尝试、间隔 300ms，覆盖单账号池与粘性号的上游抖动场景。
++		RetrySameAccount: 2,
+ 	})
+ 
+ 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+diff --git a/internal/server/handler.go b/internal/server/handler.go
+index 12ab1a5..572d442 100644
+--- a/internal/server/handler.go
++++ b/internal/server/handler.go
+@@ -55,6 +55,17 @@ type Config struct {
+ 	// 补丁 0010：PinnedUID 返回非空时，该 realm 的对话请求严格只走锁定账号，
+ 	// 不可用直接 503、失败不换号，用于优惠活动期间人工指定消费账号。
+ 	Pinned Pinner
++
++	// 补丁 0012b：流前瞬态失败的同号短退避重试。上游瞬态故障（网络抖动 / 429 软限流 /
++	// 5xx）在「流开始前」于同一账号上快速重发，覆盖单账号池与粘性号场景——那些场景
++	// 换号重试（MaxRotate）无意义（无其他号可换或必须留在此号）。
++	//   - RetrySameAccount：同一账号最多尝试次数（含首发），默认 1（=关闭，行为与现状一致）。
++	//   - RetryBackoff：同号重发前的固定退避时长，默认 300ms；<=0 视为默认。
++	// 仅对传输错误与瞬态分类（ErrSoftRate/ErrServer）生效；内容拦截、硬积分耗尽、
++	// 会话失效、账号故障、WAF、404、严格锁定号均不触发同号重发（各自保持原语义）。
++	// 重发期间不喂冷却/熔断（成功即无副作用；耗尽后才按既有策略罚账号）。
++	RetrySameAccount int
++	RetryBackoff     time.Duration
+ }
+ 
+ // Pinner 查询某 realm 当前人工锁定的账号 UID（空串 = 未锁定）。
+@@ -665,7 +676,47 @@ func (h *Handler) chatCompletions(w http.ResponseWriter, r *http.Request) {
+ 		}
+ 		// 传 r.Context()：客户端断连/请求取消立即中断在途上游调用并释放租约，
+ 		// 不再让"幽灵请求"占满账号在途名额直到 IdleTimeout。
+-		rc, status, respBody, terr := h.cfg.Upstream.ChatStreamContext(r.Context(), acct, body, clientIP, chatMeta)
++		// 补丁 0012b：流前瞬态失败同号短退避重试。同一账号最多尝试 RetrySameAccount 次
++		// （含首发），仅对传输层错误与瞬态分类（ErrSoftRate/ErrServer）重发；重发前退避
++		// RetryBackoff，期间不罚账号（成功即无副作用，耗尽才由下方既有分支按原语义处理）。
++		// 严格锁定号不重发（保持 0010「不换号」语义）；客户端断连立即跳出不再空耗退避。
++		// 失败尝试的 rc 恒为 nil（ChatStreamContext 两条失败路径均已关闭/不返回 body），
++		// 只保留最终成功那次的 body，无泄漏。
++		sameAttempts := h.cfg.RetrySameAccount
++		if sameAttempts < 1 {
++			sameAttempts = 1
++		}
++		retryBackoff := h.cfg.RetryBackoff
++		if retryBackoff <= 0 {
++			retryBackoff = 300 * time.Millisecond
++		}
++		var rc io.ReadCloser
++		var status int
++		var respBody []byte
++		var terr error
++		for sa := 1; ; sa++ {
++			rc, status, respBody, terr = h.cfg.Upstream.ChatStreamContext(r.Context(), acct, body, clientIP, chatMeta)
++			transient := false
++			if terr != nil {
++				transient = true
++			} else if status >= 400 {
++				switch upstream.Classify(status, string(respBody)) {
++				case upstream.ErrSoftRate, upstream.ErrServer:
++					transient = true
++				}
++			}
++			if !transient || sa >= sameAttempts || pinnedUID != "" || r.Context().Err() != nil {
++				break
++			}
++			log.Printf("WARN: [server] chat transient uid=%s model=%s attempt=%d/%d status=%d -> backoff retry same account",
++				logfmt.UID8(acct.UID), bareModel, sa, sameAttempts, status)
++			t := time.NewTimer(retryBackoff)
++			select {
++			case <-t.C:
++			case <-r.Context().Done():
++			}
++			t.Stop()
++		}
+ 		if terr != nil {
+ 			// 网络层抖动：只换号，不喂熔断计数（传输层错误对连续失败连坐熔断过于严苛）。
+ 			// 上游 client 已打 transport error 日志。
