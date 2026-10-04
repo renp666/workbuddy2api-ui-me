@@ -71,6 +71,7 @@ a:hover{text-decoration:underline}
 /* ---------- 品牌 ---------- */
 .brand{display:flex;align-items:center;gap:10px;font-size:19px;font-weight:750;letter-spacing:-.5px}
 .brand-icon{background:var(--prism);color:#fff;border-radius:12px;width:36px;height:36px;display:grid;place-items:center;box-shadow:0 8px 20px -10px #6d5efc}
+.brand-icon svg{width:22px;height:22px;display:block}
 
 /* ---------- 登录页 ---------- */
 .login-wrap{min-height:100vh;display:flex;align-items:center;justify-content:center;flex-direction:column;padding:30px;background:radial-gradient(900px 520px at 14% 8%,#e9e6ff 0%,transparent 56%),radial-gradient(900px 520px at 88% 92%,#dcf4fb 0%,transparent 56%),var(--bg)}
@@ -124,6 +125,35 @@ a:hover{text-decoration:underline}
 .metrics small{font-size:10px;color:var(--faint)}
 #workbuddy-pane-usage .metrics{grid-template-columns:repeat(3,1fr)}
 
+/* ---------- 通道卡片（运行概览顶部） ---------- */
+.channel-cards{display:grid;grid-template-columns:repeat(4,1fr);gap:16px;margin-bottom:28px}
+.channel-card{background:var(--surface);border:1px solid var(--line);border-radius:var(--radius-lg);padding:18px 20px;box-shadow:var(--shadow-sm);display:flex;flex-direction:column;gap:14px;transition:transform .18s ease,box-shadow .18s ease}
+.channel-card:hover{transform:translateY(-2px);box-shadow:var(--shadow)}
+.channel-card.warn{border-color:#f0d6c0}
+.channel-card-head{display:flex;align-items:center;justify-content:space-between;gap:10px}
+.channel-card-name{font-size:14px;font-weight:600;color:var(--ink)}
+.channel-card-stats{display:grid;grid-template-columns:repeat(2,1fr);gap:8px 14px}
+.channel-card-stats div{display:flex;flex-direction:column}
+.channel-card-stats span{font-size:11px;color:var(--muted)}
+.channel-card-stats strong{font-size:18px;font-weight:600;letter-spacing:-.5px;color:var(--ink)}
+.channel-card-actions{display:flex;flex-wrap:wrap;gap:8px;margin-top:auto}
+.channel-card-actions .secondary{padding:7px 12px;font-size:12px}
+
+/* ---------- 每日趋势折线图 ---------- */
+.trend-panel{padding:20px}
+.trend-chart{width:100%}
+.trend-svg{width:100%;height:auto;display:block}
+.trend-axis{stroke:var(--line);stroke-width:1}
+.trend-grid{stroke:var(--line-soft);stroke-width:1;stroke-dasharray:4 4}
+.trend-tick{fill:var(--faint);font-size:10px;font-family:var(--font-mono)}
+.trend-legend{display:flex;flex-wrap:wrap;gap:14px;margin-top:12px}
+.trend-legend-item{display:inline-flex;align-items:center;gap:6px;font-size:12px;color:var(--muted)}
+.trend-swatch{width:12px;height:3px;border-radius:2px;display:inline-block}
+.sw-workbuddy{background:#6366f1}
+.sw-zcode{background:#06b6d4}
+.sw-qoder{background:#8b5cf6}
+.sw-opencode{background:#ec4899}
+
 /* ---------- 欢迎卡与信息网格 ---------- */
 .welcome{border:1px solid var(--line);background:linear-gradient(135deg,#f4f2ff 0%,#eef7fd 100%);border-radius:var(--radius-xl);padding:34px;display:flex;gap:27px;align-items:center;margin-bottom:24px}
 .welcome-mark{font-size:46px;line-height:1;background:var(--prism);color:#fff;padding:24px;border-radius:50%;box-shadow:0 18px 40px -20px #6d5efc}
@@ -152,6 +182,8 @@ th{color:var(--muted);font-weight:600;text-align:left;background:var(--bg-soft);
 td{padding:18px 16px;border-bottom:1px solid var(--line-soft);vertical-align:top;line-height:1.7}
 tbody tr:last-child td{border-bottom:0}
 tbody tr:hover td{background:#fafbff}
+.model-group-head td{background:var(--bg-soft);font-weight:700;font-size:12px;color:var(--ink);border-left:3px solid #8b5cf6;border-bottom:1px solid var(--line);padding:10px 16px;letter-spacing:.3px}
+.model-group-head:hover td{background:var(--bg-soft)}
 td small{display:block;color:var(--faint)}
 .empty{padding:35px;text-align:center;color:var(--muted);font-size:13px}
 
@@ -234,6 +266,7 @@ textarea{width:100%;resize:vertical;min-height:64px;max-height:180px;display:blo
  .workspace{margin-left:190px;width:calc(100% - 190px)}
  .page,.topbar{padding-left:25px;padding-right:25px}
  .metrics{grid-template-columns:repeat(2,1fr)}
+ .channel-cards{grid-template-columns:repeat(2,1fr)}
  .welcome-mark{display:none}
  .task-grid{grid-template-columns:repeat(2,minmax(0,1fr))}
 }
@@ -258,6 +291,7 @@ textarea{width:100%;resize:vertical;min-height:64px;max-height:180px;display:blo
  .metrics{gap:10px}
  .metrics article{padding:18px}
  .metrics strong{font-size:28px}
+ .channel-cards{grid-template-columns:1fr}
  #workbuddy-pane-usage .metrics{grid-template-columns:repeat(2,1fr)}
  .welcome{padding:24px}
  .info-grid,.task-grid{grid-template-columns:1fr}

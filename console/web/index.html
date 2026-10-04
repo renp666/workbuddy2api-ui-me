@@ -1,10 +1,10 @@
 <!doctype html>
 <html lang="zh-CN">
-<head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>棱镜网关 Prism Gateway · 控制台</title><link rel="stylesheet" href="/style.css"><script type="module" src="/app.js"></script></head>
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>棱镜网关 · 全通道模型控制台</title><link rel="icon" type="image/svg+xml" href="/favicon.svg"><link rel="stylesheet" href="/style.css"><script type="module" src="/app.js"></script></head>
 <body>
 <main id="login-view" class="login-wrap">
  <section class="login-card">
-  <div class="brand"><span class="brand-icon">P</span> 棱镜网关 <span class="subtle">/ PRISM GATEWAY</span></div>
+  <div class="brand"><span class="brand-icon"><svg viewBox="0 0 64 64" aria-hidden="true"><path d="M32 15 L47 45 L17 45 Z" fill="none" stroke="#fff" stroke-width="4" stroke-linejoin="round"/><path d="M8 26 L27 30" stroke="#fff" stroke-width="3" stroke-linecap="round"/><path d="M37 33 L56 24" stroke="#a5f3fc" stroke-width="3" stroke-linecap="round"/><path d="M37 36 L57 34" stroke="#c4b5fd" stroke-width="3" stroke-linecap="round"/><path d="M37 39 L56 44" stroke="#fbcfe8" stroke-width="3" stroke-linecap="round"/></svg></span> 棱镜网关 <span class="subtle">/ PRISM GATEWAY</span></div>
   <p class="eyebrow">YOUR MODELS. ONE PLACE.</p><h1>连接账号，<br>开始你的下一次对话。</h1>
   <p class="muted">一个轻量的模型网关。管理账号、观察运行状态，并直接测试模型回答。</p>
   <form id="login-form"><label for="admin-key">管理密钥</label><input id="admin-key" type="password" autocomplete="current-password" required placeholder="输入此服务器的管理密钥"><button class="primary full" type="submit">进入控制台 <span>↗</span></button></form>
@@ -13,20 +13,22 @@
  </section><p class="login-footer">自托管 · 凭据保存在你的服务器</p>
 </main>
 <div id="console-view" class="shell" hidden>
- <aside class="sidebar"><div class="brand"><span class="brand-icon">P</span> 棱镜网关</div><p class="sidebar-label">PRISM GATEWAY CONSOLE</p>
+ <aside class="sidebar"><div class="brand"><span class="brand-icon"><svg viewBox="0 0 64 64" aria-hidden="true"><path d="M32 15 L47 45 L17 45 Z" fill="none" stroke="#fff" stroke-width="4" stroke-linejoin="round"/><path d="M8 26 L27 30" stroke="#fff" stroke-width="3" stroke-linecap="round"/><path d="M37 33 L56 24" stroke="#a5f3fc" stroke-width="3" stroke-linecap="round"/><path d="M37 36 L57 34" stroke="#c4b5fd" stroke-width="3" stroke-linecap="round"/><path d="M37 39 L56 44" stroke="#fbcfe8" stroke-width="3" stroke-linecap="round"/></svg></span> 棱镜网关</div><p class="sidebar-label">PRISM GATEWAY CONSOLE</p>
   <nav aria-label="主要导航"><button data-view="overview" class="nav active">◫ <span>运行概览</span></button><button data-view="workbuddy" class="nav">◉ <span>WorkBuddy 通道</span></button><button data-view="zcode" class="nav" id="nav-zcode">◈ <span>Zcode</span></button><button data-view="qoder" class="nav" id="nav-qoder">⬡ <span>Qoder</span></button><button data-view="opencode" class="nav" id="nav-opencode">▣ <span>OpenCode</span></button><button data-view="usage" class="nav">≣ <span>调用统计</span></button><button data-view="routes" class="nav">⇄ <span>Agent 接入</span></button><button data-view="access" class="nav">⌘ <span>API 接入</span></button></nav>
   <div class="sidebar-bottom"><span class="status-dot"></span> 自托管网关<button id="logout" class="quiet">退出登录</button></div>
  </aside>
  <main class="workspace"><header class="topbar"><span class="breadcrumb">控制台 <span>/</span> <span id="breadcrumb-name">运行概览</span></span><span class="badge" id="service-state">正在连接</span></header>
   <div id="notice" class="notice" role="status" hidden></div>
   <section class="page" data-page="overview"><div class="page-heading"><div><p class="eyebrow">OVERVIEW</p><h1>一切，从连接开始。</h1><p class="muted">账号和模型的运行状况，尽在这里。</p></div><button id="refresh" class="secondary">↻ 刷新状态</button></div>
-   <div class="metrics"><article><span>账号总数</span><strong id="count-total">—</strong><small>已连接到当前网关</small></article><article><span>可用账号</span><strong id="count-healthy">—</strong><small>按账号池最近状态</small></article><article><span>冷却 / 禁用</span><strong id="count-limited">—</strong><small>暂时不可用的账号</small></article><article><span>进行中的请求</span><strong id="count-flight">—</strong><small>当前并发占用</small></article></div>
+   <div class="channel-cards" id="overview-cards"></div>
    <article class="welcome"><div class="welcome-mark">↗</div><div><p class="eyebrow">READY WHEN YOU ARE</p><h2 id="welcome-title">添加第一个账号</h2><p id="welcome-text">在浏览器中完成授权，网关会自动保存并加载账号。</p><button data-view="workbuddy" data-sub="accounts" class="primary">管理账号 →</button><button data-view="workbuddy" data-sub="chat" class="secondary">测试一个回答</button></div></article>
    <div class="section-title"><h2>通道总览</h2><span class="muted small">四个通道的可达性与所选范围的用量；旁路通道未启用时如实标注</span></div>
    <div class="panel table-wrap"><table><thead><tr><th>通道</th><th>状态</th><th>模型数</th><th>调用次数</th><th>输入 tokens</th><th>输出 tokens</th><th>积分</th></tr></thead><tbody id="overview-channels-body"></tbody></table></div>
    <div class="section-title"><h2>用量统计</h2><span class="muted small"><label for="overview-usage-channel">通道</label>&nbsp;<select id="overview-usage-channel"><option value="all" selected>全部通道</option><option value="workbuddy">WorkBuddy（核心账号池）</option><option value="zcode">GLM（Zcode 通道）</option><option value="qoder">Qoder 通道</option><option value="opencode">OpenCode 通道</option></select>&nbsp;<label for="overview-usage-range">时间范围</label>&nbsp;<select id="overview-usage-range"><option value="today" selected>今天</option><option value="yesterday">前一天</option><option value="week">本周</option><option value="month">本月</option></select></span></div>
    <div class="metrics"><article><span>调用次数</span><strong id="overview-usage-calls">—</strong><small>所选范围与通道</small></article><article><span>Tokens</span><strong id="overview-usage-tokens">—</strong><small>输入 + 输出（已观测）</small></article><article><span>积分扣费</span><strong id="overview-usage-credit">—</strong><small>上游明确回报的扣费</small></article></div>
    <p id="overview-usage-note" class="muted small" hidden></p>
+   <div class="section-title"><h2>每日趋势</h2><span class="muted small">所选范围与通道内的按天用量；缺失观测不计入，范围不足两天时以数值提示代替折线</span></div>
+   <article class="panel trend-panel"><div id="overview-trend" class="trend-chart"></div><p id="overview-trend-note" class="muted small" hidden></p></article>
    <div class="info-grid"><article class="panel"><h3>你的数据，在你的服务器</h3><p>账号凭据与网关状态保存在持久化数据卷中。普通容器重启与重建不会清除它们。</p></article><article class="panel"><h3>状态不是一次真实调用</h3><p>账号可用性、积分和模型列表来自最近观测。打开对话测试，确认模型当前是否能响应。</p></article></div>
   </section>
   <section class="page" data-page="workbuddy" hidden><div class="page-heading"><div><p class="eyebrow">WORKBUDDY CHANNEL</p><h1>WorkBuddy 通道</h1><p class="muted">本网关的核心通道：账号授权、自动任务、模型列表与对话测试。上游为 WorkBuddy / CodeBuddy，账号池与调度器由 core 自持。全通道调用统计在左侧「调用统计」页。</p></div></div>
@@ -47,7 +49,7 @@
     <article id="task-detail" class="panel task-detail" hidden><div class="section-title"><h2 id="task-detail-title">执行详情</h2><button id="task-detail-close" class="quiet">关闭</button></div><p id="task-detail-meta" class="muted small"></p><pre id="task-accounts" class="task-accounts"></pre><h3>脱敏日志摘要</h3><pre id="task-log" class="task-log"></pre><p id="task-log-truncated" class="muted small" hidden>日志已按服务端上限截断。</p></article>
    </div>
    <div id="workbuddy-pane-models" hidden>
-    <div class="section-title"><h2>模型列表</h2><span class="muted small">来自 core 的 <code>/v1/models</code>；core 不提供探测结论，需点「测速探测」手工触发</span><button id="probe-core" class="secondary">⚡ 测速探测</button></div>
+    <div class="section-title"><h2>模型列表</h2><span class="muted small">来自 core 的 <code>/v1/models</code>；core 不提供探测结论，需点「测速探测」手工触发</span><button id="models-group-toggle" class="secondary" aria-pressed="true">▤ 按账号分层</button><button id="probe-core" class="secondary">⚡ 测速探测</button></div>
     <p id="probe-core-progress" class="muted small" role="status" aria-live="polite" hidden></p>
     <div class="panel table-wrap"><table><thead><tr><th>模型 ID</th><th>能力</th><th>状态</th><th>耗时</th><th>速度</th><th>说明</th><th>热度</th><th>全球热度</th><th>积分消耗</th><th>操作</th></tr></thead><tbody id="core-models-body"></tbody></table><p id="core-models-empty" class="empty">暂无模型。</p></div>
    </div>

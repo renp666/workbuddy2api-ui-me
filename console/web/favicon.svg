@@ -1,0 +1,15 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" role="img" aria-label="棱镜网关">
+  <defs>
+    <linearGradient id="p" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#6366f1"/>
+      <stop offset="0.45" stop-color="#8b5cf6"/>
+      <stop offset="1" stop-color="#06b6d4"/>
+    </linearGradient>
+  </defs>
+  <rect width="64" height="64" rx="14" fill="url(#p)"/>
+  <path d="M32 15 L47 45 L17 45 Z" fill="none" stroke="#fff" stroke-width="3.2" stroke-linejoin="round"/>
+  <path d="M8 26 L27 30" stroke="#fff" stroke-width="2.6" stroke-linecap="round" opacity=".95"/>
+  <path d="M37 33 L56 24" stroke="#a5f3fc" stroke-width="2.4" stroke-linecap="round"/>
+  <path d="M37 36 L57 34" stroke="#c4b5fd" stroke-width="2.4" stroke-linecap="round"/>
+  <path d="M37 39 L56 44" stroke="#fbcfe8" stroke-width="2.4" stroke-linecap="round"/>
+</svg>

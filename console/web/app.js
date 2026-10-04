@@ -11,6 +11,8 @@ let qoderModels = [], qoderHistory = [], qoderStatus = null, qoderPollTimer, qod
 let opencodeModels = [], opencodeHistory = [], opencodeStatus = null, opencodeBusy = false, opencodeView = 'status', opencodeEnabled = false;
 let routesState = null, routesBusy = false, routesEditing = null;
 let probeSnapshot = {running:false,done:0,total:0,channels:{}}, probeTarget = '', probeTimer, probeBusy = false;
+// modelsGroupByAccount：core 模型表是否按可用账号分层展示（默认开）。
+let modelsGroupByAccount = true;
 let overviewUsageRange = 'today', overviewUsageChannel = 'all', overviewUsageItems = [], overviewGeneration = 0;
 let selectedTaskRun, historyGeneration = 0, historyLoading = false, taskHistoryKey;
 const taskIntents = new Map(), taskReads = new Set();
@@ -267,7 +269,7 @@ function channelModelRows(channel,list,health){
  if(health&&Array.isArray(health.models))for(const item of health.models){if(item&&item.name)caps.set(modelKey(item.name),item);}
  const rows=new Map();
  const switchable=channel!=='opencode';
- const ensure=label=>{const key=modelKey(label);if(!key)return null;if(!rows.has(key))rows.set(key,{key,label:String(label),id:String(label),cap:null,result:null,efforts:null,credits:null,creditValue:null});return rows.get(key);};
+ const ensure=label=>{const key=modelKey(label);if(!key)return null;if(!rows.has(key))rows.set(key,{key,label:String(label),id:String(label),cap:null,result:null,efforts:null,credits:null,creditValue:null,accounts:null});return rows.get(key);};
  for(const item of(Array.isArray(list)?list:[])){
   if(!item||!item.id)continue;
   const row=ensure(item.id);if(!row)continue;
@@ -275,6 +277,7 @@ function channelModelRows(channel,list,health){
   row.cap=caps.get(row.key)||row.cap;
   row.credits=typeof item.credits==='string'?item.credits:null;
   row.creditValue=parseCreditRule(row.credits);
+  row.accounts=Array.isArray(item.accounts)?item.accounts:null;
  }
  for(const[id,result]of Object.entries(results)){
   const cap=caps.get(modelKey(id))||null;
@@ -286,7 +289,7 @@ function channelModelRows(channel,list,health){
   const result=row.result;
   const variants=[...new Set([...modelVariantNames(result),...modelVariantNames(row.cap)])];
   const ms=result?Number(result.durationMs):NaN;
-  return{key:row.key,label:row.label,id:row.id,switchable,credits:row.credits,creditValue:row.creditValue,state:modelProbeState(result),
+  return{key:row.key,label:row.label,id:row.id,switchable,credits:row.credits,creditValue:row.creditValue,accounts:row.accounts,state:modelProbeState(result),
    caps:modelCapabilityBadges(row.cap,row.efforts&&row.efforts.length?['推理']:null),
    limit:modelLimitText(row.cap),
    variants:variants.length?`档位 ${variants.join(' / ')}`:'',
@@ -313,12 +316,36 @@ function renderModelTable(channel,list,health){
  modelHeatSources[channel]={list,health};
  const body=$(config.body);body.replaceChildren();
  const rows=channelModelRows(channel,list,health);
- for(const row of rows){
+ const cols=channel==='opencode'?8:10;
+ const appendRow=row=>{
   const tr=document.createElement('tr');
   tr.append(cell(row.label),chipsCell(row.caps,[row.limit,row.variants].filter(Boolean).join(' · ')),badgeCell(row.state.label,row.state.warn),cell(row.duration,row.source),cell(row.speed),cell(row.note),modelHeatCell(row.key),globalHeatCell(row.key));
   // opencode 免费通道不采集倍率、不加开关列；其余通道追加「积分消耗」与「操作」两列。
   if(row.switchable){ tr.append(creditCell(row),switchOpCell(row)); }
   body.append(tr);
+ };
+ if(channel==='core'&&modelsGroupByAccount&&rows.some(row=>Array.isArray(row.accounts)&&row.accounts.length)){
+  // 按账号分层：每个模型挂到它的每个可用账号下（多账号模型在各组重复出现，
+  // 与「哪些账号能跑这个模型」的归属口径一致）；无归属信息的行归入「未归属」。
+  const groups=new Map();
+  for(const row of rows){
+   const owners=(Array.isArray(row.accounts)&&row.accounts.length)?row.accounts:[null];
+   for(const acc of owners){
+    const key=acc?acc.uid:'__none__';
+    if(!groups.has(key))groups.set(key,{acc,items:[]});
+    groups.get(key).items.push(row);
+   }
+  }
+  const ordered=[...groups.values()].sort((a,b)=>a.acc?(b.acc?String(a.acc.uid).localeCompare(String(b.acc.uid)):1):-1);
+  for(const g of ordered){
+   const head=document.createElement('tr');head.className='model-group-head';
+   const th=document.createElement('td');th.colSpan=cols;
+   th.textContent=g.acc?`${g.acc.nickname||g.acc.uid} · ${g.items.length} 个模型`:`未归属账号 · ${g.items.length} 个模型`;
+   head.append(th);body.append(head);
+   for(const row of g.items)appendRow(row);
+  }
+ }else{
+  for(const row of rows)appendRow(row);
  }
  $(config.empty).hidden=rows.length>0;
  return rows;
@@ -381,6 +408,14 @@ async function startProbe(name){
  catch(error){probeBusy=false;probeTarget='';setProbeButtonsDisabled(false);renderProbeProgress();notice(error.message);}
 }
 for(const name of ['core','zcode','qoder'])$('probe-'+name).addEventListener('click',()=>startProbe(name));
+$('models-group-toggle').addEventListener('click',()=>{
+ modelsGroupByAccount=!modelsGroupByAccount;
+ const btn=$('models-group-toggle');
+ btn.setAttribute('aria-pressed',String(modelsGroupByAccount));
+ btn.textContent=modelsGroupByAccount?'▤ 按账号分层':'▤ 平铺列表';
+ const source=modelHeatSources.core;
+ renderModelTable('core',source?source.list:modelList,source?source.health:null);
+});
 async function restoreProbe(){
  try{
   const snap=await jsonAPI('probe');
@@ -434,6 +469,101 @@ function renderOverview(){
  if(s.usageMissing)notes.push(`${s.usageMissing} 条记录未回报 token 用量，未计入合计`);
  if(s.creditMissing)notes.push(`${s.creditMissing} 条记录未回报积分扣费，未计入合计`);
  $('overview-usage-note').textContent=notes.join('；');$('overview-usage-note').hidden=!notes.length;
+ renderTrend(items);
+ renderCards();
+}
+// cardStats/cardActions 描述每张通道卡片的统计行与快捷入口。WorkBuddy 卡片直接读账号池
+// 快照（lastStatus/accounts），旁路卡片复用各页签已加载的状态缓存，缺失时如实显示「—」，
+// 不伪造在线或凭据态；未启用的通道不渲染卡片（与通道总览表同一口径）。
+function cardStats(c){
+ if(c==='workbuddy'){
+  const flight=accounts.reduce((n,a)=>n+(a.in_flight||0),0);
+  return [['账号',String(lastStatus?lastStatus.total:0)],['可用',lastStatus?String(lastStatus.healthy):'—'],['冷却 / 禁用',lastStatus?`${lastStatus.cooling} / ${lastStatus.disabled}`:'—'],['在途',String(flight)],['模型',String(modelList.length)]];
+ }
+ const count=overviewChannelModelCount(c);
+ const out=[['模型',count===null?'—':String(count)]];
+ const st=c==='zcode'?zcodeStatus:c==='qoder'?qoderStatus:opencodeStatus;
+ if(c==='zcode'&&st&&st.enabled)out.push(['套餐',st.plan==='coding-plan'?'Coding':st.plan==='start-plan'?'Start':'—']);
+ if(c==='qoder'&&st&&st.enabled)out.push(['凭据',st.control?(st.logged_in?'已登录':'未登录'):'PAT']);
+ if(c==='opencode'&&st&&st.enabled)out.push(['阶段',st.health&&st.health.phase?st.health.phase:'—']);
+ return out;
+}
+function cardActions(c){
+ if(c==='workbuddy')return [{label:'◎ 账号管理',view:'workbuddy',sub:'accounts'},{label:'↗ 对话测试',view:'workbuddy',sub:'chat'}];
+ return [{label:'进入通道',view:c}];
+}
+// cardStatus 在通道总览口径之上细化旁路卡片徽标：控制端在线但凭据缺失时显示「未登录」，
+// 已登录但代理未启动时显示「未启用」，让概览页就能看出旁路通道卡在哪一步。
+function cardStatus(c){
+ const base=overviewChannelStatus(c);
+ if(c==='workbuddy')return base;
+ const st=c==='zcode'?zcodeStatus:c==='qoder'?qoderStatus:opencodeStatus;
+ if(!st||!st.enabled||!st.control)return base;
+ if(!st.logged_in)return{label:'未登录',warn:true};
+ if(c==='zcode'&&!st.proxy_running)return{label:'未启用',warn:true};
+ return base;
+}
+function renderCards(){
+ const wrap=$('overview-cards');if(!wrap)return;wrap.replaceChildren();
+ for(const c of usageChannelOrder){
+  const enabled=c==='workbuddy'||(c==='zcode'&&zcodeEnabled)||(c==='qoder'&&qoderEnabled)||(c==='opencode'&&opencodeEnabled);
+  if(!enabled)continue;
+  const status=cardStatus(c);
+  const card=document.createElement('article');card.className='channel-card'+(status.warn?' warn':'');
+  const head=document.createElement('div');head.className='channel-card-head';
+  const name=document.createElement('span');name.className='channel-card-name';name.textContent=usageChannelNames[c];
+  const badge=document.createElement('span');badge.className='badge'+(status.warn?' warn':'');badge.textContent=status.label;
+  head.append(name,badge);card.append(head);
+  const stats=document.createElement('div');stats.className='channel-card-stats';
+  for(const [k,v] of cardStats(c)){const d=document.createElement('div');const s=document.createElement('span');s.textContent=k;const strong=document.createElement('strong');strong.textContent=v;d.append(s,strong);stats.append(d);}
+  card.append(stats);
+  const actions=document.createElement('div');actions.className='channel-card-actions';
+  for(const a of cardActions(c)){const btn=document.createElement('button');btn.className='secondary';btn.textContent=a.label;btn.addEventListener('click',()=>{if(a.sub&&a.view==='workbuddy')setWorkBuddyView(a.sub);showPage(a.view);});actions.append(btn);}
+  card.append(actions);
+  wrap.append(card);
+ }
+}
+// renderTrend 用内联 SVG 画「每日调用次数」折线图：全部通道时每个已启用通道一条线（配色
+// 与卡片一致），筛选单通道时只画该通道。按 Asia/Shanghai 本地日分桶，缺失观测天然不计入。
+// 范围不足两天时不画折线，改用文字提示，避免用单点误导趋势。
+const trendColors={workbuddy:'#6366f1',zcode:'#06b6d4',qoder:'#8b5cf6',opencode:'#ec4899'};
+function dayKey(ts){const date=new Date(ts*1000);return Number.isNaN(date.getTime())?'':date.toLocaleDateString('en-CA',{timeZone:'Asia/Shanghai'});}
+function renderTrend(items){
+ const wrap=$('overview-trend');const noteEl=$('overview-trend-note');
+ wrap.replaceChildren();
+ const series=new Map();
+ for(const e of items){
+  const c=usageChannelOf(e);const d=dayKey(Number(e.ts)||0);if(!d)continue;
+  if(!series.has(c))series.set(c,new Map());
+  const m=series.get(c);m.set(d,(m.get(d)||0)+1);
+ }
+ const days=[...new Set([...series.values()].flatMap(m=>[...m.keys()]))].sort();
+ const canDraw=typeof document.createElementNS==='function';
+ if(!series.size){noteEl.textContent='所选范围内没有可统计的调用记录。';noteEl.hidden=false;return;}
+ if(days.length<2||!canDraw){noteEl.textContent=`所选范围只覆盖 ${days.length} 天，趋势折线需至少 2 天数据。`;noteEl.hidden=false;return;}
+ noteEl.hidden=true;
+ const NS='http://www.w3.org/2000/svg';
+ const mk=(tag,attrs)=>{const el=document.createElementNS(NS,tag);for(const k in attrs)el.setAttribute(k,attrs[k]);return el;};
+ const W=620,H=210,padL=36,padR=14,padT=14,padB=30,plotW=W-padL-padR,plotH=H-padT-padB;
+ let yMax=1;for(const m of series.values())for(const v of m.values())if(v>yMax)yMax=v;
+ const x=i=>padL+(days.length===1?plotW/2:i*plotW/(days.length-1));
+ const y=v=>padT+plotH-(v/yMax)*plotH;
+ const svg=mk('svg',{viewBox:`0 0 ${W} ${H}`,class:'trend-svg',role:'img','aria-label':'每日调用次数折线图'});
+ svg.append(mk('line',{x1:padL,y1:y(0),x2:padL+plotW,y2:y(0),class:'trend-axis'}));
+ svg.append(mk('line',{x1:padL,y1:y(yMax),x2:padL+plotW,y2:y(yMax),class:'trend-grid'}));
+ const maxLabel=mk('text',{x:padL-6,y:y(yMax)+4,class:'trend-tick','text-anchor':'end'});maxLabel.textContent=String(yMax);svg.append(maxLabel);
+ const zeroLabel=mk('text',{x:padL-6,y:y(0)+4,class:'trend-tick','text-anchor':'end'});zeroLabel.textContent='0';svg.append(zeroLabel);
+ const step=Math.max(1,Math.ceil(days.length/7));
+ days.forEach((d,i)=>{if(i%step&&i!==days.length-1)return;const t=mk('text',{x:x(i),y:padT+plotH+16,class:'trend-tick','text-anchor':'middle'});t.textContent=d.slice(5);svg.append(t);});
+ for(const [c,m] of series){
+  const pts=days.map((d,i)=>`${x(i)},${y(m.get(d)||0)}`).join(' ');
+  svg.append(mk('polyline',{points:pts,fill:'none',stroke:trendColors[c]||'#6366f1','stroke-width':2,'stroke-linejoin':'round','stroke-linecap':'round'}));
+  days.forEach((d,i)=>{const v=m.get(d)||0;svg.append(mk('circle',{cx:x(i),cy:y(v),r:2.6,fill:trendColors[c]||'#6366f1'}));});
+ }
+ wrap.append(svg);
+ const legend=document.createElement('div');legend.className='trend-legend';
+ for(const c of series.keys()){const item=document.createElement('span');item.className='trend-legend-item';const sw=document.createElement('i');sw.className='trend-swatch sw-'+c;const label=document.createElement('span');label.textContent=usageChannelNames[c];item.append(sw,label);legend.append(item);}
+ wrap.append(legend);
 }
 async function loadOverview(quiet){
  if(!csrf)return;
@@ -450,8 +580,6 @@ $('overview-usage-range').addEventListener('change',event=>{overviewUsageRange=e
 function renderAccounts(data) {
  lastStatus = data;
  accounts = data.accounts || [];
- $('count-total').textContent = data.total; $('count-healthy').textContent = data.healthy; $('count-limited').textContent = `${data.cooling} / ${data.disabled}`;
- $('count-flight').textContent = accounts.reduce((n,a) => n + a.in_flight, 0);
  $('service-state').textContent = data.total ? '网关运行中' : '运行中 · 等待添加账号';
  $('welcome-title').textContent = data.total ? '你的网关已连接账号' : '添加第一个账号';
  $('welcome-text').textContent = data.total ? '检查账号状态，或发出一个问题来验证模型当前的响应。' : '在浏览器中完成授权，网关会自动保存并加载账号。';
@@ -464,6 +592,8 @@ function renderAccounts(data) {
   $('accounts-body').append(tr);
  }
  updateModelHint();
+ // 账号池每 15 秒轮询刷新，WorkBuddy 卡片的账号统计需同步重绘。
+ renderCards();
 }
 // pinOpCell 构造账号行的锁定操作单元格：同平台锁定号显示「已锁定 + 解锁」，
 // 其余账号显示「锁定」。realm 以账号实际归属为准（防 pinState 与行错配）。
@@ -753,7 +883,7 @@ function renderZcode(status){
  if(!control){
   badge.textContent=status.reachable?'在线':'不可达';
   badge.className='badge'+(status.reachable?'':' warn');
-  $('zcode-status-text').textContent=status.reachable?`zcode-proxy 可达 · ${status.model_count} 个 GLM 模型`:'zcode-proxy 当前不可达，请确认容器已启动。';
+  $('zcode-status-text').textContent=status.reachable?`zcode-proxy 可达 · ${status.model_count} 个 GLM 模型`:'zcode-proxy 当前不可达，请确认容器已启动；若容器在运行，通常是 console 刚被重启、旁路网络失联，重启旁路容器即可恢复。';
  } else if(!loggedIn){
   badge.textContent='未登录';badge.className='badge warn';
   $('zcode-status-text').textContent='尚未保存 GLM 凭据，切换到「GLM 登录」完成登录后即可启用通道。';
@@ -927,7 +1057,7 @@ function renderQoder(status){
   if(status.control===false)extra=' · 登录控制端不可达';
   else if(control)extra=' · Qoder 账号已登录';
   else if(status.reachable)extra=' · PAT 模式';
-  statusText=status.reachable?`qoder-proxy 可达 · ${status.model_count} 个模型${extra}`:`qoder-proxy 当前不可达，请确认容器已启动。${extra}`;
+  statusText=status.reachable?`qoder-proxy 可达 · ${status.model_count} 个模型${extra}`:`qoder-proxy 当前不可达，请确认容器已启动；若容器在运行，通常是 console 刚被重启、旁路网络失联，重启旁路容器即可恢复。${extra}`;
  }
  $('qoder-status-text').textContent=statusText;
  $('qoder-login-badge').textContent='未登录';
@@ -1085,7 +1215,7 @@ function renderOpenCode(status){
  const badge=$('opencode-status-badge');
  badge.textContent=status.reachable?'在线':'不可达';
  badge.className='badge'+(status.reachable?'':' warn');
- let statusText=status.reachable?`OW Bridge 可达 · ${status.model_count} 个免费模型`:'OW Bridge 当前不可达，请确认容器已启动（首次启动需下载 opencode 运行时，可能耗时数分钟）。';
+ let statusText=status.reachable?`OW Bridge 可达 · ${status.model_count} 个免费模型`:'OW Bridge 当前不可达，请确认容器已启动（首次启动需下载 opencode 运行时，可能耗时数分钟）；若容器在运行，通常是 console 刚被重启、旁路网络失联，重启旁路容器即可恢复。';
  const health=status.health;
  if(health){
   const message=typeof health.message==='string'?health.message:'';

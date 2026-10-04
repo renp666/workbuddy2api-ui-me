@@ -175,7 +175,7 @@ func NewServer(cfg Config) (http.Handler, error) {
 	}
 	fileServer := http.FileServer(http.FS(assets))
 	h.mux.Handle("GET /{$}", fileServer)
-	for _, name := range []string{"app.js", "style.css"} {
+	for _, name := range []string{"app.js", "style.css", "favicon.svg"} {
 		h.mux.Handle("GET /"+name, fileServer)
 	}
 	h.mux.HandleFunc("GET /livez", func(w http.ResponseWriter, r *http.Request) {

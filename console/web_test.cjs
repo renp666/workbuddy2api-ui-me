@@ -1217,6 +1217,48 @@ test('core model table renders the catalog with the shared layout and an explici
   assert.equal(get('core-models-empty').hidden,true);
 });
 
+test('core model table groups rows by owning account when accounts are present',async()=>{
+  const models=[
+    {id:'cn:alpha',accounts:[{uid:'u1',nickname:'一号'}]},
+    {id:'cn:beta',accounts:[{uid:'u1',nickname:'一号'},{uid:'u2',nickname:'二号'}]},
+    {id:'global:gamma',accounts:[{uid:'u2',nickname:'二号'}]}
+  ];
+  const {ctx,get}=taskFixture(url=>url==='/admin/models'?Promise.resolve({ok:true,status:200,json:async()=>({data:models})}):new Promise(()=>{}));
+  await vm.runInContext('refreshModels()',ctx);
+  let rows=get('core-models-body').children;
+  // 组头 + 数据行：u1 组（alpha、beta）+ u2 组（beta、gamma）= 2 头 + 4 行。
+  assert.equal(rows.length,6,'grouped rows missing');
+  assert.equal(rows[0].className,'model-group-head');
+  assert.match(rows[0].children[0].textContent,/一号 · 2 个模型/);
+  assert.equal(rows[0].children[0].colSpan,10);
+  assert.equal(rows[1].children[0].textContent,'cn:alpha');
+  assert.equal(rows[2].children[0].textContent,'cn:beta');
+  assert.match(rows[3].children[0].textContent,/二号 · 2 个模型/);
+  assert.equal(rows[4].children[0].textContent,'cn:beta','multi-account model missing from second group');
+  assert.equal(rows[5].children[0].textContent,'global:gamma');
+  // 切换为平铺：无组头，每模型仅一行。
+  get('models-group-toggle').handlers.click();
+  rows=get('core-models-body').children;
+  assert.equal(rows.length,3,'flat rows missing');
+  assert.equal(rows[0].children[0].textContent,'cn:alpha');
+  assert.equal(get('models-group-toggle').textContent,'▤ 平铺列表');
+  assert.equal(get('models-group-toggle')['aria-pressed'],'false');
+  // 切回分层。
+  get('models-group-toggle').handlers.click();
+  rows=get('core-models-body').children;
+  assert.equal(rows.length,6,'re-grouped rows missing');
+  assert.equal(get('models-group-toggle').textContent,'▤ 按账号分层');
+});
+
+test('core model table stays flat when no account ownership is reported',async()=>{
+  const models=[{id:'cn:workbuddy'},{id:'global:claude'}];
+  const {ctx,get}=taskFixture(url=>url==='/admin/models'?Promise.resolve({ok:true,status:200,json:async()=>({data:models})}):new Promise(()=>{}));
+  await vm.runInContext('refreshModels()',ctx);
+  const rows=get('core-models-body').children;
+  assert.equal(rows.length,2);
+  assert.ok(rows.every(tr=>tr.className!=='model-group-head'),'group head rendered without account data');
+});
+
 test('access model select merges opencode models and routes opencode go-chat to the opencode tab',async()=>{
   const {ctx,get}=opencodeFixture({enabled:true,reachable:true,model_count:1,models:[{id:'opencode-OC · Free',realm:'opencode'}]});
   vm.runInContext("modelList=[{id:'cn:workbuddy',realm:'cn'}]",ctx);
@@ -1614,6 +1656,53 @@ test('overview hides channels the deployment never enabled',async()=>{
   assert.equal(rows[1].children[1].children[0].textContent,'未启用','disabled channel must not claim reachability');
 });
 
+test('overview channel cards summarize each enabled channel and jump to its tab',async()=>{
+  const items=[{ts:1000,uid:'u1',account:'alice',model:'cn:m',mode:'sync',prompt_tokens:1,completion_tokens:2,credit:0}];
+  const {ctx,get}=overviewFixture(items,{enabled:true,reachable:true,model_count:3});
+  await vm.runInContext("signedIn({csrf:'c',global_enabled:true,zcode_enabled:true,qoder_enabled:false,opencode_enabled:false})",ctx);
+  await vm.runInContext('loadZcode()',ctx);
+  await vm.runInContext('loadOverview()',ctx);
+  await new Promise(r=>setImmediate(r));
+  const cards=get('overview-cards').children;
+  assert.deepEqual(cards.map(c=>c.children[0].children[0].textContent),['WorkBuddy','GLM（Zcode）'],'cards must follow enabled channels');
+  const stats=card=>card.children[1].children.map(d=>d.children[0].textContent+':'+d.children[1].textContent);
+  assert.deepEqual(stats(cards[0]),['账号:1','可用:1','冷却 / 禁用:0 / 0','在途:0','模型:1'],'workbuddy card must mirror the account pool snapshot');
+  assert.deepEqual(stats(cards[1]),['模型:3','套餐:—'],'zcode card without plan must show dash');
+  assert.equal(cards[1].children[0].children[1].textContent,'在线');
+  cards[1].children[2].children[0].handlers.click();
+  assert.equal(vm.runInContext('page',ctx),'zcode','card shortcut did not navigate');
+});
+
+test('overview trend draws one polyline per channel and degrades to a note below two days',async()=>{
+  const d1=1759968000,d2=d1+86400;
+  const items=[
+    {ts:d1,uid:'u1',account:'a',model:'cn:m',mode:'sync',prompt_tokens:1,completion_tokens:1,credit:0},
+    {ts:d1+60,uid:'u1',account:'a',model:'cn:m',mode:'sync',prompt_tokens:1,completion_tokens:1,credit:0},
+    {ts:d2,uid:'u1',account:'a',model:'cn:m',mode:'sync',prompt_tokens:1,completion_tokens:1,credit:0},
+    {ts:d2,uid:'zcode',account:'GLM 通道',model:'glm-x',mode:'sync',prompt_tokens:1,completion_tokens:1,credit:null},
+  ];
+  const {ctx,get}=overviewFixture(items,{enabled:true,reachable:true,model_count:1});
+  ctx.document.createElementNS=(ns,tag)=>({tag,children:[],attrs:{},setAttribute(k,v){this.attrs[k]=v;},append(...c){this.children.push(...c);},textContent:''});
+  await vm.runInContext("signedIn({csrf:'c',global_enabled:true,zcode_enabled:true,qoder_enabled:false,opencode_enabled:false})",ctx);
+  await vm.runInContext('loadZcode()',ctx);
+  await vm.runInContext('loadOverview()',ctx);
+  await new Promise(r=>setImmediate(r));
+  const [svg,legend]=get('overview-trend').children;
+  assert.equal(svg.tag,'svg');
+  assert.equal(svg.children.filter(c=>c.tag==='polyline').length,2,'one line per reporting channel');
+  assert.equal(legend.children.length,2,'legend missing a channel');
+  assert.equal(get('overview-trend-note').hidden,true);
+  // 单通道筛选后只剩 workbuddy 一条线。
+  get('overview-usage-channel').handlers.change({target:{value:'workbuddy'}});
+  const [svg2]=get('overview-trend').children;
+  assert.equal(svg2.children.filter(c=>c.tag==='polyline').length,1,'filtered trend must drop other channels');
+  // 不足两天时不画折线，给文字提示。
+  await vm.runInContext("overviewUsageItems=[{ts:1000,uid:'u1',account:'a',model:'cn:m',mode:'sync',prompt_tokens:1,completion_tokens:1,credit:0}];renderOverview()",ctx);
+  assert.equal(get('overview-trend').children.length,0);
+  assert.equal(get('overview-trend-note').hidden,false);
+  assert.match(get('overview-trend-note').textContent,/至少 2 天/);
+});
+
 test('agent snippet falls back to gateway-auto, never the ambiguous bare auto',()=>{
   const {ctx,get}=logoutFixture(()=>new Promise(()=>{}));
   vm.runInContext('renderRouteExample({aliases:[]})',ctx);
@@ -1623,6 +1712,9 @@ test('agent snippet falls back to gateway-auto, never the ambiguous bare auto',(
 test('overview page, probe buttons and the speed column exist in the page shell',()=>{
   const html=readFileSync(__dirname+'/web/index.html','utf8');
   assert.match(html,/id="overview-channels-body"/,'channel overview table missing');
+  assert.match(html,/id="overview-cards"/,'channel cards container missing');
+  assert.match(html,/id="overview-trend"[\s\S]*id="overview-trend-note"/,'daily trend chart missing');
+  assert.match(html,/id="models-group-toggle"/,'model grouping toggle missing');
   assert.match(html,/id="overview-usage-channel"[\s\S]*id="overview-usage-range"/,'overview usage filters missing');
   for(const id of ['probe-core','probe-zcode','probe-qoder'])assert.ok(html.includes('id="'+id+'"'),'probe button '+id+' missing');
   assert.ok(!html.includes('id="probe-opencode"'),'opencode must not get a manual probe button');
