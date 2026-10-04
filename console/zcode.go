@@ -453,6 +453,10 @@ func (h *server) adminZcodeStatus(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	out := map[string]any{"enabled": true, "reachable": reachable, "model_count": len(models), "models": models}
+	// 手工测速探测的结论以 health.modelResults 形态下发，前端模型表原样复用既有渲染。
+	if health := h.probeHealth(channelGLM); health != nil {
+		out["health"] = health
+	}
 	for k, v := range control {
 		out[k] = v
 	}

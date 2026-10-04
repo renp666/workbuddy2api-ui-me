@@ -10,6 +10,8 @@ let zcodeModels = [], zcodeHistory = [], zcodeStatus = null, zcodePollTimer, zco
 let qoderModels = [], qoderHistory = [], qoderStatus = null, qoderPollTimer, qoderBusy = false, qoderAuthURL = '', qoderLogoutArmed = false, qoderControl = false, qoderLoggedIn = false, qoderLoginTimer = null, qoderView = 'status', qoderViewTouched = false, qoderEnabled = false;
 let opencodeModels = [], opencodeHistory = [], opencodeStatus = null, opencodeBusy = false, opencodeView = 'status', opencodeEnabled = false;
 let routesState = null, routesBusy = false, routesEditing = null;
+let probeSnapshot = {running:false,done:0,total:0,channels:{}}, probeTarget = '', probeTimer, probeBusy = false;
+let overviewUsageRange = 'today', overviewUsageChannel = 'all', overviewUsageItems = [], overviewGeneration = 0;
 let selectedTaskRun, historyGeneration = 0, historyLoading = false, taskHistoryKey;
 const taskIntents = new Map(), taskReads = new Set();
 function newConversation() { return `web-${Date.now()}-${Math.random().toString(36).slice(2)}`; }
@@ -38,6 +40,8 @@ function signedOut() {
  qoderModels=[];qoderHistory=[];qoderStatus=null;qoderEnabled=false;qoderControl=false;qoderLoggedIn=false;qoderAuthURL='';qoderBusy=false;qoderLogoutArmed=false;qoderView='status';qoderViewTouched=false;clearTimeout(qoderPollTimer);qoderPollTimer=undefined;clearTimeout(qoderLoginTimer);qoderLoginTimer=null;$('qoder-model').replaceChildren();$('qoder-messages').replaceChildren();$('qoder-prompt').value='';$('qoder-usage').textContent='用量将在上游返回后显示';$('qoder-disabled').hidden=true;$('qoder-content').hidden=true;$('nav-qoder').classList.remove('nav-muted');$('qoder-auth-row').hidden=true;$('qoder-pane-login').hidden=true;$('qoder-login-hint').textContent='';
  opencodeModels=[];opencodeHistory=[];opencodeStatus=null;opencodeEnabled=false;opencodeBusy=false;opencodeView='status';$('opencode-model').replaceChildren();$('opencode-messages').replaceChildren();$('opencode-prompt').value='';$('opencode-usage').textContent='用量将在上游返回后显示';$('opencode-disabled').hidden=true;$('opencode-content').hidden=true;$('nav-opencode').classList.remove('nav-muted');$('opencode-health-wrap').hidden=true;$('opencode-health-body').replaceChildren();
  routesState=null;routesBusy=false;routesEditing=null;modelSwitchOverrides=new Map();$('routes-disabled').hidden=true;$('routes-content').hidden=true;$('routes-alias-body').replaceChildren();$('routes-channels').replaceChildren();$('routes-model-options').replaceChildren();$('routes-example').textContent='';$('routes-alias-name').value='';$('routes-alias-model').value='';$('routes-alias-note').value='';$('routes-auto-fallback').value='';
+ probeSnapshot={running:false,done:0,total:0,channels:{}};probeTarget='';probeBusy=false;clearTimeout(probeTimer);probeTimer=undefined;for(const n of ['core','zcode','qoder']){$('probe-'+n+'-progress').hidden=true;$('probe-'+n+'-progress').textContent='';}
+ overviewUsageItems=[];overviewGeneration++;
  pinState={cn:null,global:null};lastStatus=null;renderPinBanner();
 }
 async function signedIn(session) {
@@ -51,7 +55,7 @@ async function signedIn(session) {
  $('nav-opencode').classList.toggle('nav-muted', !session.opencode_enabled);
  opencodeEnabled = !!session.opencode_enabled;
  await refreshStatus(); await refreshModels(); await loadPins();
- void loadModelHeat(); void loadModelSwitch(); void loadGlobalHeat();
+ void loadModelHeat(); void loadModelSwitch(); void loadGlobalHeat(); void loadOverview(true); void restoreProbe();
 }
 const pageNames = {overview:'运行概览',workbuddy:'WorkBuddy 通道',zcode:'Zcode 通道',qoder:'Qoder 通道',opencode:'OpenCode 通道',usage:'调用统计',routes:'Agent 接入',access:'API 接入'};
 const workbuddyNames = {accounts:'账号管理',tasks:'自动任务',models:'模型列表',chat:'对话测试'};
@@ -77,6 +81,7 @@ function showPage(value) {
  if (page !== 'access') { $('api-key').value = ''; $('api-key').type = 'password'; }
  if (page === 'workbuddy') setWorkBuddyView(workbuddyView);
  if (page === 'workbuddy' && workbuddyView === 'tasks') loadTaskPage();
+ if (page === 'overview') loadOverview();
  if (page === 'usage') loadUsage();
  if (page === 'zcode') loadZcode();
  if (page === 'qoder') loadQoder();
@@ -142,7 +147,7 @@ const modelChannels={zcode:{body:'zcode-models-body',empty:'zcode-models-empty',
  qoder:{body:'qoder-models-body',empty:'qoder-models-empty',namePrefix:'Qoder · '},
  opencode:{body:'opencode-models-body',empty:'opencode-models-empty',namePrefix:'opencode-OC · '},
  core:{body:'core-models-body',empty:'core-models-empty',namePrefix:''}};
-const modelFailureLabels={timeout:'探测超时',access:'地区限制',error:'调用失败',model_error:'模型错误',auth:'未授权',rate_limit:'限流'};
+const modelFailureLabels={timeout:'探测超时',access:'地区限制',error:'调用失败',model_error:'模型错误',auth:'未授权',rate_limit:'限流',empty:'空返回'};
 const modelProbeSources={probe:'探测',request:'真实请求'};
 // 公共模型名带通道前缀（opencode-OC · X / glm-X / opencode/x）与 realm 前缀（cn:/global:），去掉后作为跨源对齐键。
 function modelKey(id){return String(id||'').replace(/^opencode-OC · /,'').replace(/^OC · /,'').replace(/^opencode\//,'').replace(/^(?:cn|global):/,'').replace(/^glm-/,'').replace(/^qoder-/,'').toLowerCase().replace(/[^a-z0-9\u4e00-\u9fa5]+/g,'');}
@@ -156,6 +161,9 @@ function modelProbeState(result){
  return{label:modelFailureLabels[category]||category||'不可用',warn:true,order:3};
 }
 function formatProbeDuration(ms){const value=Number(ms);return Number.isFinite(value)&&value>=0?`${(value/1000).toFixed(1)} 秒`:'—';}
+// speedText 输出 tokens/秒：只认探测结论里真实回传的 tokensPerSec（上游 usage 的 completion_tokens 除以生成耗时），
+// 没有数据留「—」，不得用耗时反推伪造速度。
+function speedText(result){const v=result?Number(result.tokensPerSec):NaN;return Number.isFinite(v)&&v>0?`${v.toFixed(1)} tok/s`:'—';}
 function formatProbeTime(value){const date=new Date(value);return Number.isNaN(date.getTime())?'':date.toLocaleString('zh-CN',{timeZone:'Asia/Shanghai',hour12:false});}
 function modelCapabilityBadges(cap,fallback){
  if(cap&&(cap.images!==undefined||cap.toolcall!==undefined||cap.reasoning!==undefined))return[cap.images?'图片':'',cap.toolcall?'工具':'',cap.reasoning?'推理':''].filter(Boolean);
@@ -284,6 +292,7 @@ function channelModelRows(channel,list,health){
    variants:variants.length?`档位 ${variants.join(' / ')}`:'',
    duration:result?formatProbeDuration(result.durationMs):'—',
    durationMs:Number.isFinite(ms)&&ms>=0?ms:null,
+   speed:speedText(result),
    source:result&&modelProbeSources[result.source]?modelProbeSources[result.source]:'',
    note:result&&typeof result.error==='string'&&result.error?result.error:'—'};
  }).sort(switchable?creditSort:probeSort);
@@ -306,7 +315,7 @@ function renderModelTable(channel,list,health){
  const rows=channelModelRows(channel,list,health);
  for(const row of rows){
   const tr=document.createElement('tr');
-  tr.append(cell(row.label),chipsCell(row.caps,[row.limit,row.variants].filter(Boolean).join(' · ')),badgeCell(row.state.label,row.state.warn),cell(row.duration,row.source),cell(row.note),modelHeatCell(row.key),globalHeatCell(row.key));
+  tr.append(cell(row.label),chipsCell(row.caps,[row.limit,row.variants].filter(Boolean).join(' · ')),badgeCell(row.state.label,row.state.warn),cell(row.duration,row.source),cell(row.speed),cell(row.note),modelHeatCell(row.key),globalHeatCell(row.key));
   // opencode 免费通道不采集倍率、不加开关列；其余通道追加「积分消耗」与「操作」两列。
   if(row.switchable){ tr.append(creditCell(row),switchOpCell(row)); }
   body.append(tr);
@@ -335,6 +344,109 @@ function switchOpCell(row){
  td.append(badge,' ',btn);
  return td;
 }
+// ── 手工测速探测 ──
+// 探测仅由页面按钮触发（不点不耗额度）；结论缓存在服务端内存，重启即清空。
+// 通道键：core→"core"、zcode→"glm"、qoder→"qoder"（与后端 routeChannel 同一口径）。
+const probeChannelNames={core:'core',zcode:'glm',qoder:'qoder'};
+function setProbeButtonsDisabled(disabled){for(const n of ['core','zcode','qoder'])$('probe-'+n).disabled=disabled;}
+function renderProbeProgress(){
+ const running=!!probeSnapshot.running,total=Number(probeSnapshot.total)||0,done=Number(probeSnapshot.done)||0;
+ for(const name of ['core','zcode','qoder']){
+  const el=$('probe-'+name+'-progress');
+  if(running&&name===probeTarget){el.hidden=false;el.textContent=`正在探测 ${done}/${total}…`;}
+  else if(!running&&name===probeTarget&&total>0){el.hidden=false;el.textContent=`探测完成：${total} 个模型，结论已接入 gateway-auto 选路。`;}
+  else{el.hidden=true;el.textContent='';}
+ }
+}
+function applyProbeResults(){
+ const ch=probeSnapshot.channels||{};
+ if(ch.core)renderModelTable('core',modelList,{modelResults:ch.core});
+ if(ch.glm&&zcodeEnabled)void loadZcode();
+ if(ch.qoder&&qoderEnabled)void loadQoder();
+ if(page==='overview')void loadOverview();
+}
+async function pollProbe(){
+ if(!csrf){probeBusy=false;return;}
+ try{probeSnapshot=await jsonAPI('probe');}
+ catch(error){if(error.name!=='AbortError'){probeBusy=false;setProbeButtonsDisabled(false);notice(error.message);probeTarget='';renderProbeProgress();}return;}
+ renderProbeProgress();
+ if(probeSnapshot.running){probeTimer=setTimeout(pollProbe,2000);return;}
+ // 先渲染「探测完成」提示（依赖 probeTarget），再放开按钮；提示保留到下一次探测或退出登录。
+ probeBusy=false;setProbeButtonsDisabled(false);renderProbeProgress();probeTarget='';applyProbeResults();
+}
+async function startProbe(name){
+ if(probeBusy||probeSnapshot.running)return;
+ probeBusy=true;probeTarget=name;setProbeButtonsDisabled(true);notice('');renderProbeProgress();
+ try{probeSnapshot=await jsonAPI('probe',{channels:[probeChannelNames[name]]});renderProbeProgress();probeTimer=setTimeout(pollProbe,2000);}
+ catch(error){probeBusy=false;probeTarget='';setProbeButtonsDisabled(false);renderProbeProgress();notice(error.message);}
+}
+for(const name of ['core','zcode','qoder'])$('probe-'+name).addEventListener('click',()=>startProbe(name));
+async function restoreProbe(){
+ try{
+  const snap=await jsonAPI('probe');
+  probeSnapshot=snap;
+  if(snap.running){probeBusy=true;probeTarget='';setProbeButtonsDisabled(true);probeTimer=setTimeout(pollProbe,2000);}
+  else applyProbeResults();
+ }catch{/* 旧核心无端点时静默降级 */}
+}
+// ── 运行概览：通道总览 + 全/单通道用量 ──
+// 概览只在登录与进入页面时拉一次用量账本（core 本地、廉价）；旁路通道的状态与模型数
+// 直接复用各页签已加载的缓存（zcodeStatus 等），未访问过的通道如实标「未加载」，
+// 不在登录时额外打旁路状态接口（保持登录轻量与既有懒加载约定）。
+function overviewChannelStatus(channel){
+ if(channel==='workbuddy'){
+  if(!lastStatus)return{label:'未知',warn:true};
+  return lastStatus.total?{label:'运行中',warn:false}:{label:'等待账号',warn:true};
+ }
+ const st=channel==='zcode'?zcodeStatus:channel==='qoder'?qoderStatus:opencodeStatus;
+ if(!st)return{label:'未加载',warn:true};
+ if(!st.enabled)return{label:'未启用',warn:true};
+ return st.reachable?{label:'在线',warn:false}:{label:'不可达',warn:true};
+}
+function overviewChannelModelCount(channel){
+ if(channel==='workbuddy')return modelList.length;
+ const st=channel==='zcode'?zcodeStatus:channel==='qoder'?qoderStatus:opencodeStatus;
+ if(!st||!st.enabled)return null;
+ return Number(st.model_count)||0;
+}
+function renderOverview(){
+ const body=$('overview-channels-body');body.replaceChildren();
+ const byChannel=new Map();
+ for(const e of overviewUsageItems){const c=usageChannelOf(e);if(!byChannel.has(c))byChannel.set(c,[]);byChannel.get(c).push(e);}
+ for(const c of usageChannelOrder){
+  const enabled=c==='workbuddy'||(c==='zcode'&&zcodeEnabled)||(c==='qoder'&&qoderEnabled)||(c==='opencode'&&opencodeEnabled);
+  if(!enabled)continue;
+  const s=summarizeUsage(byChannel.get(c)||[]);
+  const status=overviewChannelStatus(c);
+  const count=overviewChannelModelCount(c);
+  const credit=s.calls?s.creditMissing===s.calls?'—':String(s.credit):'—';
+  const tr=document.createElement('tr');
+  const td=document.createElement('td');const tag=document.createElement('span');tag.className='badge'+(status.warn?' warn':'');tag.textContent=status.label;td.append(tag);
+  tr.append(cell(usageChannelNames[c]),td,cell(count===null?'—':String(count)),cell(String(s.calls)),cell(String(s.prompt)),cell(String(s.completion)),cell(credit));
+  body.append(tr);
+ }
+ const items=overviewUsageChannel==='all'?overviewUsageItems:overviewUsageItems.filter(e=>usageChannelOf(e)===overviewUsageChannel);
+ const s=summarizeUsage(items);
+ $('overview-usage-calls').textContent=String(s.calls);
+ $('overview-usage-tokens').textContent=String(s.prompt+s.completion);
+ $('overview-usage-credit').textContent=s.calls&&s.creditMissing===s.calls?'—':String(s.credit);
+ const notes=[];
+ if(s.usageMissing)notes.push(`${s.usageMissing} 条记录未回报 token 用量，未计入合计`);
+ if(s.creditMissing)notes.push(`${s.creditMissing} 条记录未回报积分扣费，未计入合计`);
+ $('overview-usage-note').textContent=notes.join('；');$('overview-usage-note').hidden=!notes.length;
+}
+async function loadOverview(quiet){
+ if(!csrf)return;
+ const generation=overviewGeneration;
+ try{
+  const data=await jsonAPI('usage?range='+encodeURIComponent(overviewUsageRange));
+  if(generation!==overviewGeneration)return;
+  overviewUsageItems=data.items||[];
+  renderOverview();
+ }catch(error){if(!quiet&&generation===overviewGeneration)notice(error.message);}
+}
+$('overview-usage-channel').addEventListener('change',event=>{overviewUsageChannel=event.target.value;renderOverview();});
+$('overview-usage-range').addEventListener('change',event=>{overviewUsageRange=event.target.value;overviewGeneration++;loadOverview();});
 function renderAccounts(data) {
  lastStatus = data;
  accounts = data.accounts || [];
@@ -459,7 +571,8 @@ async function refreshModels() {
   if (modelList.some(m=>m.id===previous)) $('model').value=previous;
   else {const available=modelList.find(m=>accounts.some(a=>m.id.startsWith(`${a.realm||'cn'}:`)));if(available)$('model').value=available.id;}
   renderAccessModelSelect();
-  renderModelTable('core',modelList,null);
+  // 刷新目录时保留本会话已到手的手工探测结论，避免刚测完就被空健康数据覆盖回「未探测」。
+  renderModelTable('core',modelList,probeSnapshot.channels&&probeSnapshot.channels.core?{modelResults:probeSnapshot.channels.core}:null);
   updateEfforts();renderAccess();
  } catch(e) { notice(e.message); }
 }
@@ -1271,7 +1384,7 @@ function fillRouteModelOptions(channel){
  for(const model of (source&&source.models)||[])list.appendChild(new Option(model,model));
 }
 function renderRouteExample(state){
- const alias=((state.aliases||[]).find(entry=>entry.enabled)||{}).alias||state.auto_model||'auto';
+ const alias=((state.aliases||[]).find(entry=>entry.enabled)||{}).alias||state.auto_model||'gateway-auto';
  const body={model:alias,messages:[{role:'user',content:'你好'}],stream:true};
  $('routes-example').textContent=`curl ${location.origin}/v1/chat/completions \\\n  -H "Authorization: Bearer <你的 API Key>" \\\n  -H "Content-Type: application/json" \\\n  -d '${JSON.stringify(body,null,2)}'`;
 }

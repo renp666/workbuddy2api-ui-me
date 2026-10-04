@@ -33,9 +33,10 @@ const (
 var routeChannelOrder = []routeChannel{channelCore, channelGLM, channelQoder, channelOpenCode}
 
 // autoModelName 是 console 自建的虚拟模型名：不在任何上游目录里，由 console
-// 在请求时按探测结论挑一条最优链路。它与上游真实的 cn:auto、qoder-auto 不同名，
-// 因此不会遮蔽任何真实模型。
-const autoModelName = "auto"
+// 在请求时按探测结论挑一条最优链路。名字带 gateway- 前缀，是为了和各通道可能
+// 存在的原生 auto 模型（cn:auto、qoder-auto 等）区分开，避免客户端填 auto
+// 时说不清到底指谁。开发阶段直接切换，不为旧名 auto 保留兼容解析。
+const autoModelName = "gateway-auto"
 
 // routeFileVersion 是路由配置文件的结构版本。版本不匹配时按上一份配置处理，
 // 不做静默迁移，避免把旧语义当成新语义路由。
@@ -534,22 +535,50 @@ func (c *probeCache) get(ctx context.Context, h *server) (map[routeChannel][]pro
 	return byChannel, haveData
 }
 
-// collectProbeCandidates 汇总各通道的探测结论。目前只有 opencode 侧车会回
-// /health.modelResults，core/glm/qoder 不提供探测数据——它们的模型因此保持
-// 「未探测」，不参与 auto 竞争，也不该被当成可用的回退候选。
+// invalidate 让缓存立即过期。手工探测跑完后调用，新结论马上参与 auto 选路，
+// 不必等满一个 TTL。
+func (c *probeCache) invalidate() {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.fetchedAt = time.Time{}
+}
+
+// collectProbeCandidates 汇总各通道的探测结论：opencode 用 OW Bridge 自带的
+// /health.modelResults，core/glm/qoder 用管理员手工触发的测速探测结论。
+// 没有结论的模型保持「未探测」，不参与 auto 竞争，也不该被当成可用的回退候选。
 func (h *server) collectProbeCandidates(ctx context.Context) (map[routeChannel][]probeCandidate, bool) {
 	out := map[routeChannel][]probeCandidate{}
-	if h.cfg.OpenCodeURL == nil {
+	if h.cfg.OpenCodeURL != nil {
+		if health := h.opencodeHealth(ctx); health != nil {
+			if raw, ok := health["modelResults"].(map[string]any); ok {
+				appendProbeEntries(out, channelOpenCode, raw)
+			}
+		}
+	}
+	for _, channel := range []routeChannel{channelCore, channelGLM, channelQoder} {
+		results := h.probe.channelResults(channel)
+		if len(results) == 0 {
+			continue
+		}
+		raw := make(map[string]any, len(results))
+		for name, entry := range results {
+			raw[name] = entry
+		}
+		appendProbeEntries(out, channel, raw)
+	}
+	if len(out) == 0 {
 		return out, false
 	}
-	health := h.opencodeHealth(ctx)
-	if health == nil {
-		return out, false
+	for channel := range out {
+		sortCandidates(out[channel])
 	}
-	raw, ok := health["modelResults"].(map[string]any)
-	if !ok || len(raw) == 0 {
-		return out, false
-	}
+	return out, true
+}
+
+// appendProbeEntries 把一份 modelResults（键为公共模型名）归类进 out。
+// band：0=可用，1=仅对话，3=不可用；模型名去掉通道前缀后存入候选，
+// 出口再经 publicModel 拼回公共形态。
+func appendProbeEntries(out map[routeChannel][]probeCandidate, channel routeChannel, raw map[string]any) {
 	for name, value := range raw {
 		entry, ok := value.(map[string]any)
 		if !ok {
@@ -569,19 +598,16 @@ func (h *server) collectProbeCandidates(ctx context.Context) (map[routeChannel][
 			// 比未探测更可信，又不会排到确认可用的模型前面。
 			band = 1
 		}
-		candidate := probeCandidate{Channel: channelOpenCode, Model: name, Band: band}
+		native := name
+		if prefix := channel.prefix(); prefix != "" {
+			native = strings.TrimPrefix(name, prefix)
+		}
+		candidate := probeCandidate{Channel: channel, Model: native, Band: band}
 		if ms, ok := entry["durationMs"].(float64); ok && ms >= 0 {
 			candidate.DurationMs = int(ms)
 		}
-		out[channelOpenCode] = append(out[channelOpenCode], candidate)
+		out[channel] = append(out[channel], candidate)
 	}
-	if len(out) == 0 {
-		return out, false
-	}
-	for channel := range out {
-		sortCandidates(out[channel])
-	}
-	return out, true
 }
 
 // sortCandidates 按「可用 → 仅对话 → 不可用」分档，档内按探测耗时升序，

@@ -126,6 +126,10 @@ func (h *server) adminQoderStatus(w http.ResponseWriter, r *http.Request) {
 		"enabled": true, "reachable": reachable,
 		"model_count": len(models), "models": models,
 	}
+	// 手工测速探测的结论以 health.modelResults 形态下发，前端模型表原样复用既有渲染。
+	if health := h.probeHealth(channelQoder); health != nil {
+		result["health"] = health
+	}
 	// 控制端在线时补充设备码登录态（PAT 模式无控制端则不返回该字段）。
 	if loggedIn, controlOK := h.qoderLoggedIn(r.Context()); controlOK {
 		result["control"] = true

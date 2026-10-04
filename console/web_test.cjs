@@ -1161,17 +1161,17 @@ test('opencode model table keeps probed-but-unavailable models with capability, 
   assert.equal(available.children[2].children[0].className,'badge');
   assert.equal(available.children[3].textContent,'7.9 秒');
   assert.equal(available.children[3].children[0].textContent,'探测');
-  assert.equal(available.children[4].textContent,'—');
+  assert.equal(available.children[5].textContent,'—');
   // Row 2: chat-only publish downgrade is not the same as unavailable, and variants surface.
   assert.equal(chatOnly.children[2].children[0].textContent,'仅对话');
   assert.equal(chatOnly.children[2].children[0].className,'badge warn');
   assert.match(chatOnly.children[1].children[1].textContent,/档位 low \/ medium \/ high/);
-  assert.match(chatOnly.children[4].textContent,/仅对话发布/);
+  assert.match(chatOnly.children[5].textContent,/仅对话发布/);
   // Row 3: a 403 region block keeps its own label, duration and upstream reason.
   assert.equal(blocked.children[0].textContent,'opencode-OC · Muse Spark 1.3 Free');
   assert.equal(blocked.children[2].children[0].textContent,'地区限制');
   assert.equal(blocked.children[3].children[0].textContent,'探测');
-  assert.equal(blocked.children[4].textContent,'This model is not available in your country.');
+  assert.equal(blocked.children[5].textContent,'This model is not available in your country.');
   assert.equal(get('opencode-models-empty').hidden,true);
 });
 
@@ -1295,9 +1295,9 @@ test('the three most called models get red, orange and yellow stars on every cha
   await vm.runInContext("applyModelHeat([{model:'workbuddy'},{model:'workbuddy'},{model:'claude'},{model:'opencode-OC · Big Pickle'}])",ctx);
   const heatOf=td=>td.children.length?[td.children[0].className,td.children[0].textContent,td.children[1].textContent]:[null,'—',''];
   const rows=get('core-models-body').children;
-  assert.deepEqual(rows.map(tr=>heatOf(tr.children[5])),[['heat-stars heat-1','★','2 次'],['heat-stars heat-3','★','1 次'],[null,'—','']],'core heat cells');
+  assert.deepEqual(rows.map(tr=>heatOf(tr.children[6])),[['heat-stars heat-1','★','2 次'],['heat-stars heat-3','★','1 次'],[null,'—','']],'core heat cells');
   await vm.runInContext("renderModelTable('opencode',[{id:'opencode-OC · Big Pickle'}],{modelResults:{'OC · Big Pickle':{ok:true,category:'available',durationMs:800,source:'probe'}}})",ctx);
-  assert.deepEqual(heatOf(get('opencode-models-body').children[0].children[5]),['heat-stars heat-2','★','1 次'],'heat ranking is not shared across channels');
+  assert.deepEqual(heatOf(get('opencode-models-body').children[0].children[6]),['heat-stars heat-2','★','1 次'],'heat ranking is not shared across channels');
 });
 
 test('credit column shows the multiplier, defaults the switch from it, and sorts paid models first',async()=>{
@@ -1313,21 +1313,21 @@ test('credit column shows the multiplier, defaults the switch from it, and sorts
   await vm.runInContext("renderModelTable('core',[{id:'cn:paid',credits:'x3.47'},{id:'cn:free',credits:'x0.00'},{id:'cn:unknown'}])",ctx);
   const rows=get('core-models-body').children;
   assert.deepEqual(rows.map(tr=>tr.children[0].textContent),['cn:paid','cn:free','cn:unknown'],'credit order must be 倍率倒序 with unknown last');
-  assert.deepEqual(rows.map(tr=>tr.children[7].textContent),['×3.47','×0','未知'],'credit cell must not fake an unknown multiplier as zero');
+  assert.deepEqual(rows.map(tr=>tr.children[8].textContent),['×3.47','×0','未知'],'credit cell must not fake an unknown multiplier as zero');
   // 默认态：倍率>0 与未知默认停用，倍率=0 默认启用。
-  assert.deepEqual(rows.map(tr=>tr.children[8].children[0].textContent),['已停用','已启用','已停用'],'switch badge must follow the credit rule');
-  assert.deepEqual(rows.map(tr=>tr.children[8].children[2].dataset.action),['enable-model','disable-model','enable-model'],'switch button must offer the opposite action');
-  assert.deepEqual(rows.map(tr=>tr.children[8].children[2].dataset.model),['cn:paid','cn:free','cn:unknown'],'switch button must carry the public model name');
-  // 免费通道不加积分列与开关列，但全球热度列照常存在（共 7 列）。
+  assert.deepEqual(rows.map(tr=>tr.children[9].children[0].textContent),['已停用','已启用','已停用'],'switch badge must follow the credit rule');
+  assert.deepEqual(rows.map(tr=>tr.children[9].children[2].dataset.action),['enable-model','disable-model','enable-model'],'switch button must offer the opposite action');
+  assert.deepEqual(rows.map(tr=>tr.children[9].children[2].dataset.model),['cn:paid','cn:free','cn:unknown'],'switch button must carry the public model name');
+  // 免费通道不加积分列与开关列，但全球热度列照常存在（共 8 列）。
   await vm.runInContext("renderModelTable('opencode',[{id:'opencode-OC · Free'}],{modelResults:{}})",ctx);
-  assert.equal(get('opencode-models-body').children[0].children.length,7,'opencode must stay exempt from the credit columns');
+  assert.equal(get('opencode-models-body').children[0].children.length,8,'opencode must stay exempt from the credit columns');
   // 点击委托：停用中的模型点「启用」应 POST 一次开关（closest 按选择器区分 pin 与开关两条委托）。
-  const enableButton=rows[0].children[8].children[2];
+  const enableButton=rows[0].children[9].children[2];
   await ctx.document.handlers.click({target:{closest:sel=>sel.includes('enable-model')?enableButton:null}});
   assert.deepEqual(posts,[{model:'cn:paid',enabled:true}],'switch click did not reach the admin endpoint');
   // 人工覆盖优先于倍率默认态，并重渲染。
   assert.deepEqual(rows.map(tr=>tr.children[0].textContent),['cn:paid','cn:free','cn:unknown']);
-  assert.deepEqual(get('core-models-body').children.map(tr=>tr.children[8].children[0].textContent),['已启用','已停用','已停用'],'manual override must beat the credit default');
+  assert.deepEqual(get('core-models-body').children.map(tr=>tr.children[9].children[0].textContent),['已启用','已停用','已停用'],'manual override must beat the credit default');
 });
 
 test('global heat column maps OpenRouter ranks by model key and never invents one',async()=>{
@@ -1342,7 +1342,7 @@ test('global heat column maps OpenRouter ranks by model key and never invents on
   assert.equal(vm.runInContext("orModelKey('tencent/hy4-preview')",ctx),'hy4preview');
   assert.equal(vm.runInContext("orModelKey('anthropic/claude-sonnet-4.5:batch')",ctx),'claudesonnet45');
   await vm.runInContext("renderModelTable('core',[{id:'cn:hy4-preview'},{id:'cn:deepseek-v4.1-flash-20260910'},{id:'cn:glm-5.3'}])",ctx);
-  const cells=get('core-models-body').children.map(tr=>tr.children[6].textContent);
+  const cells=get('core-models-body').children.map(tr=>tr.children[7].textContent);
   // hy4 经 id 对齐到 #3；deepseek 带日期后缀的本地名经 canonical_slug 对齐到 #2；glm-5.3 不在源里留「—」。
   assert.deepEqual(cells,['#3','#2','—'],'rank must follow the OpenRouter order; unmatched models stay 无 rather than a guessed place');
 });
@@ -1350,9 +1350,9 @@ test('global heat column maps OpenRouter ranks by model key and never invents on
 test('global heat degrades to dashes when the source is unavailable',async()=>{
   const {ctx,get}=taskFixture(url=>url==='/admin/heat'?Promise.resolve({ok:true,status:200,json:async()=>({available:false,ranks:[]})}):new Promise(()=>{}));
   await vm.runInContext("globalHeat=new Map([['hy4preview',3]]);renderModelTable('core',[{id:'cn:hy4-preview'}])",ctx);
-  assert.equal(get('core-models-body').children[0].children[6].textContent,'#3','a warm cache must render before reload');
+  assert.equal(get('core-models-body').children[0].children[7].textContent,'#3','a warm cache must render before reload');
   await vm.runInContext('loadGlobalHeat()',ctx);
-  assert.equal(get('core-models-body').children[0].children[6].textContent,'—','unavailable source must clear the map, not keep stale ranks');
+  assert.equal(get('core-models-body').children[0].children[7].textContent,'—','unavailable source must clear the map, not keep stale ranks');
 });
 
 test('workbuddy models table lives in its own tab, not inside the chat pane',()=>{
@@ -1434,7 +1434,7 @@ test('Agent 接入 tab hides the editor and shows the disabled notice when routi
 });
 
 test('Agent 接入 tab renders auto preview, alias table, channel sources and a client snippet',async()=>{
-  const {ctx,get}=routeFixture({enabled:true,auto_model:'auto',auto_fallback:'',default_auto_fallback:'cn:auto',
+  const {ctx,get}=routeFixture({enabled:true,auto_model:'gateway-auto',auto_fallback:'',default_auto_fallback:'cn:auto',
     auto_preview:{routed_model:'opencode-OC · Free',channel:'opencode',reason:'探测可用 · 0.8 秒',fallback:false},
     aliases:[{alias:'my-fast',channel:'opencode',model:'OC · Free',public_model:'opencode-OC · Free',enabled:true,note:'日常'}],
     channels:[{channel:'core',enabled:true,reachable:true,models:['cn:workbuddy']},
@@ -1460,7 +1460,7 @@ test('Agent 接入 tab renders auto preview, alias table, channel sources and a 
 });
 
 test('Agent 接入 tab posts the whole alias list when adding an alias',async()=>{
-  const {ctx,get,posts}=routeFixture({enabled:true,auto_model:'auto',auto_fallback:'',default_auto_fallback:'cn:auto',
+  const {ctx,get,posts}=routeFixture({enabled:true,auto_model:'gateway-auto',auto_fallback:'',default_auto_fallback:'cn:auto',
     auto_preview:{routed_model:'cn:auto',channel:'core',reason:'无探测结论，回退核心通道',fallback:true},
     aliases:[],
     channels:[{channel:'core',enabled:true,reachable:true,models:['cn:workbuddy']}]});
@@ -1476,5 +1476,157 @@ test('Agent 接入 tab posts the whole alias list when adding an alias',async()=
   assert.equal(posts.length,1,'alias save issued no request');
   assert.deepEqual(posts[0].models,[{alias:'daily',channel:'core',model:'cn:workbuddy',enabled:true,note:'主力'}]);
   assert.equal(posts[0].auto_fallback,'');
+});
+
+test('speed column only renders a real tokensPerSec and never derives one from latency',()=>{
+  const {ctx}=logoutFixture(()=>new Promise(()=>{}));
+  assert.equal(vm.runInContext('speedText({tokensPerSec:40})',ctx),'40.0 tok/s');
+  assert.equal(vm.runInContext('speedText({tokensPerSec:12.34})',ctx),'12.3 tok/s');
+  assert.equal(vm.runInContext('speedText({durationMs:100,outputTokens:5})',ctx),'—','latency alone must not fake a rate');
+  assert.equal(vm.runInContext('speedText({tokensPerSec:0})',ctx),'—');
+  assert.equal(vm.runInContext('speedText(null)',ctx),'—');
+});
+
+function probeFixture() {
+  const response=body=>({ok:true,status:200,json:async()=>body});
+  const posts=[];
+  const states=[
+    {running:true,done:0,total:2,channels:{}},
+    {running:true,done:1,total:2,channels:{}},
+    {running:false,done:2,total:2,channels:{core:{
+      'cn:fast':{ok:true,source:'probe',durationMs:1200,ttftMs:300,outputTokens:48,tokensPerSec:40},
+      'cn:slow':{ok:false,category:'timeout',error:'探测超时',durationMs:30000}}}},
+  ];
+  let started=false,index=0;
+  const {ctx,get}=taskFixture((url,options={})=>{
+    if(url==='/admin/session')return new Promise(()=>{});
+    if(url==='/admin/status')return response({total:1,healthy:1,cooling:0,disabled:0,accounts:[]});
+    if(url==='/admin/models')return response({data:[{id:'cn:fast'},{id:'cn:slow'}]});
+    if(url==='/admin/probe'&&options.method==='POST'){started=true;index=0;posts.push(JSON.parse(options.body));return response(states[0]);}
+    if(url==='/admin/probe')return response(started?states[Math.min(++index,states.length-1)]:{running:false,done:0,total:0,channels:{}});
+    if(url.startsWith('/admin/usage'))return response({range:'month',items:[]});
+    if(url==='/admin/heat')return response({available:false,ranks:[]});
+    if(url==='/admin/model-switch')return response({enabled:false,overrides:{}});
+    throw new Error('unexpected '+url);
+  });
+  let poll;
+  ctx.setTimeout=(fn)=>{poll=fn;return 1;};
+  get('realm').querySelector=()=>({disabled:false});
+  return {ctx,get,posts,poll:()=>poll};
+}
+
+test('probe button triggers one channel, polls progress and feeds the speed column',async()=>{
+  const {ctx,get,posts,poll}=probeFixture();
+  await vm.runInContext("signedIn({csrf:'c',global_enabled:true,zcode_enabled:false,qoder_enabled:false,opencode_enabled:false})",ctx);
+  await new Promise(r=>setImmediate(r));
+  get('probe-core').handlers.click();
+  await new Promise(r=>setImmediate(r));
+  assert.deepEqual(posts,[{channels:['core']}],'probe click did not scope the request to one channel');
+  assert.equal(get('probe-core').disabled,true,'probe button stayed clickable while running');
+  assert.equal(get('probe-zcode').disabled,true,'sibling probe button stayed enabled');
+  assert.equal(get('probe-core-progress').hidden,false);
+  assert.match(get('probe-core-progress').textContent,/正在探测 0\/2/);
+  await poll()();
+  assert.match(get('probe-core-progress').textContent,/正在探测 1\/2/);
+  await poll()();
+  await new Promise(r=>setImmediate(r));
+  assert.match(get('probe-core-progress').textContent,/探测完成/);
+  assert.equal(get('probe-core').disabled,false,'buttons not restored after the probe finished');
+  const rows=get('core-models-body').children;
+  assert.deepEqual(rows.map(tr=>tr.children[0].textContent),['cn:fast','cn:slow']);
+  assert.equal(rows[0].children[2].children[0].textContent,'可用');
+  assert.equal(rows[0].children[3].textContent,'1.2 秒');
+  assert.equal(rows[0].children[4].textContent,'40.0 tok/s','speed column missing the probed rate');
+  assert.equal(rows[1].children[2].children[0].textContent,'探测超时');
+  assert.equal(rows[1].children[4].textContent,'—','failed probe must not show a rate');
+});
+
+test('probe start rejects while a run is in flight and keeps the old conclusions',async()=>{
+  const {ctx,get}=probeFixture();
+  await vm.runInContext("signedIn({csrf:'c',global_enabled:true,zcode_enabled:false,qoder_enabled:false,opencode_enabled:false})",ctx);
+  await new Promise(r=>setImmediate(r));
+  vm.runInContext("probeSnapshot={running:true,done:1,total:2,channels:{core:{'cn:fast':{ok:true,source:'probe',tokensPerSec:40}}}}",ctx);
+  await vm.runInContext("renderModelTable('core',[{id:'cn:fast'}],{modelResults:{'cn:fast':{ok:true,source:'probe',tokensPerSec:40}}})",ctx);
+  await get('probe-core').handlers.click();
+  assert.equal(vm.runInContext('probeBusy',ctx),false,'second start was not rejected before any request');
+  assert.equal(get('core-models-body').children[0].children[4].textContent,'40.0 tok/s','rejected start wiped cached conclusions');
+});
+
+function overviewFixture(items,zcodeStatus) {
+  const response=body=>({ok:true,status:200,json:async()=>body});
+  const {ctx,get}=taskFixture((url)=>{
+    if(url==='/admin/session')return new Promise(()=>{});
+    if(url==='/admin/status')return response({total:1,healthy:1,cooling:0,disabled:0,accounts:[]});
+    if(url==='/admin/models')return response({data:[{id:'cn:workbuddy',realm:'cn'}]});
+    if(url.startsWith('/admin/usage'))return response({range:'today',items});
+    if(url==='/admin/heat')return response({available:false,ranks:[]});
+    if(url==='/admin/model-switch')return response({enabled:false,overrides:{}});
+    if(url==='/admin/probe')return response({running:false,done:0,total:0,channels:{}});
+    if(url==='/admin/zcode')return response(zcodeStatus);
+    throw new Error('unexpected '+url);
+  });
+  get('realm').querySelector=()=>({disabled:false});
+  return {ctx,get};
+}
+
+test('overview aggregates every enabled channel and filters the metric cards by channel',async()=>{
+  const items=[
+    {ts:1000,uid:'u1',account:'alice',model:'cn:m',mode:'stream',prompt_tokens:100,completion_tokens:200,credit:1.5},
+    {ts:1001,uid:'zcode',account:'GLM 通道',model:'glm-5.3-flash',mode:'sync',prompt_tokens:10,completion_tokens:20,credit:null},
+    {ts:1002,uid:'qoder',account:'Qoder 通道',model:'qoder-x',mode:'stream',prompt_tokens:-1,completion_tokens:5,credit:0},
+    {ts:1003,uid:'opencode',account:'OpenCode 通道',model:'opencode-y',mode:'sync',prompt_tokens:3,completion_tokens:4,credit:2},
+  ];
+  const {ctx,get}=overviewFixture(items,{enabled:true,reachable:true,model_count:3});
+  await vm.runInContext("signedIn({csrf:'c',global_enabled:true,zcode_enabled:true,qoder_enabled:true,opencode_enabled:true})",ctx);
+  // 概览的旁路状态只读页签缓存：先访问一次 Zcode 页签，再刷新概览，验证「在线/3 模型」口径。
+  await vm.runInContext('loadZcode()',ctx);
+  await vm.runInContext('loadOverview()',ctx);
+  await new Promise(r=>setImmediate(r));
+  const rows=get('overview-channels-body').children;
+  const text=td=>td.children.length?td.children[0].textContent:td.textContent;
+  assert.deepEqual(rows.map(tr=>tr.children[0].textContent),['WorkBuddy','GLM（Zcode）','Qoder','OpenCode'],'channel overview rows missing or misordered');
+  assert.deepEqual(rows[0].children.map(text),['WorkBuddy','运行中','1','1','100','200','1.5']);
+  // 旁路状态来自页签缓存：未访问过的通道如实标「未加载」，不伪造在线。
+  assert.deepEqual(rows[1].children.map(text),['GLM（Zcode）','在线','3','1','10','20','—'],'zcode missing credit must show dash, not 0');
+  assert.deepEqual(rows[2].children.map(text),['Qoder','未加载','—','1','0','5','0']);
+  assert.match(text(rows[3].children[1]),/不可达|未加载/);
+  assert.equal(get('overview-usage-calls').textContent,'4');
+  assert.equal(get('overview-usage-tokens').textContent,'342');
+  assert.equal(get('overview-usage-credit').textContent,'3.5');
+  assert.match(get('overview-usage-note').textContent,/1 条记录未回报 token 用量/);
+  assert.match(get('overview-usage-note').textContent,/1 条记录未回报积分扣费/);
+  // 单通道筛选只作用于指标卡，通道总览表保持全量。
+  get('overview-usage-channel').handlers.change({target:{value:'zcode'}});
+  assert.equal(get('overview-usage-calls').textContent,'1');
+  assert.equal(get('overview-usage-tokens').textContent,'30');
+  assert.equal(get('overview-usage-credit').textContent,'—','all-missing credit must not read as zero');
+  assert.equal(get('overview-channels-body').children.length,4,'channel table must stay full while metrics are filtered');
+});
+
+test('overview hides channels the deployment never enabled',async()=>{
+  const {ctx,get}=overviewFixture([{ts:1000,uid:'u1',account:'alice',model:'cn:m',mode:'sync',prompt_tokens:1,completion_tokens:2,credit:0}],{enabled:false});
+  await vm.runInContext("signedIn({csrf:'c',global_enabled:true,zcode_enabled:true,qoder_enabled:false,opencode_enabled:false})",ctx);
+  await vm.runInContext('loadZcode()',ctx);
+  await vm.runInContext('loadOverview()',ctx);
+  await new Promise(r=>setImmediate(r));
+  const rows=get('overview-channels-body').children;
+  assert.deepEqual(rows.map(tr=>tr.children[0].textContent),['WorkBuddy','GLM（Zcode）']);
+  assert.equal(rows[1].children[1].children[0].textContent,'未启用','disabled channel must not claim reachability');
+});
+
+test('agent snippet falls back to gateway-auto, never the ambiguous bare auto',()=>{
+  const {ctx,get}=logoutFixture(()=>new Promise(()=>{}));
+  vm.runInContext('renderRouteExample({aliases:[]})',ctx);
+  assert.match(get('routes-example').textContent,/"model": "gateway-auto"/);
+});
+
+test('overview page, probe buttons and the speed column exist in the page shell',()=>{
+  const html=readFileSync(__dirname+'/web/index.html','utf8');
+  assert.match(html,/id="overview-channels-body"/,'channel overview table missing');
+  assert.match(html,/id="overview-usage-channel"[\s\S]*id="overview-usage-range"/,'overview usage filters missing');
+  for(const id of ['probe-core','probe-zcode','probe-qoder'])assert.ok(html.includes('id="'+id+'"'),'probe button '+id+' missing');
+  assert.ok(!html.includes('id="probe-opencode"'),'opencode must not get a manual probe button');
+  assert.equal((html.match(/<th>速度<\/th>/g)||[]).length,4,'every model table must carry the speed column');
+  assert.match(html,/gateway-auto/,'routes page still advertises the bare auto name');
 });
 

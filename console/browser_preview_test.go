@@ -9,7 +9,9 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"sync"
@@ -107,6 +109,17 @@ func TestAdminBrowserPreview(t *testing.T) {
 			fmt.Fprintf(w, `{"accounts":[{"uid":"demo-account","nickname":"演示账号（模拟）","realm":"cn","credits":1200,"credits_known":true,"in_flight":%d,"success_count":2,"err_total":0,"disabled":false,"cooling":false}],"total":1,"healthy":1,"cooling":0,"disabled":0,"in_flight_full":0,"realm_totals":{"cn":{"total":1,"healthy":1,"cooling":0,"disabled":0,"in_flight_full":0},"global":{"total":0,"healthy":0,"cooling":0,"disabled":0,"in_flight_full":0}},"sticky_sessions":0,"redis_mode":"noop"}`, inFlight.Load())
 		case r.URL.Path == "/internal/v1/models" || r.URL.Path == "/v1/models":
 			fmt.Fprint(w, `{"object":"list","data":[{"id":"cn:glm-5.2","object":"model","reasoning_supported_efforts":["low","high"]},{"id":"global:claude-sonnet-4.6","object":"model"}]}`)
+		case r.URL.Path == "/internal/v1/usage":
+			// 四通道混合账本：旁路占位 uid、缺失 credit 与免费通道各来一条，
+			// 让运行概览的通道分布、缺失标注和单通道筛选都有真实形态的数据。
+			now := time.Now().Unix()
+			fmt.Fprintf(w, `{"range":%q,"items":[`+
+				`{"ts":%d,"uid":"demo-account","account":"演示账号（模拟）","model":"cn:glm-5.2","mode":"stream","prompt_tokens":120,"completion_tokens":860,"credit":3.5},`+
+				`{"ts":%d,"uid":"demo-account","account":"演示账号（模拟）","model":"global:claude-sonnet-4.6","mode":"sync","prompt_tokens":400,"completion_tokens":1500},`+
+				`{"ts":%d,"uid":"zcode","account":"GLM 通道","model":"glm-5.3-flash","mode":"stream","prompt_tokens":80,"completion_tokens":640,"credit":0},`+
+				`{"ts":%d,"uid":"qoder","account":"Qoder 通道","model":"qoder-glm-5.3-flash","mode":"stream","prompt_tokens":60,"completion_tokens":520,"credit":1.2},`+
+				`{"ts":%d,"uid":"opencode","account":"OpenCode 通道","model":"opencode-OC · FreeModel","mode":"stream","prompt_tokens":30,"completion_tokens":240,"credit":0}`+
+				`],"summary":{"calls":5}}`, r.URL.Query().Get("range"), now-300, now-240, now-180, now-120, now-60)
 		case r.URL.Path == "/internal/v1/chat":
 			inFlight.Add(1)
 			defer inFlight.Add(-1)
@@ -261,9 +274,61 @@ func TestAdminBrowserPreview(t *testing.T) {
 		}
 	}))
 	defer ts.Close()
+	// 旁路通道夹具：让运行概览的四通道表、模型探测按钮与速度列都能在模拟环境展示。
+	zcodeTS := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch r.URL.Path {
+		case "/v1/models":
+			fmt.Fprint(w, `{"object":"list","data":[{"id":"glm-5.3-flash"},{"id":"glm-5.3"}]}`)
+		case "/v1/chat/completions":
+			w.Header().Set("Content-Type", "text/event-stream")
+			fmt.Fprint(w, "data: {\"choices\":[{\"delta\":{\"content\":\"pong\"}}]}\n\n")
+			w.(http.Flusher).Flush()
+			time.Sleep(30 * time.Millisecond)
+			fmt.Fprint(w, "data: {\"choices\":[],\"usage\":{\"completion_tokens\":12}}\n\ndata: [DONE]\n\n")
+		default:
+			fmt.Fprint(w, `{}`)
+		}
+	}))
+	defer zcodeTS.Close()
+	qoderTS := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch r.URL.Path {
+		case "/v1/models":
+			fmt.Fprint(w, `{"object":"list","data":[{"id":"glm-5.3-flash"},{"id":"qwen3-coder"}]}`)
+		case "/v1/chat/completions":
+			w.Header().Set("Content-Type", "text/event-stream")
+			fmt.Fprint(w, "data: {\"choices\":[{\"delta\":{\"content\":\"pong\"}}]}\n\n")
+			w.(http.Flusher).Flush()
+			time.Sleep(30 * time.Millisecond)
+			fmt.Fprint(w, "data: {\"choices\":[],\"usage\":{\"completion_tokens\":9}}\n\ndata: [DONE]\n\n")
+		default:
+			fmt.Fprint(w, `{}`)
+		}
+	}))
+	defer qoderTS.Close()
+	opencodeTS := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch r.URL.Path {
+		case "/v1/models":
+			fmt.Fprint(w, `{"object":"list","data":[{"id":"OC · FreeModel"},{"id":"OC · Reason"}]}`)
+		case "/health":
+			fmt.Fprint(w, `{"phase":"ready","version":"mock","modelResults":{"OC · FreeModel":{"ok":true,"category":"available","durationMs":120},"OC · Reason":{"ok":true,"chatOnly":true,"durationMs":400}}}`)
+		default:
+			fmt.Fprint(w, `{}`)
+		}
+	}))
+	defer opencodeTS.Close()
 	cfg := testConfig(ts.URL)
 	cfg.AdminKey = "browser-preview-key-mock-only-12345"
 	cfg.APIKey = "preview-api-key-mock-only"
+	cfg.ZCodeURL, _ = url.Parse(zcodeTS.URL)
+	cfg.ZCodeKey = strings.Repeat("z", 32)
+	cfg.QoderURL, _ = url.Parse(qoderTS.URL)
+	cfg.QoderKey = strings.Repeat("q", 32)
+	cfg.OpenCodeURL, _ = url.Parse(opencodeTS.URL)
+	cfg.OpenCodeKey = strings.Repeat("o", 32)
+	cfg.RouteFile = filepath.Join(t.TempDir(), "routes.json")
 	h, err := NewServer(cfg)
 	if err != nil {
 		t.Fatal(err)

@@ -218,7 +218,7 @@ func TestAutoFallsBackToCoreWithoutProbeData(t *testing.T) {
 		t.Fatalf("save: %d %s", got.Code, got.Body)
 	}
 	rec := httptest.NewRecorder()
-	h.ServeHTTP(rec, httptest.NewRequest("POST", "/v1/chat/completions", strings.NewReader(chatBody("auto"))))
+	h.ServeHTTP(rec, httptest.NewRequest("POST", "/v1/chat/completions", strings.NewReader(chatBody("gateway-auto"))))
 	if rec.Code != 200 {
 		t.Fatalf("status=%d body=%s", rec.Code, rec.Body)
 	}
@@ -260,7 +260,7 @@ func TestAutoPrefersProbedAvailableModel(t *testing.T) {
 		t.Fatalf("save: %d %s", got.Code, got.Body)
 	}
 	rec := httptest.NewRecorder()
-	h.ServeHTTP(rec, httptest.NewRequest("POST", "/v1/chat/completions", strings.NewReader(chatBody("auto"))))
+	h.ServeHTTP(rec, httptest.NewRequest("POST", "/v1/chat/completions", strings.NewReader(chatBody("gateway-auto"))))
 	if rec.Code != 200 {
 		t.Fatalf("status=%d body=%s", rec.Code, rec.Body)
 	}
@@ -281,7 +281,7 @@ func TestValidateRouteEntriesRejectsReservedAndBadChannels(t *testing.T) {
 	}{
 		{"保留前缀", []routeEntry{{Alias: "glm-x", Channel: channelCore, Model: "cn:auto", Enabled: true}}},
 		{"命名空间前缀", []routeEntry{{Alias: "cn:x", Channel: channelCore, Model: "cn:auto", Enabled: true}}},
-		{"auto 保留名", []routeEntry{{Alias: "auto", Channel: channelCore, Model: "cn:auto", Enabled: true}}},
+		{"auto 保留名", []routeEntry{{Alias: "gateway-auto", Channel: channelCore, Model: "cn:auto", Enabled: true}}},
 		{"通道非法", []routeEntry{{Alias: "x", Channel: "bogus", Model: "cn:auto", Enabled: true}}},
 		{"core 缺命名空间", []routeEntry{{Alias: "x", Channel: channelCore, Model: "auto", Enabled: true}}},
 		{"旁路带冒号", []routeEntry{{Alias: "x", Channel: channelQoder, Model: "cn:auto", Enabled: true}}},
@@ -367,7 +367,7 @@ func TestRouteSaveRejectsInvalidAndKeepsOldConfig(t *testing.T) {
 	if !state.Enabled || len(state.Aliases) != 1 || state.Aliases[0].Alias != "keep" {
 		t.Fatalf("非法保存污染了现有配置：%+v", state)
 	}
-	if state.AutoModel != "auto" {
+	if state.AutoModel != "gateway-auto" {
 		t.Fatalf("auto_model=%q", state.AutoModel)
 	}
 }
@@ -403,11 +403,11 @@ func TestAutoModelListedOnlyWhenRoutingEnabled(t *testing.T) {
 	if rec.Code != 200 {
 		t.Fatalf("models: %d %s", rec.Code, rec.Body)
 	}
-	if !strings.Contains(rec.Body.String(), `"id":"auto"`) {
-		t.Fatalf("启用路由后 /v1/models 应包含 auto：%s", rec.Body)
+	if !strings.Contains(rec.Body.String(), `"id":"gateway-auto"`) {
+		t.Fatalf("启用路由后 /v1/models 应包含 gateway-auto：%s", rec.Body)
 	}
 
-	// 未配置 RouteFile 时不得出现 auto，否则客户端会选到一个没人解析的模型。
+	// 未配置 RouteFile 时不得出现 gateway-auto，否则客户端会选到一个没人解析的模型。
 	plain, _ := testConsole(t, func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path == "/v1/models" {
 			fmt.Fprint(w, coreList)
@@ -417,8 +417,8 @@ func TestAutoModelListedOnlyWhenRoutingEnabled(t *testing.T) {
 	})
 	rec = httptest.NewRecorder()
 	plain.ServeHTTP(rec, httptest.NewRequest("GET", "/v1/models", nil))
-	if strings.Contains(rec.Body.String(), `"id":"auto"`) {
-		t.Fatalf("未启用路由时不应暴露 auto：%s", rec.Body)
+	if strings.Contains(rec.Body.String(), `"id":"gateway-auto"`) {
+		t.Fatalf("未启用路由时不应暴露 gateway-auto：%s", rec.Body)
 	}
 }
 
@@ -563,7 +563,7 @@ func TestModelSwitchAutoExempt(t *testing.T) {
 	if got := saveRoutes(t, h, nil, "cn:auto"); got.Code != 200 {
 		t.Fatalf("save fallback: %d %s", got.Code, got.Body)
 	}
-	if rec := gateChat(h, "auto"); rec.Code != 200 {
+	if rec := gateChat(h, "gateway-auto"); rec.Code != 200 {
 		t.Fatalf("auto with a free target rejected: %d %s", rec.Code, rec.Body)
 	}
 
@@ -571,7 +571,7 @@ func TestModelSwitchAutoExempt(t *testing.T) {
 	if got := saveRoutes(t, paid, nil, "cn:auto"); got.Code != 200 {
 		t.Fatalf("save fallback: %d %s", got.Code, got.Body)
 	}
-	rec := gateChat(paid, "auto")
+	rec := gateChat(paid, "gateway-auto")
 	if rec.Code != 404 || !strings.Contains(rec.Body.String(), "cn:auto") {
 		t.Fatalf("auto must be judged by its resolved target: %d %s", rec.Code, rec.Body)
 	}
@@ -580,8 +580,8 @@ func TestModelSwitchAutoExempt(t *testing.T) {
 // TestModelSwitchRejectsAutoName 直接对 auto 名设开关应被拒（虚拟模型不参与开关）。
 func TestModelSwitchRejectsAutoName(t *testing.T) {
 	h := creditConsole(t, `{"object":"list","data":[]}`)
-	if got := switchModel(t, h, "auto", true); got.Code != 400 {
-		t.Fatalf("switching auto should be rejected: %d %s", got.Code, got.Body)
+	if got := switchModel(t, h, "gateway-auto", true); got.Code != 400 {
+		t.Fatalf("switching gateway-auto should be rejected: %d %s", got.Code, got.Body)
 	}
 }
 

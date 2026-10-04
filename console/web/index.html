@@ -22,6 +22,11 @@
   <section class="page" data-page="overview"><div class="page-heading"><div><p class="eyebrow">OVERVIEW</p><h1>一切，从连接开始。</h1><p class="muted">账号和模型的运行状况，尽在这里。</p></div><button id="refresh" class="secondary">↻ 刷新状态</button></div>
    <div class="metrics"><article><span>账号总数</span><strong id="count-total">—</strong><small>已连接到当前网关</small></article><article><span>可用账号</span><strong id="count-healthy">—</strong><small>按账号池最近状态</small></article><article><span>冷却 / 禁用</span><strong id="count-limited">—</strong><small>暂时不可用的账号</small></article><article><span>进行中的请求</span><strong id="count-flight">—</strong><small>当前并发占用</small></article></div>
    <article class="welcome"><div class="welcome-mark">↗</div><div><p class="eyebrow">READY WHEN YOU ARE</p><h2 id="welcome-title">添加第一个账号</h2><p id="welcome-text">在浏览器中完成授权，网关会自动保存并加载账号。</p><button data-view="workbuddy" data-sub="accounts" class="primary">管理账号 →</button><button data-view="workbuddy" data-sub="chat" class="secondary">测试一个回答</button></div></article>
+   <div class="section-title"><h2>通道总览</h2><span class="muted small">四个通道的可达性与所选范围的用量；旁路通道未启用时如实标注</span></div>
+   <div class="panel table-wrap"><table><thead><tr><th>通道</th><th>状态</th><th>模型数</th><th>调用次数</th><th>输入 tokens</th><th>输出 tokens</th><th>积分</th></tr></thead><tbody id="overview-channels-body"></tbody></table></div>
+   <div class="section-title"><h2>用量统计</h2><span class="muted small"><label for="overview-usage-channel">通道</label>&nbsp;<select id="overview-usage-channel"><option value="all" selected>全部通道</option><option value="workbuddy">WorkBuddy（核心账号池）</option><option value="zcode">GLM（Zcode 通道）</option><option value="qoder">Qoder 通道</option><option value="opencode">OpenCode 通道</option></select>&nbsp;<label for="overview-usage-range">时间范围</label>&nbsp;<select id="overview-usage-range"><option value="today" selected>今天</option><option value="yesterday">前一天</option><option value="week">本周</option><option value="month">本月</option></select></span></div>
+   <div class="metrics"><article><span>调用次数</span><strong id="overview-usage-calls">—</strong><small>所选范围与通道</small></article><article><span>Tokens</span><strong id="overview-usage-tokens">—</strong><small>输入 + 输出（已观测）</small></article><article><span>积分扣费</span><strong id="overview-usage-credit">—</strong><small>上游明确回报的扣费</small></article></div>
+   <p id="overview-usage-note" class="muted small" hidden></p>
    <div class="info-grid"><article class="panel"><h3>你的数据，在你的服务器</h3><p>账号凭据与网关状态保存在持久化数据卷中。普通容器重启与重建不会清除它们。</p></article><article class="panel"><h3>状态不是一次真实调用</h3><p>账号可用性、积分和模型列表来自最近观测。打开对话测试，确认模型当前是否能响应。</p></article></div>
   </section>
   <section class="page" data-page="workbuddy" hidden><div class="page-heading"><div><p class="eyebrow">WORKBUDDY CHANNEL</p><h1>WorkBuddy 通道</h1><p class="muted">本网关的核心通道：账号授权、自动任务、模型列表与对话测试。上游为 WorkBuddy / CodeBuddy，账号池与调度器由 core 自持。全通道调用统计在左侧「调用统计」页。</p></div></div>
@@ -42,8 +47,9 @@
     <article id="task-detail" class="panel task-detail" hidden><div class="section-title"><h2 id="task-detail-title">执行详情</h2><button id="task-detail-close" class="quiet">关闭</button></div><p id="task-detail-meta" class="muted small"></p><pre id="task-accounts" class="task-accounts"></pre><h3>脱敏日志摘要</h3><pre id="task-log" class="task-log"></pre><p id="task-log-truncated" class="muted small" hidden>日志已按服务端上限截断。</p></article>
    </div>
    <div id="workbuddy-pane-models" hidden>
-    <div class="section-title"><h2>模型列表</h2><span class="muted small">来自 core 的 <code>/v1/models</code>；core 不提供探测结论，未探测的字段如实留空</span></div>
-    <div class="panel table-wrap"><table><thead><tr><th>模型 ID</th><th>能力</th><th>状态</th><th>耗时</th><th>说明</th><th>热度</th><th>全球热度</th><th>积分消耗</th><th>操作</th></tr></thead><tbody id="core-models-body"></tbody></table><p id="core-models-empty" class="empty">暂无模型。</p></div>
+    <div class="section-title"><h2>模型列表</h2><span class="muted small">来自 core 的 <code>/v1/models</code>；core 不提供探测结论，需点「测速探测」手工触发</span><button id="probe-core" class="secondary">⚡ 测速探测</button></div>
+    <p id="probe-core-progress" class="muted small" role="status" aria-live="polite" hidden></p>
+    <div class="panel table-wrap"><table><thead><tr><th>模型 ID</th><th>能力</th><th>状态</th><th>耗时</th><th>速度</th><th>说明</th><th>热度</th><th>全球热度</th><th>积分消耗</th><th>操作</th></tr></thead><tbody id="core-models-body"></tbody></table><p id="core-models-empty" class="empty">暂无模型。</p></div>
    </div>
    <div id="workbuddy-pane-chat" hidden>
     <div class="section-title"><h2>对话测试</h2><span class="muted small">真实请求经过同一账号池；对话只保留在当前页面，刷新即清空</span><button id="clear-chat" class="secondary">清空对话</button></div>
@@ -68,8 +74,9 @@
      <p id="zcode-login-hint" class="muted small" role="status" aria-live="polite"></p></article>
     </div>
     <div id="zcode-pane-models" hidden>
-    <div class="section-title" id="zcode-models-title"><h2>GLM 模型</h2><span class="muted small">来自 zcode-proxy 的 <code>/v1/models</code>；zcode 暂不提供探测结论，状态列如实显示「未探测」</span></div>
-    <div class="panel table-wrap" id="zcode-models-table"><table><thead><tr><th>模型 ID</th><th>能力</th><th>状态</th><th>耗时</th><th>说明</th><th>热度</th><th>全球热度</th><th>积分消耗</th><th>操作</th></tr></thead><tbody id="zcode-models-body"></tbody></table><p id="zcode-models-empty" class="empty">暂无模型。</p></div>
+    <div class="section-title" id="zcode-models-title"><h2>GLM 模型</h2><span class="muted small">来自 zcode-proxy 的 <code>/v1/models</code>；zcode 不提供探测结论，需点「测速探测」手工触发</span><button id="probe-zcode" class="secondary">⚡ 测速探测</button></div>
+    <p id="probe-zcode-progress" class="muted small" role="status" aria-live="polite" hidden></p>
+    <div class="panel table-wrap" id="zcode-models-table"><table><thead><tr><th>模型 ID</th><th>能力</th><th>状态</th><th>耗时</th><th>速度</th><th>说明</th><th>热度</th><th>全球热度</th><th>积分消耗</th><th>操作</th></tr></thead><tbody id="zcode-models-body"></tbody></table><p id="zcode-models-empty" class="empty">暂无模型。</p></div>
     <p id="zcode-models-note" class="muted small" hidden>当前为 Start Plan 档位，仅展示可用的 <code>-flash</code> 模型。</p>
     </div>
     <div id="zcode-pane-chat" hidden>
@@ -95,8 +102,9 @@
      <p id="qoder-login-hint" class="muted small" role="status" aria-live="polite"></p></article>
     </div>
     <div id="qoder-pane-models" hidden>
-    <div class="section-title"><h2>Qoder 模型</h2><span class="muted small">来自 qoder-proxy 的 <code>/v1/models</code>；qoder 暂不提供探测结论，状态列如实显示「未探测」</span></div>
-    <div class="panel table-wrap"><table><thead><tr><th>模型 ID</th><th>能力</th><th>状态</th><th>耗时</th><th>说明</th><th>热度</th><th>全球热度</th><th>积分消耗</th><th>操作</th></tr></thead><tbody id="qoder-models-body"></tbody></table><p id="qoder-models-empty" class="empty">暂无模型。</p></div>
+    <div class="section-title"><h2>Qoder 模型</h2><span class="muted small">来自 qoder-proxy 的 <code>/v1/models</code>；qoder 不提供探测结论，需点「测速探测」手工触发</span><button id="probe-qoder" class="secondary">⚡ 测速探测</button></div>
+    <p id="probe-qoder-progress" class="muted small" role="status" aria-live="polite" hidden></p>
+    <div class="panel table-wrap"><table><thead><tr><th>模型 ID</th><th>能力</th><th>状态</th><th>耗时</th><th>速度</th><th>说明</th><th>热度</th><th>全球热度</th><th>积分消耗</th><th>操作</th></tr></thead><tbody id="qoder-models-body"></tbody></table><p id="qoder-models-empty" class="empty">暂无模型。</p></div>
     </div>
     <div id="qoder-pane-chat" hidden>
     <div class="section-title"><h2>对话测试</h2><span class="muted small">OpenAI 流式协议，真实请求转发给 qoder-proxy</span></div>
@@ -116,7 +124,7 @@
     </div>
     <div id="opencode-pane-models" hidden>
     <div class="section-title"><h2>OpenCode 模型</h2><span class="muted small">来自 OW Bridge 的 <code>/v1/models</code>，并合并 <code>/health</code> 的探测结论（含探测未通过的模型）</span></div>
-    <div class="panel table-wrap"><table><thead><tr><th>模型 ID</th><th>能力</th><th>状态</th><th>耗时</th><th>说明</th><th>热度</th><th>全球热度</th></tr></thead><tbody id="opencode-models-body"></tbody></table><p id="opencode-models-empty" class="empty">暂无模型。</p></div>
+    <div class="panel table-wrap"><table><thead><tr><th>模型 ID</th><th>能力</th><th>状态</th><th>耗时</th><th>速度</th><th>说明</th><th>热度</th><th>全球热度</th></tr></thead><tbody id="opencode-models-body"></tbody></table><p id="opencode-models-empty" class="empty">暂无模型。</p></div>
     </div>
     <div id="opencode-pane-chat" hidden>
     <div class="section-title"><h2>对话测试</h2><span class="muted small">OpenAI 流式协议，真实请求转发给 OW Bridge sidecar</span></div>
@@ -137,10 +145,10 @@
   <section class="page" data-page="routes" hidden><div class="page-heading"><div><p class="eyebrow">AGENT ROUTING</p><h1>给模型起个名字，Agent 只填一次</h1><p class="muted">你可以给任意通道里的真实模型起一个自己好记的名字（下面叫它「别名」）。之后所有 Agent 都只填这个名字；哪天想换模型，改这里一处就够了，不用挨个去改客户端。</p></div><button id="routes-refresh" class="secondary">↻ 刷新</button></div>
    <p id="routes-disabled" class="empty" hidden>这个功能还没打开。部署时给控制台挂载一个可写目录，并设置 <code>WB2A_ROUTE_FILE</code>，这里就会出现别名表和可用的模型清单。</p>
    <div id="routes-content" hidden>
-    <article class="panel"><div class="section-title"><h2>让网关自己挑一个（auto）</h2><span class="badge" id="routes-auto-badge">未知</span></div><p id="routes-auto-text" class="muted small" role="status" aria-live="polite">正在读取路由状态…</p>
+    <article class="panel"><div class="section-title"><h2>让网关自己挑一个（gateway-auto）</h2><span class="badge" id="routes-auto-badge">未知</span></div><p id="routes-auto-text" class="muted small" role="status" aria-live="polite">正在读取路由状态…</p>
      <form id="routes-fallback-form" class="inline-form"><label for="routes-auto-fallback">都挑不出来时，兜底用哪个模型</label><input id="routes-auto-fallback" placeholder="cn:auto" autocomplete="off"><button id="routes-fallback-save" class="secondary" type="submit">保存兜底</button><span class="muted small">留空则用默认的 <code id="routes-default-fallback">cn:auto</code></span></form>
-     <p class="muted small">模型名填 <code>auto</code> 时，网关会自动挑一个当前最好用的（优先挑能正常干活的，其次只支持对话的；同档里挑响应最快的）。如果一个都挑不出来，就走上面那个兜底模型。</p></article>
-    <div class="section-title"><h2>我的别名表</h2><span class="muted small">名字只能用字母、数字和 <code>._:-</code>；另外 <code>glm-</code> / <code>qoder-</code> / <code>opencode-</code> 开头以及 <code>auto</code> 已被系统占用，不能重名</span></div>
+     <p class="muted small">模型名填 <code>gateway-auto</code> 时，网关会自动挑一个当前最好用的（优先挑能正常干活的，其次只支持对话的；同档里挑响应最快的）。如果一个都挑不出来，就走上面那个兜底模型。想拿到最新结论，去各通道模型页点「测速探测」。</p></article>
+    <div class="section-title"><h2>我的别名表</h2><span class="muted small">名字只能用字母、数字和 <code>._:-</code>；另外 <code>glm-</code> / <code>qoder-</code> / <code>opencode-</code> 开头以及 <code>gateway-auto</code> 已被系统占用，不能重名</span></div>
     <div class="panel table-wrap"><table><thead><tr><th>别名</th><th>通道</th><th>真实模型</th><th>对外模型 ID</th><th>状态</th><th>说明</th><th>操作</th></tr></thead><tbody id="routes-alias-body"></tbody></table><p id="routes-alias-empty" class="empty">还没有别名。用下面的表单添加第一个吧。</p></div>
     <article class="panel"><div class="section-title"><h2>添加 / 修改别名</h2></div>
      <form id="routes-alias-form" class="inline-form"><label for="routes-alias-name">起个名字</label><input id="routes-alias-name" placeholder="my-fast" autocomplete="off" required><label for="routes-alias-channel">走哪个通道</label><select id="routes-alias-channel"></select><label for="routes-alias-model">指向哪个模型</label><input id="routes-alias-model" list="routes-model-options" placeholder="从下方清单里选，也可以手动填" autocomplete="off" required><label for="routes-alias-note">备注</label><input id="routes-alias-note" placeholder="可选，方便自己记" autocomplete="off"><button id="routes-alias-save" class="primary" type="submit">保存别名</button><button id="routes-alias-reset" class="secondary" type="button">取消编辑</button></form>
@@ -148,7 +156,7 @@
     <div class="section-title"><h2>现在有哪些模型可用</h2><span class="muted small">这是各通道当前的模型清单，点一下模型名就能填进上面的表单</span></div>
     <div id="routes-channels" class="access-grid"></div>
     <div class="section-title"><h2>客户端怎么填</h2><span class="muted small">把别名当成模型名填进你的 Agent 就行；下面这段只是示例，复制后按需修改</span></div>
-    <article class="panel access-panel"><div class="example-heading"><h3>OpenAI 兼容客户端</h3><div><button id="routes-copy-example" class="secondary">复制片段</button></div></div><pre id="routes-example"></pre><p class="muted small">如果你的客户端可以自定义模型名，直接填别名；不确定时，先填 <code>auto</code> 试一下能不能通。</p></article>
+    <article class="panel access-panel"><div class="example-heading"><h3>OpenAI 兼容客户端</h3><div><button id="routes-copy-example" class="secondary">复制片段</button></div></div><pre id="routes-example"></pre><p class="muted small">如果你的客户端可以自定义模型名，直接填别名；不确定时，先填 <code>gateway-auto</code> 试一下能不能通。</p></article>
    </div>
   </section>
   <section class="page" data-page="access" hidden><div class="page-heading"><div><p class="eyebrow">INTEGRATION</p><h1>接入你喜欢的客户端</h1><p class="muted">选择客户端使用的协议，复制配置后即可开始。</p></div></div><article class="panel access-panel">

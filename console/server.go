@@ -86,8 +86,10 @@ type server struct {
 	// routes 是「对外别名 → 真实上游」的路由表，由控制台页面编辑、保存即生效。
 	// 为 nil 时公共出口与现状完全一致，不改变任何既有分流语义。
 	routes *routeStore
-	// probes 缓存各通道的模型探测结论，供 auto 虚拟模型挑选最优链路。
+	// probes 缓存各通道的模型探测结论，供 gateway-auto 虚拟模型挑选最优链路。
 	probes *probeCache
+	// probe 是手工测速探测的运行器与结论缓存（内存态，重启即清空）。
+	probe *probeRunner
 	// credits 缓存 core 下发的模型积分消耗规则（补丁 0011 的 credits 字段），
 	// 供模型开关判定默认态与页面展示。
 	credits *creditCache
@@ -164,6 +166,7 @@ func NewServer(cfg Config) (http.Handler, error) {
 		h.routes = newRouteStore(cfg.RouteFile)
 	}
 	h.probes = &probeCache{}
+	h.probe = newProbeRunner()
 	h.credits = &creditCache{}
 	h.heat = &heatCache{}
 	assets, err := fs.Sub(webFiles, "web")
@@ -223,6 +226,9 @@ func NewServer(cfg Config) (http.Handler, error) {
 	h.mux.HandleFunc("POST /admin/model-switch", h.withAdmin(h.adminModelSwitch))
 	// 全球热度：GET 读 OpenRouter 公开目录的名次表（服务端 24h 缓存）。
 	h.mux.HandleFunc("GET /admin/heat", h.withAdmin(h.adminHeatRanks))
+	// 手工测速探测：POST 触发一轮探测，GET 轮询进度与结论（仅内存，重启清空）。
+	h.mux.HandleFunc("POST /admin/probe", h.withAdmin(h.adminProbeStart))
+	h.mux.HandleFunc("GET /admin/probe", h.withAdmin(h.adminProbeState))
 	h.mux.HandleFunc("POST /admin/access", h.withAdmin(func(w http.ResponseWriter, r *http.Request) {
 		if _, err := h.coreInfo(r.Context()); err != nil {
 			adminError(w, 503, err.Error())
@@ -459,7 +465,7 @@ func (h *server) adminLogin(w http.ResponseWriter, r *http.Request) {
 	http.SetCookie(w, &http.Cookie{Name: "wb2a_admin", Value: id, Path: "/admin", HttpOnly: true, Secure: r.TLS != nil || strings.HasPrefix(h.cfg.PublicOrigin, "https://"), SameSite: http.SameSiteStrictMode, MaxAge: 8 * 3600})
 	// Authentication remains available during a core outage; actions still fail closed.
 	info, _ := h.coreInfo(r.Context())
-	writeJSON(w, 200, map[string]any{"csrf": csrf, "global_enabled": info.GlobalEnabled, "zcode_enabled": h.cfg.ZCodeURL != nil})
+	writeJSON(w, 200, map[string]any{"csrf": csrf, "global_enabled": info.GlobalEnabled, "zcode_enabled": h.cfg.ZCodeURL != nil, "zcode_control": h.cfg.ZCodeControlURL != nil, "qoder_enabled": h.cfg.QoderURL != nil, "qoder_control": h.cfg.QoderControlURL != nil, "opencode_enabled": h.cfg.OpenCodeURL != nil})
 }
 func (h *server) adminLogout(w http.ResponseWriter, r *http.Request) {
 	h.mu.Lock()
