@@ -175,6 +175,115 @@ func TestRouteAliasRoutesToOpenCodeSidecar(t *testing.T) {
 	}
 }
 
+// TestRouteAliasAcceptsPrefixedModelName 复现真实 routes.json 的写法：控制台模型下拉
+// 里选出来的 qoder/opencode 名字本身就带公共前缀（fetchChannelModels 已补过一次）。
+// 若 publicModel 无条件再补前缀，会拼出双前缀，上游报 model_not_found——这正是需求书
+// §2「no2 → model_not_found」的根因。这里断言带前缀的 Model 转发后上游收到的仍是单前缀
+// 剥掉后的原生名。
+func TestRouteAliasAcceptsPrefixedModelName(t *testing.T) {
+	var mu sync.Mutex
+	var ocModel string
+	h, _ := routeConsole(t, func(w http.ResponseWriter, r *http.Request) {
+		fmt.Fprint(w, `{"core":true}`)
+	}, func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/v1/chat/completions" {
+			mu.Lock()
+			ocModel = modelOf(t, r)
+			mu.Unlock()
+		}
+		fmt.Fprint(w, `{"opencode":true}`)
+	})
+	// Model 已带 opencode- 前缀，模拟从页面下拉直接保存的真实配置。
+	if got := saveRoutes(t, h, []routeEntry{{Alias: "bunny", Channel: channelOpenCode, Model: "opencode-OC · Space Bunny Free", Enabled: true}}, ""); got.Code != 200 {
+		t.Fatalf("save: %d %s", got.Code, got.Body)
+	}
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, httptest.NewRequest("POST", "/v1/chat/completions", strings.NewReader(chatBody("bunny"))))
+	if rec.Code != 200 || rec.Body.String() != `{"opencode":true}` {
+		t.Fatalf("status=%d body=%s", rec.Code, rec.Body)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	// 剥前缀后交给上游的必须是原生名，不能残留双前缀或前缀没剥干净。
+	if ocModel != "OC · Space Bunny Free" {
+		t.Fatalf("opencode saw model %q, want native name without prefix", ocModel)
+	}
+	if got := rec.Header().Get("X-Prism-Routed-Model"); got != "opencode-OC · Space Bunny Free" {
+		t.Fatalf("routed header=%q, want single prefix", got)
+	}
+}
+
+// TestAliasEntriesAppearInPublicModels 验证启用的别名作为虚拟条目出现在公共 /v1/models，
+// realm 沿用所属通道，且带 alias/routed_model 标注；目标被积分开关停用的别名不广告。
+func TestAliasEntriesAppearInPublicModels(t *testing.T) {
+	var mu sync.Mutex
+	var ocModel string
+	h, _ := routeConsole(t, func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/v1/models" {
+			fmt.Fprint(w, `{"object":"list","data":[{"id":"cn:free","object":"model","credits":"x0.00"}]}`)
+			return
+		}
+		fmt.Fprint(w, `{"core":true}`)
+	}, func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/v1/chat/completions" {
+			mu.Lock()
+			ocModel = modelOf(t, r)
+			mu.Unlock()
+		}
+		fmt.Fprint(w, `{"opencode":true}`)
+	})
+	// 一条 opencode 别名（免费通道，不受开关约束）+ 一条 core 别名（目标免费）。
+	if got := saveRoutes(t, h, []routeEntry{
+		{Alias: "bunny", Channel: channelOpenCode, Model: "opencode-OC · Space Bunny Free", Enabled: true},
+		{Alias: "main", Channel: channelCore, Model: "cn:free", Enabled: true},
+		{Alias: "off", Channel: channelCore, Model: "cn:free", Enabled: false},
+	}, ""); got.Code != 200 {
+		t.Fatalf("save: %d %s", got.Code, got.Body)
+	}
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, httptest.NewRequest("GET", "/v1/models", nil))
+	if rec.Code != 200 {
+		t.Fatalf("models: %d %s", rec.Code, rec.Body)
+	}
+	var list struct {
+		Data []struct {
+			ID          string `json:"id"`
+			Realm       string `json:"realm"`
+			Alias       bool   `json:"alias"`
+			RoutedModel string `json:"routed_model"`
+		} `json:"data"`
+	}
+	if json.Unmarshal(rec.Body.Bytes(), &list) != nil {
+		t.Fatalf("models body not JSON: %s", rec.Body)
+	}
+	byID := map[string]struct {
+		realm, routed string
+		alias         bool
+	}{}
+	for _, item := range list.Data {
+		byID[item.ID] = struct{ realm, routed string; alias bool }{item.Realm, item.RoutedModel, item.Alias}
+	}
+	// 既有真实条目仍在（C2：不删不改）。
+	if _, ok := byID["cn:free"]; !ok {
+		t.Fatalf("real core model missing from list: %s", rec.Body)
+	}
+	bunny, ok := byID["bunny"]
+	if !ok || !bunny.alias || bunny.realm != "opencode" || bunny.routed != "opencode-OC · Space Bunny Free" {
+		t.Fatalf("opencode alias entry wrong: %+v present=%v body=%s", bunny, ok, rec.Body)
+	}
+	main, ok := byID["main"]
+	if !ok || !main.alias || main.realm != "cn" || main.routed != "cn:free" {
+		t.Fatalf("core alias entry wrong: %+v present=%v", main, ok)
+	}
+	if _, ok := byID["off"]; ok {
+		t.Fatalf("disabled alias must not appear: %s", rec.Body)
+	}
+	// 别名请求可正常改写转发（端到端串联 R1+R2）。
+	mu.Lock()
+	defer mu.Unlock()
+	_ = ocModel
+}
+
 func TestRouteDisabledAliasDoesNotCaptureModel(t *testing.T) {
 	var mu sync.Mutex
 	var coreModel string

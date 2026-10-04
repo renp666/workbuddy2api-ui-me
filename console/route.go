@@ -88,12 +88,80 @@ func (c routeChannel) prefix() string {
 }
 
 // publicModel 拼出该通道在 /v1/models 里对外呈现的模型名。别名解析结果最终
-// 会被改写成这个值，再交给既有前缀分流。配置里的 Model 一律存通道原生模型名
-// （glm 与 core 的原生名自带前缀，qoder/opencode 不带），因此这个函数是
-// 「原生名 → 公共名」的唯一换算点，别名条目和 auto 候选都走它。
+// 会被改写成这个值，再交给既有前缀分流。
+//
+// 这里的换算是幂等的：Model 传入的既可能是通道原生裸名，也可能已经是带公共
+// 前缀的对外形态。控制台页面上的模型下拉来自 routeCatalog→fetchChannelModels，
+// 那份目录对 qoder/opencode 已经补过一次前缀（返回「qoder-x」「opencode-OC · …」），
+// 管理员据此写进 routes.json 的 model 字段本身就是公共形态。若这里再无条件补前缀，
+// 就会拼出「qoder-qoder-x」这种双前缀，剥前缀转发给上游后上游不认，表现为别名
+// 请求 model_not_found。core 的 cn:/global: 与 glm 的 glm- 由上游自带、prefix() 为空
+// 或名字已含前缀，同样靠这个幂等判断保持原样。
 func (e routeEntry) publicModel() string { return e.Channel.publicModel(e.Model) }
 
-func (c routeChannel) publicModel(model string) string { return c.prefix() + model }
+func (c routeChannel) publicModel(model string) string {
+	if prefix := c.prefix(); prefix != "" && !strings.HasPrefix(model, prefix) {
+		return prefix + model
+	}
+	return model
+}
+
+// realm 给别名条目挑一个 realm 标签，与各通道在 /v1/models 里的真实 realm 对齐：
+// core 按模型名的 cn:/global: 命名空间，旁路通道用各自的 realm 名。别名是虚拟条目，
+// realm 只作展示与下游归类用，不参与鉴权或额度。
+func (c routeChannel) realm(model string) string {
+	switch c {
+	case channelGLM:
+		return "glm"
+	case channelQoder:
+		return "qoder"
+	case channelOpenCode:
+		return "opencode"
+	}
+	if strings.HasPrefix(model, "global:") {
+		return "global"
+	}
+	return "cn"
+}
+
+// aliasModelEntries 把当前启用、且解析目标放行的别名条目转成 /v1/models 的虚拟条目，
+// 让下游（含拒绝模型名带空格的消费方）能直接发现并按别名引用。条目沿用所属通道的
+// realm，并额外带 alias/routed_model/virtual 字段标明它是间接层而非真实上游模型。
+// 目标被积分开关停用（含默认停用）时该别名一并隐藏，保持「可见即可用」的口径，
+// 不会 advertise 一个请求必然 404 的名字。gateway-auto 由 mergedModels 单独追加。
+func (h *server) aliasModelEntries(ctx context.Context) []json.RawMessage {
+	if h.routes == nil {
+		return nil
+	}
+	var out []json.RawMessage
+	for _, entry := range h.routes.snapshot() {
+		if !entry.Enabled || entry.Alias == autoModelName {
+			continue
+		}
+		// 通道未配置上游时不广告：请求会因前缀分流落空而失败，别名不该承诺一个到不了的链路。
+		if !h.channelEnabled(entry.Channel) {
+			continue
+		}
+		routed := entry.publicModel()
+		if !h.modelGate(ctx, routed) {
+			continue
+		}
+		item, err := json.Marshal(map[string]any{
+			"id":           entry.Alias,
+			"object":       "model",
+			"owned_by":     "prism",
+			"realm":        entry.Channel.realm(entry.Model),
+			"virtual":      true,
+			"alias":        true,
+			"routed_model": routed,
+		})
+		if err != nil {
+			continue
+		}
+		out = append(out, item)
+	}
+	return out
+}
 
 // maxRouteEntries 限制单份配置的条目数，避免一个失控的页面把内存和文件都撑满。
 const maxRouteEntries = 200

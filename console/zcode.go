@@ -396,6 +396,19 @@ func (h *server) mergedModels(w http.ResponseWriter, r *http.Request, core *http
 		}
 		merged = append(merged, item)
 	}
+	// 别名条目是虚拟间接层：客户端按无空格别名请求，网关改写为所属通道的真实模型。
+	// 与 gateway-auto 一样只在路由功能启用时出现，且经 modelGate 过滤——目标被停用的
+	// 别名不广告，避免下游选中一个必然 404 的名字。
+	for _, item := range h.aliasModelEntries(r.Context()) {
+		var entry struct {
+			ID string `json:"id"`
+		}
+		if json.Unmarshal(item, &entry) != nil || entry.ID == "" || seen[entry.ID] {
+			continue
+		}
+		seen[entry.ID] = true
+		merged = append(merged, item)
+	}
 	// auto 是 console 自建的虚拟模型：它不在任何上游目录里，但客户端需要能在
 	// /v1/models 里看到并选中它，否则各 agent 无法把它写进配置。路由未启用
 	// （没有可写配置）时不能暴露它——那时没有解析器，请求会原样落到 core。
