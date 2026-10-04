@@ -154,11 +154,7 @@ a:hover{text-decoration:underline}
 .sw-qoder{background:#8b5cf6}
 .sw-opencode{background:#ec4899}
 
-/* ---------- 欢迎卡与信息网格 ---------- */
-.welcome{border:1px solid var(--line);background:linear-gradient(135deg,#f4f2ff 0%,#eef7fd 100%);border-radius:var(--radius-xl);padding:34px;display:flex;gap:27px;align-items:center;margin-bottom:24px}
-.welcome-mark{font-size:46px;line-height:1;background:var(--prism);color:#fff;padding:24px;border-radius:50%;box-shadow:0 18px 40px -20px #6d5efc}
-.welcome p:not(.eyebrow){font-size:13px;color:var(--muted)}
-.welcome button{font-size:12px;margin-right:8px}
+/* ---------- 信息网格 ---------- */
 .info-grid{display:grid;grid-template-columns:1fr 1fr;gap:20px}
 .panel{background:var(--surface);border:1px solid var(--line);border-radius:var(--radius-lg);padding:24px;box-shadow:var(--shadow-sm)}
 .info-grid h3{margin:0 0 10px}
@@ -267,7 +263,6 @@ textarea{width:100%;resize:vertical;min-height:64px;max-height:180px;display:blo
  .page,.topbar{padding-left:25px;padding-right:25px}
  .metrics{grid-template-columns:repeat(2,1fr)}
  .channel-cards{grid-template-columns:repeat(2,1fr)}
- .welcome-mark{display:none}
  .task-grid{grid-template-columns:repeat(2,minmax(0,1fr))}
 }
 
@@ -293,7 +288,6 @@ textarea{width:100%;resize:vertical;min-height:64px;max-height:180px;display:blo
  .metrics strong{font-size:28px}
  .channel-cards{grid-template-columns:1fr}
  #workbuddy-pane-usage .metrics{grid-template-columns:repeat(2,1fr)}
- .welcome{padding:24px}
  .info-grid,.task-grid{grid-template-columns:1fr}
  .inline-form select{min-width:150px}
  .login-card{padding:27px}

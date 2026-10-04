@@ -96,7 +96,6 @@ function showPage(value) {
  if (page === 'access' && opencodeEnabled && !opencodeStatus) loadOpenCode();
 }
 document.querySelectorAll('[data-view]').forEach(button => button.addEventListener('click', () => {
- if (button.dataset.sub && button.dataset.view === 'workbuddy') setWorkBuddyView(button.dataset.sub);
  showPage(button.dataset.view);
 }));
 for (const name of ['accounts','tasks','models','chat']) $('workbuddy-view-'+name).addEventListener('click', () => {
@@ -300,12 +299,15 @@ function channelModelRows(channel,list,health){
    note:result&&typeof result.error==='string'&&result.error?result.error:'—'};
  }).sort(switchable?creditSort:probeSort);
 }
-// creditSort 是积分开关通道的排序：按积分消耗倒序（倍率高在前），未知倍率排最后，
-// 已知且为 0（免费）排最末。倍率相同（含同为未知）保持上游目录的插入顺序，
+// creditSort 是积分开关通道的排序：按积分消耗升序（倍率低在前），未知倍率排最后，
+// 已知且为 0（免费）排最前。倍率相同（含同为未知）保持上游目录的插入顺序，
 // Array.prototype.sort 在 V8 中稳定，不额外按名字打乱同档模型。
 function creditSort(a,b){
- const av=a.creditValue??-1,bv=b.creditValue??-1;
- return bv-av;
+ const av=a.creditValue,bv=b.creditValue;
+ if(av==null&&bv==null)return 0;
+ if(av==null)return 1;
+ if(bv==null)return -1;
+ return av-bv;
 }
 // probeSort 是 opencode 通道的原排序：免费通道不采集倍率，保持「探测状态 → 耗时」口径。
 function probeSort(a,b){
@@ -581,8 +583,6 @@ function renderAccounts(data) {
  lastStatus = data;
  accounts = data.accounts || [];
  $('service-state').textContent = data.total ? '网关运行中' : '运行中 · 等待添加账号';
- $('welcome-title').textContent = data.total ? '你的网关已连接账号' : '添加第一个账号';
- $('welcome-text').textContent = data.total ? '检查账号状态，或发出一个问题来验证模型当前的响应。' : '在浏览器中完成授权，网关会自动保存并加载账号。';
  $('accounts-body').replaceChildren(); $('accounts-empty').hidden = accounts.length > 0;
  for (const a of accounts) {
   const tr=document.createElement('tr');const state=a.disabled?'已禁用':a.cooling?'冷却中':'可用';
