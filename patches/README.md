@@ -4,7 +4,7 @@ Baseline: Sliverkiss/workbuddy2api commit
 `c576b489fa22e3c156e960ee6336c4e653a0d95c`. Apply only through
 `python3 scripts/overlay.py prepare --output ABS_NEW_DIRECTORY`; never edit
 `upstream/`. New source and tests live in `extensions/`, not in these patches.
-`series` is the explicit application order: 0001, 0002, 0003, 0004, 0005, 0006, 0007, 0008, 0009, 0010, 0011, 0012, 0013, 0014.
+`series` is the explicit application order: 0001, 0002, 0003, 0004, 0005, 0006, 0007, 0008, 0009, 0010, 0011, 0012, 0013.
 For a deliberate upstream candidate, run
 `python3 scripts/overlay.py update --ref COMMIT_OR_TAG`; it keeps the current
 snapshot and lock until the candidate passes `scripts/check.sh` and isolated
@@ -26,7 +26,19 @@ committing the resulting `upstream/` and `upstream.lock` changes.
 | 0011-model-credit-listing | `internal/upstream/client.go`: `ModelInfo.Credits`; `FetchModels` parses the upstream top-level `credits` (env/dynEntry/out) and writes non-empty values into a per-realm `credits` bucket (`creditsSnapshot`/`storeCredits`/`GlobalCreditSnapshot`, sharing `effortsMu`). `internal/upstream/global_models.go`: the file-header note that credits never enter this package is narrowed to a **read-only pass-through**; `globalModelEntry.Credits`, `parseGlobalModelNames`/`probeGlobalModels`/`globalModelsOnce` return a fifth `credits` bucket, and `FetchGlobalModels` writes the global bucket (its public `[]string` signature is unchanged). `internal/server/handler.go`: `modelList` adds `entry["credits"]` on the CN dynamic branch and on the global branch (static fallback stays credit-less). `credits` is the upstream **pricing rule** string (e.g. `"x0.00 credits"` = limited-time free, `"x0.79"` = multiplier), not an accumulated ledger; it is display-only, never injected into cost tier, selection or scheduling, and a missing value omits the field (console shows 未知). | `go test ./internal/upstream ./internal/server` (includes `TestFetchModelsParsesCredits`, `TestParseGlobalModelNamesCredits`, `TestFetchGlobalModelsStoresCreditBucket`, plus the existing effort/global listing regressions) |
 | 0012-stream-interrupt-explicit | `internal/upstream/sse.go`: `Stream` no longer disguises a truncated OpenAI passthrough stream as a clean finish. It tracks `sawDone` (explicit upstream `[DONE]`) and `sawFinish` (a non-empty `finish_reason` frame via the new `hasFinishReason` helper) and closes in three states: explicit `[DONE]` → exactly one `[DONE]`, nil; no `[DONE]` but `finish_reason` seen → content complete, backfill one `[DONE]`, nil (sentinel-missing tolerated); no `[DONE]` and no `finish_reason` (clean EOF mid-stream, idle-timeout cancel, or transport read error) → write an explicit `{"error":{...,"code":"stream_interrupted"}}` frame, **do not** emit `[DONE]`, and return a non-nil error (the original read error is preserved). The empty-stream case (0 valid frames) keeps its old shape (error frame + `[DONE]` + non-nil error) and only gains the `code` field. `internal/server/handler.go`: the streaming success path stops swallowing the `Stream` return (`_ =` → capture) and logs a `WARN: [server] stream interrupted uid=... model=...` line; the 200 header and partial frames are already flushed, so status is not rewritten and no account rotation is attempted (that would duplicate content). Existing test `TestStreamDoneFallback` is inverted to the new contract; `TestStreamNormalPassthroughRegression`'s missing-`[DONE]` case now carries a `finish_reason`. New regressions live in `extensions/internal/upstream/stream_interrupt_test.go`. | `go test ./internal/upstream ./internal/server ./internal/anthropic` (includes `TestStreamFinishReasonWithoutDoneTolerated`, `TestStreamReadErrorInterrupts`, `TestHasFinishReason`, the inverted `TestStreamDoneFallback`) and their race tests |
 | 0013-chat-retry-backoff | `internal/server/handler.go`: `Config.RetrySameAccount` (max attempts on one account including the first, default 1 = off) and `Config.RetryBackoff` (fixed pause before a same-account resend, default 300ms) wrap the `ChatStreamContext` call inside the rotation loop with an inner same-account retry. Only transport errors and transient classifications (`ErrSoftRate`/`ErrServer`) trigger a resend; content block, hard credit, session dead, account fault, WAF, 404 and a strictly pinned account (0010) never resend, and a canceled client context breaks out immediately. Failed attempts keep the pool lease and never call `fail`/`applyErrorPolicy` — a transient that the retry absorbs leaves the account uncooled; only after exhaustion does the existing branch penalize the account with the original semantics (rc is nil on every `ChatStreamContext` failure path, so overwriting leaks nothing). `cmd/server/main.go`: production wiring injects `RetrySameAccount: 2` (backoff stays the code default; internal fixed parameter, not JSON/env). Zero-value default keeps every existing handler test and source-mode behavior unchanged. New regressions live in `extensions/internal/server/retry_backoff_test.go`. | `go test ./internal/server` (includes `TestChatSameAccountRetryOnSoftRate`, `TestChatSameAccountRetryExhaustedAppliesPolicy`, `TestChatNoRetryByDefault`, `TestChatHardCreditNotRetriedSameAccount`, `TestChatPinnedNoSameAccountRetry`, `TestChatTransportErrorRetriedSameAccount`), `go test -race ./internal/server ./cmd/server` |
-| 0014-global-realtime-catalog | `internal/upstream/global_models.go`: on a successful probe `FetchGlobalModels` returns **only the realtime catalog** (deduped, disabled filtered) and no longer merges the static `GlobalModelNames` (the 21-name PLAN §7.2 historical snapshot) as a base; the static list stays purely as the failure fallback (probe failure / no global account / escape hatch) and those return paths are unchanged. `internal/server/handler.go`: comment sync only — the list source is encapsulated in upstream. Motivation: the upstream adds and removes models per account and campaign, and the pooled global account's realtime catalog (18 models) already carries credits for every entry, while three ghost names that exist only in the static snapshot (`deepseek-v4.1-flash`, `gpt-6-astra`, `hy4-preview-f`) were leaking into `/v1/models` with no multiplier — permanently 未探明 credits and default-disabled by the credit switch, polluting the model list. Tests: `TestFetchGlobalModelsProbeMergesAndHeaders`, `TestFetchGlobalModelsParseNarrowTable` and `TestModelListTwoFamilies` are inverted to assert static-only names never appear on a successful probe; `TestModelListEffortFieldsGlobalRemote` now probes `deepseek-v4.1-flash` explicitly (the static effort table is keyed by model name, independent of the list source). Fallback-path tests (`TestFetchGlobalModelsFallbackStaticOnFailure`, `TestFetchGlobalModelsNegativeCache`, `TestModelListNoGlobalAccountZeroProbe`, `TestModelListProbeFailureFallsBackStatic`) keep their original static assertions. | `go test ./internal/upstream ./internal/server` (includes the inverted assertions above plus the unchanged fallback regressions) |
+A former patch 0014-global-realtime-catalog was removed on 2026-10-05 after
+its premise proved wrong. It had assumed the enterprise catalog probe
+(`/v2/enterprises/personal/models`, 18 entries) is the authoritative global
+model universe, so `FetchGlobalModels` stopped merging the static
+`GlobalModelNames` base on a successful probe. Live verification showed the
+official client merges the public product config via
+`include: ["../common/product.json"]` with `mergeStrategy: "merge"`: the
+enterprise catalog is only one fragment, and `deepseek-v4.1-flash` (free
+x0.00), `gpt-6-astra` and `hy4-preview-f` exist only in the public config
+while remaining chat-verifiable. Patch 0014 therefore hid real, usable models
+from the global directory; dropping it restores the snapshot semantics
+(static `GlobalModelNames` ∪ realtime probe, deduped). The patch was never
+published upstream, so no removal condition applies — it is simply reverted.
 
 Remove each patch only when the pinned upstream supplies the corresponding
 behavior and the named regression tests pass without that patch. For 0003,
@@ -117,17 +129,6 @@ with the patch dropped. Its zero-value default (1 attempt) is a no-op, so
 dropping it only removes the production `RetrySameAccount: 2` wiring and the
 inner loop; the 0012a truncation handling, 0010 pin semantics and the rotation
 tail are untouched by this patch and stay valid either way.
-
-Remove 0014 when the pinned upstream `FetchGlobalModels` itself treats the
-realtime probe catalog as authoritative on success (no longer merging the static
-name list as a base) and the inverted assertions in
-`TestFetchGlobalModelsProbeMergesAndHeaders`, `TestFetchGlobalModelsParseNarrowTable`
-and `TestModelListTwoFamilies` pass with the patch dropped, while the four
-fallback-path tests still hold the static-list semantics. Dropping it only
-reverts the global model-list source; the credits pass-through (0011), effort
-buckets, availability filtering and realm attribution (0009) are independent and
-stay valid either way. The static `GlobalModelNames` list itself is not removed —
-it remains the failure fallback.
 
 Task 2 wiring handoff: `initializeCore(*Config) error` validates opt-in
 `WB2A_BRIDGE_KEY` and creates account/state directories before loading accounts.
