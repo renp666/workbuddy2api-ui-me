@@ -20,7 +20,7 @@ class Handler(BaseHTTPRequestHandler):
             self.send_json({"status": "ok"})
             return
         if self.path == "/v2/enterprises/personal/models":
-            self.send_json({"code": 0, "data": {"models": [{"id": "mock-model", "name": "Mock Model", "maxInputTokens": 4096, "maxOutputTokens": 1024}], "agents": [{"name": "cli", "models": ["mock-model"]}]}})
+            self.send_json({"code": 0, "data": {"models": [{"id": "mock-model", "name": "Mock Model", "maxInputTokens": 4096, "maxOutputTokens": 1024, "credits": "x0.00"}], "agents": [{"name": "cli", "models": ["mock-model"]}]}})
             return
         self.send_error(404)
 
