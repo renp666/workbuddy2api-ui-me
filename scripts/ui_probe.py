@@ -12,6 +12,7 @@ Usage (repo root, against the isolated mock preview from
 import argparse
 import json
 import sys
+import time
 from pathlib import Path
 
 # --- views to walk: (screenshot slug, nav view, sub-tab id or None, expected marker) ---
@@ -26,8 +27,36 @@ VIEWS = [
     ("08-opencode", "opencode", None, "OpenCode 通道"),
     ("09-usage", "usage", None, "调用统计"),
     ("10-routes", "routes", None, "我的别名表"),
-    ("11-access", "access", None, "接入你喜欢的客户端"),
+    ("10b-routes-capability", "routes", None, "模型能力 TOP"),
+    ("10c-routes-fullboard", "routes", None, "全量榜单"),
+    ("10d-routes-design", "routes", None, "设计维度榜单"),
+    ("11-access", "access", None, "选择客户端使用的协议"),
 ]
+
+# Some views only exist after an in-page control is switched; the nav click alone
+# lands on the default tab. Keyed by slug, evaluated before the screenshot.
+CLICK_JS = {
+    "10c-routes-fullboard": ("() => { const b = [...document.querySelectorAll('#cap-dims button')]"
+                              ".find(x => x.textContent === '全量榜单'); b && b.click(); }"),
+    "10d-routes-design": ("() => { const b = [...document.querySelectorAll('#cap-dims button')]"
+                          ".find(x => x.textContent === '设计'); b && b.click(); }"),
+}
+
+# Desktop shots are viewport-height only, so a module low on a long page would
+# never appear in its own evidence image. Phone already shoots full_page.
+SCROLL_TO = {"10b-routes-capability": "#cap-tiers", "10c-routes-fullboard": "#cap-tiers",
+             "10d-routes-design": "#cap-tiers"}
+
+# The capability board fills from a first upstream fetch that can take ~20 s;
+# a shot taken before it lands documents a spinner, not the design.
+CAP_READY = ("() => { const s = document.getElementById('cap-stamp');"
+             " return !!s && !s.textContent.includes('正在读取'); }", 45000)
+
+WAIT_FOR = {
+    "10b-routes-capability": CAP_READY,
+    "10c-routes-fullboard": CAP_READY,
+    "10d-routes-design": CAP_READY,
+}
 
 VIEWPORTS = {
     "desktop": {"width": 1440, "height": 900},
@@ -501,18 +530,35 @@ def login(page, base, key):
     page.wait_for_timeout(1500)
 
 
-def settle(page):
+def _poll(page, source, timeout_ms, step_ms=200):
+    """Poll a JS predicate until it is true.
+
+    Not page.wait_for_function(): the console answers with `script-src 'self'`,
+    and Playwright's poller feeds a string source through eval in the main world
+    once the utility world is busy, which intermittently raises EvalError.
+    page.evaluate() compiles a function expression instead and was never blocked
+    across this session, so every wait in this file goes through here.
+    """
+    deadline = time.monotonic() + timeout_ms / 1000.0
+    while time.monotonic() < deadline:
+        if page.evaluate(source):
+            return True
+        page.wait_for_timeout(step_ms)
+    return False
+
+
+def settle(page, timeout_ms=6000):
     """The console keeps a visible-page poll in flight, so networkidle never fires.
-    Wait for the DOM to stop changing instead."""
+    Wait for the DOM to stop changing instead; False means it never settled."""
+    settled = False
     try:
-        page.wait_for_function(
-            """() => { const t = window.__probeMark;
-                         window.__probeMark = document.body.innerText.length;
-                         return t === window.__probeMark; }""",
-            timeout=6000)
+        settled = _poll(page, """() => { const t = window.__probeMark;
+                        window.__probeMark = document.body.innerText.length;
+                        return t === window.__probeMark; }""", timeout_ms)
     except Exception:
         pass
     page.wait_for_timeout(600)
+    return settled
 
 
 def run_selftest(page):
@@ -557,7 +603,7 @@ def tab_walk(page, limit=45):
     }
 
 
-def walk(pw, base, key, out_dir, tag, vp_name):
+def walk(pw, base, key, out_dir, tag, vp_name, only=()):
     vp = VIEWPORTS[vp_name]
     browser = pw.chromium.launch(channel="msedge")
     ctx = browser.new_context(viewport=vp, device_scale_factor=1, locale="zh-CN")
@@ -590,20 +636,44 @@ def walk(pw, base, key, out_dir, tag, vp_name):
 
     login(page, base, key)
 
-    for slug, view, tab, marker in VIEWS:
+    views = [v for v in VIEWS if not only or any(o in v[0] for o in only)]
+    for slug, view, tab, marker in views:
         name = f"{tag}-{vp_name}-{slug}"
         try:
             page.click(f'button[data-view="{view}"]')
-            settle(page)
+            settled = settle(page)
             if tab:
                 page.click(f"#{tab}")
-                settle(page)
+                settled = settle(page) and settled
+            click_js = CLICK_JS.get(slug)
+            if click_js:
+                page.evaluate(click_js)
+                settled = settle(page) and settled
+            wait = WAIT_FOR.get(slug)
+            ready = True
+            if wait:
+                ready = _poll(page, wait[0], wait[1])
+                page.wait_for_timeout(400)
             state = page.evaluate(JS_STATE)
+            anchor = SCROLL_TO.get(slug)
+            if anchor:
+                # The topbar is sticky, so a plain scrollIntoView buries the
+                # section heading under it.
+                page.evaluate("""sel => { const el = document.querySelector(sel)?.closest('.panel');
+                    if (!el) return;
+                    el.scrollIntoView({block: 'start'});
+                    const bar = document.querySelector('.topbar');
+                    window.scrollBy(0, -((bar && bar.getBoundingClientRect().height) || 0) - 12); }""",
+                    anchor)
+                page.wait_for_timeout(400)
+                state = page.evaluate(JS_STATE)
             shot = out_dir / f"{name}.png"
             page.screenshot(path=str(shot), full_page=(vp_name == "phone"))
             shots.append((shot.name, marker, state["bodyTextLength"]))
             rep = {
                 "state": state,
+                "boardReady": ready,
+                "settled": settled,
                 "contrast": page.evaluate(JS_CONTRAST),
                 "contrastInactive": page.evaluate("() => window.__prismInactive || 0"),
                 "overflow": page.evaluate(JS_OVERFLOW),
@@ -640,6 +710,8 @@ def summarise(reports):
             f"tabs={tab.get('stops','-')} weakRing={len(tab.get('weakRing', []))} "
             f"noRing={len(tab.get('noRing', []))} offscreen={len(tab.get('offscreen', []))} "
             f"minRing={tab.get('minRing')}"
+            + ("  UNSETTLED" if rep.get("settled") is False else "")
+            + ("  BOARD-NOT-READY" if rep.get("boardReady") is False else "")
         )
     return lines
 
@@ -651,6 +723,8 @@ def main():
     ap.add_argument("--out", default=".build/ui-probe")
     ap.add_argument("--tag", default="before")
     ap.add_argument("--viewports", default="desktop,phone")
+    ap.add_argument("--only", default="",
+                    help="comma-separated slug substrings; re-runs just those views")
     args = ap.parse_args()
 
     out_dir = Path(args.out)
@@ -659,9 +733,10 @@ def main():
 
     all_reports, all_selftests = {}, {}
     prefix = args.tag + "-"
+    only = tuple(o.strip() for o in args.only.split(",") if o.strip())
     with sync_playwright() as pw:
         for vp in [v.strip() for v in args.viewports.split(",") if v.strip()]:
-            shots, reports, selftest = walk(pw, args.base, args.key, out_dir, args.tag, vp)
+            shots, reports, selftest = walk(pw, args.base, args.key, out_dir, args.tag, vp, only)
             all_reports.update(reports)
             all_selftests[vp] = selftest
             print(f"\n=== {vp} · self-test through the real measure()/ringScore() ===")
