@@ -311,10 +311,6 @@ docker run --rm --network none \
     chmod 600 /auths/workbuddy-mock.json /data/state.json /data/console-keys.json
     chown -R 10001:10001 /auths /data
   '
-legacy_before="$(docker run --rm --network none \
-  --mount "type=volume,src=${legacy_project}_auths,dst=/auths,readonly" \
-  --mount "type=volume,src=${legacy_project}_data,dst=/data,readonly" \
-  alpine:3.20 sh -eu -c 'sha256sum /auths/workbuddy-mock.json /data/state.json /data/console-keys.json')"
 compose_for "$legacy_project" "$legacy_port" up -d --wait --no-build
 [[ "$(compose_for "$legacy_project" "$legacy_port" port console 7863)" == "127.0.0.1:$legacy_port" ]]
 wait_live "http://127.0.0.1:$legacy_port/livez"
@@ -386,7 +382,10 @@ new=json.load(open("/run/wb2a/keys.json"))
 assert old == {"admin_key":"a"*32,"api_key":"legacy-api"}
 assert new["admin_key"] == old["admin_key"] and new["api_key"] == old["api_key"]
 assert len(new["bridge_key"]) >= 32 and new["bridge_key"] not in old.values()
-assert json.load(open("/app/data/state.json"))["accounts"]["mock"] == {"credits":77,"err_total":4}
+# Once a request is served, core re-serializes its full account struct into state.json,
+# so the seeded values must survive; exact dict equality would assert the storage schema.
+acct=json.load(open("/app/data/state.json"))["accounts"]["mock"]
+assert acct["credits"] == 77 and acct["err_total"] == 4
 auth=json.load(open("/app/auths/workbuddy-mock.json"))
 assert auth["account"]["uid"] == "mock" and auth["auth"]["realm"] == "global"
 '
@@ -435,6 +434,10 @@ run=json.loads(sys.argv[1])
 assert run["status"] == "skipped" and run["request_id"] == sys.argv[2]
 assert run["accounts"] == [{"uid":"mock","status":"skipped","detail":"global","before":None,"after":None,"reward":None}]
 ' "$run_json" "$request_id"
+# Byte-compare only the files core never re-serializes. state.json is core's own
+# storage format and served traffic rewrites it, so its claim is checked by value below.
+legacy_before="$(compose_for "$legacy_project" "$legacy_port" exec -T core sha256sum \
+  /app/auths/workbuddy-mock.json /app/data/console-keys.json)"
 legacy_key_digest="$(compose_for "$legacy_project" "$legacy_port" exec -T core sha256sum /run/wb2a/keys.json | cut -d' ' -f1)"
 compose_for "$legacy_project" "$legacy_port" up -d --force-recreate --wait --no-build
 [[ "$legacy_key_digest" == "$(compose_for "$legacy_project" "$legacy_port" exec -T core sha256sum /run/wb2a/keys.json | cut -d' ' -f1)" ]]
@@ -445,9 +448,14 @@ import json,sys
 run=json.load(sys.stdin)
 assert run["id"] == sys.argv[1] and run["status"] == "skipped" and run["finished_at"] is not None
 ' "$run_id"
-legacy_after="$(compose_for "$legacy_project" "$legacy_port" exec -T core sh -eu -c \
-  'sha256sum /app/auths/workbuddy-mock.json /app/data/state.json /app/data/console-keys.json')"
+legacy_after="$(compose_for "$legacy_project" "$legacy_port" exec -T core sha256sum \
+  /app/auths/workbuddy-mock.json /app/data/console-keys.json)"
 [[ "$legacy_before" == "$legacy_after" ]]
+compose_for "$legacy_project" "$legacy_port" exec -T core python3 -c '
+import json
+acct=json.load(open("/app/data/state.json"))["accounts"]["mock"]
+assert acct["credits"] == 77 and acct["err_total"] == 4 and acct["success_count"] >= 1
+'
 
 if [[ -n "${WB2A_SDK_PYTHON:-}" ]]; then
   "$WB2A_SDK_PYTHON" "$repo_root/scripts/check_anthropic_sdk.py" \
