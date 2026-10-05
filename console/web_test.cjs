@@ -1372,6 +1372,32 @@ test('credit column shows the multiplier, defaults the switch from it, and sorts
   assert.deepEqual(get('core-models-body').children.map(tr=>tr.children[9].children[0].textContent),['已停用','已启用','已停用'],'manual override must beat the credit default');
 });
 
+test('cn: and global: variants of the same name stay separate rows with their own credits and accounts',async()=>{
+  // 真实目录里同名模型在两个 realm 各有一条（倍率与可用账号都不同）；行身份必须是
+  // 完整公共名。按对齐键合并会把 CN 倍率冲成「未知」（如 cn:deepseek-v4.1-flash 的
+  // x0.11）、把 cn: 行挂到国际账号组下。
+  const models=[
+   {id:'cn:glm-5.2',credits:'x0.79',accounts:[{uid:'u1',nickname:'国内一号'}]},
+   {id:'global:glm-5.2',credits:'x0.79',accounts:[{uid:'u2',nickname:'国际一号'}]},
+   {id:'cn:deepseek-v4.1-flash',credits:'x0.11',accounts:[{uid:'u1',nickname:'国内一号'}]},
+   {id:'global:deepseek-v4.1-flash',accounts:[{uid:'u2',nickname:'国际一号'}]},
+   {id:'cn:hy4-preview',credits:'x0.29',accounts:[{uid:'u1',nickname:'国内一号'}]},
+   {id:'global:hy4-preview',credits:'x0.00',accounts:[{uid:'u2',nickname:'国际一号'}]}
+  ];
+  const {ctx,get}=taskFixture(url=>url==='/admin/models'?Promise.resolve({ok:true,status:200,json:async()=>({data:models})}):new Promise(()=>{}));
+  await vm.runInContext('refreshModels()',ctx);
+  const rows=get('core-models-body').children;
+  const heads=rows.filter(tr=>tr.className==='model-group-head').map(tr=>tr.children[0].textContent);
+  assert.deepEqual(heads,['国内一号 · 3 个模型','国际一号 · 3 个模型'],'each realm keeps its own account group');
+  const labels=rows.filter(tr=>tr.className!=='model-group-head').map(tr=>tr.children[0].textContent);
+  assert.deepEqual(labels,['cn:deepseek-v4.1-flash','cn:hy4-preview','cn:glm-5.2','global:hy4-preview','global:glm-5.2','global:deepseek-v4.1-flash'],'six rows must survive, sorted by credit inside each group');
+  const creditOf=id=>rows.find(tr=>tr.children[0].textContent===id).children[8].textContent;
+  assert.equal(creditOf('cn:deepseek-v4.1-flash'),'×0.11','CN multiplier must not be overwritten by the global entry');
+  assert.equal(creditOf('cn:hy4-preview'),'×0.29');
+  assert.equal(creditOf('global:hy4-preview'),'×0');
+  assert.equal(creditOf('global:deepseek-v4.1-flash'),'未知','missing global credits stay 未知, never faked as zero');
+});
+
 test('global heat column maps OpenRouter ranks by model key and never invents one',async()=>{
   const ranks=[
     {id:'stealth/space-bunny-alpha',canonical_slug:'stealth/space-bunny-alpha'},

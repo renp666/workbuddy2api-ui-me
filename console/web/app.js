@@ -265,6 +265,9 @@ async function modelSwitchAction(btn){
 }
 // channelModelRows 把「模型清单」与「探测结果」并成同一批行。/v1/models 只返回可用项，
 // 探测过但不可用的模型仍按条保留并带失败原因，不让它们从界面上整体消失。
+// 行身份分两套：core 清单里 cn: 与 global: 是两个不同模型（各有倍率与可用账号），
+// 去重必须用完整公共名，否则同名模型被合并、账号归属与倍率互相覆盖；其余通道
+// 沿用跨源对齐键。row.key 始终是对齐键，供热度与能力表跨源匹配。
 function channelModelRows(channel,list,health){
  const prefix=modelChannels[channel].namePrefix;
  const results=health&&typeof health.modelResults==='object'&&health.modelResults?health.modelResults:{};
@@ -272,7 +275,7 @@ function channelModelRows(channel,list,health){
  if(health&&Array.isArray(health.models))for(const item of health.models){if(item&&item.name)caps.set(modelKey(item.name),item);}
  const rows=new Map();
  const switchable=channel!=='opencode';
- const ensure=label=>{const key=modelKey(label);if(!key)return null;if(!rows.has(key))rows.set(key,{key,label:String(label),id:String(label),cap:null,result:null,efforts:null,credits:null,creditValue:null,accounts:null});return rows.get(key);};
+ const ensure=label=>{const identity=channel==='core'?String(label||''):modelKey(label);if(!identity)return null;const key=modelKey(label);if(!rows.has(identity))rows.set(identity,{key,label:String(label),id:String(label),cap:null,result:null,efforts:null,credits:null,creditValue:null,accounts:null});return rows.get(identity);};
  for(const item of(Array.isArray(list)?list:[])){
   if(!item||!item.id)continue;
   const row=ensure(item.id);if(!row)continue;
