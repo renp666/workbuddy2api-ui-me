@@ -54,7 +54,10 @@ services:
       WB2A_API_KEY: ${WB2A_API_KEY:-}
     ports: !override
       - "127.0.0.1:${WB2A_PORT:?set test port}:7863"
-    volumes:
+    # Compose 的 volumes 按 target 合并，普通列表只能追加、无法删掉运行版基类里
+    # 宿主相对的 ./runtime/wb2api/console（可写）挂载——那会让隔离验收直接读写真实
+    # 部署的路由配置，且 /run/wb2a 之外的挂载使 acceptance.sh 的挂载判据永远不可能通过。
+    volumes: !override
       - keys:/run/wb2a:ro
     depends_on:
       core:
