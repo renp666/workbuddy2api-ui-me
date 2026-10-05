@@ -154,6 +154,14 @@
     <article class="panel"><div class="section-title"><h2>添加 / 修改别名</h2></div>
      <form id="routes-alias-form" class="inline-form"><label for="routes-alias-name">起个名字</label><input id="routes-alias-name" placeholder="my-fast" autocomplete="off" required><label for="routes-alias-channel">走哪个通道</label><select id="routes-alias-channel"></select><label for="routes-alias-model">指向哪个模型</label><input id="routes-alias-model" list="routes-model-options" placeholder="从下方清单里选，也可以手动填" autocomplete="list" required><label for="routes-alias-note">备注</label><input id="routes-alias-note" placeholder="可选，方便自己记" autocomplete="off"><button id="routes-alias-save" class="primary" type="submit">保存别名</button><button id="routes-alias-reset" class="secondary" type="button">取消编辑</button></form>
      <datalist id="routes-model-options"></datalist></article>
+    <article class="panel"><div class="section-title"><h2>模型能力 TOP</h2><span class="muted small" id="cap-stamp">正在读取外部榜单…</span></div>
+     <p class="muted small">候选只从你当前通道目录里选得到的模型中挑，不是一张世界榜。名次与指数来自 OpenRouter 公开模型目录（其中转发了 Artificial Analysis 与 Design Arena 的数据），控制台不发请求去自己评测，也不给缺数据的模型补分。</p>
+     <div class="protocol-switch" id="cap-dims" role="group" aria-label="能力维度"></div>
+     <div class="inline-form" id="cap-controls"><span id="cap-category-wrap" hidden><label for="cap-category">设计类目</label><select id="cap-category"></select></span><label for="cap-filter">筛选</label><input id="cap-filter" type="search" placeholder="按模型名过滤" autocomplete="off"></div>
+     <div class="metrics" id="cap-tiers"></div>
+     <div class="table-wrap"><table><thead><tr id="cap-head"></tr></thead><tbody id="cap-body"></tbody></table><p id="cap-empty" class="empty" hidden></p></div>
+     <p class="compat-note" id="cap-note" hidden></p>
+    </article>
     <div class="section-title"><h2>现在有哪些模型可用</h2><span class="muted small">这是各通道当前的模型清单，点一下模型名就能填进上面的表单</span></div>
     <div id="routes-channels" class="access-grid"></div>
     <div class="section-title"><h2>客户端怎么填</h2><span class="muted small">把别名当成模型名填进你的 Agent 就行；下面这段只是示例，复制后按需修改</span></div>

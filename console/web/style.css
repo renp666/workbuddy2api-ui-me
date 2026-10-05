@@ -266,6 +266,20 @@ textarea{width:100%;resize:vertical;min-height:64px;max-height:180px;display:blo
 .heat-2{color:#8a5410}
 .heat-3{color:#6d6318}
 
+/* ---------- 别名页：模型能力 TOP ---------- */
+/* 档位条复用统计条的分割线，不引入新卡片：三档是同一份候选的三种取法，并列而非独立对象。 */
+/* 维度切换有 6 项，比协议切换宽得多：允许换行并锁住按钮的固有宽度，
+   否则手机段的 .protocol-switch button{flex:1} 会把每项压成竖排单字。 */
+#cap-dims{margin-top:6px;flex-wrap:wrap}
+#cap-dims button{flex:0 0 auto;white-space:nowrap}
+#cap-controls{margin:14px 0 0}
+#cap-tiers{margin:18px 0 16px}
+#cap-tiers article{display:flex;flex-direction:column;align-items:flex-start;gap:2px}
+#cap-tiers strong{font-size:16px;letter-spacing:-.2px;margin:7px 0 3px;overflow-wrap:anywhere}
+#cap-tiers small{margin-bottom:8px}
+#cap-body td{white-space:nowrap}
+#cap-body td:first-child,#cap-body td:nth-child(2){white-space:normal}
+
 /* ---------- 动效 ---------- */
 @media(prefers-reduced-motion:reduce){
  *,*::before,*::after{transition-duration:0s!important;animation-duration:0s!important;animation-iteration-count:1!important;scroll-behavior:auto!important}
@@ -313,6 +327,8 @@ textarea{width:100%;resize:vertical;min-height:64px;max-height:180px;display:blo
  .access-grid{grid-template-columns:minmax(0,1fr)}
  .protocol-switch{width:100%}
  .protocol-switch button{flex:1}
+ /* 维度条不换行压缩，只收紧内边距，让 6 项落在两行内。 */
+ #cap-dims button{padding:9px 12px}
  .protocol-row{gap:12px}
  .access-panel .inline-form input{flex-basis:100%}
  .access-panel .inline-form button{flex:1}

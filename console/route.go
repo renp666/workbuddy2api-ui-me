@@ -918,6 +918,9 @@ func (h *server) writeRouteState(w http.ResponseWriter, r *http.Request) {
 		"auto_preview":   preview,
 		"aliases":        aliases,
 		"channels":       channels,
+		// model_costs 只覆盖 core 通道（公共模型名 → credits 原始串）：glm- / qoder-
+		// 旁路上游不公布倍率，opencode 是免费通道，前端各自判定，缺失不等于零价。
+		"model_costs": h.consoleCreditRules(r.Context()),
 	})
 }
 

@@ -316,6 +316,8 @@ components:
 - **子页签**（`.workbuddy-tab` / `.zcode-tab` / `.qoder-tab` / `.opencode-tab`）：容器 `border-bottom:1px solid var(--line)`；页签本身透明底、`--muted` 字、`11px 16px`、上半圆角 8px + `margin-bottom:-1px` 压住容器线；active 转 `--accent-strong` 字 + 650 + `border-bottom-color:var(--accent)`。**这是下划线式页签，不是胶囊卡片**，因为页签下面就是内容区，线比盒子更便宜。`role="tablist"` / `aria-selected` 语义已具备。
 - **协议切换**（`.protocol-switch`）：外框 `--bg-soft` 底 + 1px `--line` + 10px 圆角 + 3px 内衬，内部按钮 8px 圆角、`9px 20px`，选中态白底 + `--accent-strong` 字 + 650 + `--hair`。`aria-pressed` 驱动。
 - **指标条**（`.metrics`）：`auto-fit minmax(190px,1fr)` 的单块外框（1px 描边 + `--radius-lg` + `overflow:hidden`），单元之间靠 1px 左分隔线而不是独立卡片；标签 11px `--muted` → 数字 24px/650 `tabular-nums` → 脚注 11px `--muted`。无 hover 抬升。
+- **档位候选条**（`.metrics#cap-tiers`）：借用指标条的外框与分隔线，但单元内是「`档位名 · 规则` → 16px/650 模型名 → 得分·倍率·通道脚注 → `quiet` 的「填入表单」」，不放 24px 大数字——这里并列的是三个候选而不是三个计数。切到「全量榜单」维度时整条退化为一格说明，因为全量表供人工判断，三档只在能力维度下有意义的规则里算。
+- **能力维度切换**（`.protocol-switch#cap-dims`）：协议切换的胶囊外观（`--bg-soft` 底 + 3px 内衬 + 选中白底）不变，但 `#cap-dims{flex-wrap:wrap}` 且按钮 `flex:0 0 auto;white-space:nowrap`——维度有 6 项，比协议多一倍，沿用 `@media 440px` 段的 `.protocol-switch button{flex:1}` 会把每项压成竖排单字，窄屏只收紧内边距让它落在两行内。
 - **通道卡**（`.channel-card`）：`auto-fit minmax(240px,1fr)` + gap 12px，`16px 18px`，头部名称 + 徽章，统计行，操作按钮组紧跟统计（不钉底）。异常态 `.channel-card.warn` 换 `#e6c48f` 描边 + `#fffcf6` 底。
 - **趋势图**（`.trend-svg`）：`width:100%;height:auto`，网格 `--line-soft` 虚线 `4 4`，轴标签 10px 等宽 `--muted`，图例 12×3px 色条 + 12px `--muted` 文字。
 - **对话气泡**（`.message`）：`max-width:95%`，14px / lh 1.8，`overflow-wrap:anywhere` + `white-space:pre-wrap`，1px `--line-soft` 描边 + `--bg-soft` 底；user 右对齐转 `--accent-soft` + `--accent-line` 描边；上方 11px/650 `--muted` 角色标签。`.messages` 是 `min-height:160px / max-height:340px` 的滚动列。

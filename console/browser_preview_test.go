@@ -108,7 +108,9 @@ func TestAdminBrowserPreview(t *testing.T) {
 		case r.URL.Path == "/internal/v1/status":
 			fmt.Fprintf(w, `{"accounts":[{"uid":"demo-account","nickname":"演示账号（模拟）","realm":"cn","credits":1200,"credits_known":true,"in_flight":%d,"success_count":2,"err_total":0,"disabled":false,"cooling":false}],"total":1,"healthy":1,"cooling":0,"disabled":0,"in_flight_full":0,"realm_totals":{"cn":{"total":1,"healthy":1,"cooling":0,"disabled":0,"in_flight_full":0},"global":{"total":0,"healthy":0,"cooling":0,"disabled":0,"in_flight_full":0}},"sticky_sessions":0,"redis_mode":"noop"}`, inFlight.Load())
 		case r.URL.Path == "/internal/v1/models" || r.URL.Path == "/v1/models":
-			fmt.Fprint(w, `{"object":"list","data":[{"id":"cn:glm-5.2","object":"model","reasoning_supported_efforts":["low","high"]},{"id":"global:claude-sonnet-4.6","object":"model"}]}`)
+			// 两条模拟倍率：一条 0 积分、一条按量计费，让积分开关列与别名页的
+			// 「模型能力 TOP」花费档位能在夹具里演示出差异（数值纯属模拟）。
+			fmt.Fprint(w, `{"object":"list","data":[{"id":"cn:glm-5.2","object":"model","credits":"x0.79 credits","reasoning_supported_efforts":["low","high"]},{"id":"global:claude-sonnet-4.6","object":"model","credits":"x0.00"}]}`)
 		case r.URL.Path == "/internal/v1/usage":
 			// 四通道混合账本：旁路占位 uid、缺失 credit 与免费通道各来一条，
 			// 让运行概览的通道分布、缺失标注和单通道筛选都有真实形态的数据。

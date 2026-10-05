@@ -1478,7 +1478,7 @@ test('credit rule parsing matches the server and never invents a zero',()=>{
   assert.equal(vm.runInContext("parseCreditRule(undefined)",ctx),null);
 });
 
-function routeFixture(routeState) {
+function routeFixture(routeState, capState={available:false, rows:[]}, switches={}) {
   const response=body=>({ok:true,status:200,json:async()=>body});
   const posts=[];
   const {ctx,get}=taskFixture((url,options={})=>{
@@ -1487,10 +1487,37 @@ function routeFixture(routeState) {
     if(url==='/admin/models')return response({data:[]});
     if(url==='/admin/route')return response(routeState);
     if(url==='/admin/route/save'){posts.push(JSON.parse(options.body));return response(routeState);}
+    if(url==='/admin/model-switch')return response({enabled:true,overrides:switches});
+    if(url==='/admin/capabilities')return response(capState);
     throw new Error('unexpected '+url);
   });
   get('realm').querySelector=()=>({disabled:false});
   return {ctx,get,posts};
+}
+// 榜单和开关表都是 loadRoutes/signedIn 里 void 出去的后台加载，断言前先把微任务排空，
+// 否则读到的是上一帧的渲染结果。
+async function flushMicrotasks(count=10) {
+  for (let index=0; index<count; index++) await Promise.resolve();
+}
+// capabilityRows 是 2026-10-05 真实快照里出现过的形态：heat 由服务端按 most-popular
+// 顺序给出、AA 指数可为 null、arena 条目带 models/agents 两种 arena 与不同类目。
+const capabilityRows=[
+  {heat:1,id:'vendor/strong',slug:'vendor/strong',name:'Strong',context:200000,free:false,intelligence:50,coding:60,agentic:null,
+    arena:[{arena:'models',category:'website',elo:1300,win_rate:60,rank:2},{arena:'models',category:'gamedev',elo:1200,win_rate:55,rank:9}],
+    tools:true,structured:true,reasoning:true,video_in:false,image_in:true},
+  {heat:2,id:'vendor/free-one',slug:'vendor/free-one',name:'Free One',context:131072,free:true,intelligence:30,coding:40,agentic:null,
+    arena:[],tools:true,structured:false,reasoning:false,video_in:false,image_in:false},
+  {heat:3,id:'vendor/unknown-cost',slug:'vendor/unknown-cost',name:'Unknown Cost',context:1000000,free:false,intelligence:70,coding:80,agentic:null,
+    arena:[{arena:'agents',category:'agenticslides',elo:1250,win_rate:52,rank:1}],tools:false,structured:false,reasoning:false,video_in:true,image_in:false},
+  {heat:4,id:'vendor/outside',slug:'vendor/outside',name:'Outside Pool',context:64000,free:false,intelligence:90,coding:99,agentic:88,
+    arena:[],tools:true,structured:true,reasoning:true,video_in:false,image_in:false},
+];
+function capabilityFixture(capState) {
+  return routeFixture({enabled:true,auto_model:'gateway-auto',auto_fallback:'',default_auto_fallback:'cn:auto',
+    auto_preview:{},aliases:[],
+    channels:[{channel:'core',enabled:true,reachable:true,models:['cn:strong','cn:free-one','cn:unknown-cost']},
+      {channel:'qoder',enabled:false,reachable:false,models:[]}],
+    model_costs:{'cn:strong':'x0.79 credits','cn:free-one':'x0.00'}}, capState);
 }
 
 test('Agent 接入 tab hides the editor and shows the disabled notice when routing is off',async()=>{
@@ -1544,6 +1571,104 @@ test('Agent 接入 tab posts the whole alias list when adding an alias',async()=
   assert.equal(posts.length,1,'alias save issued no request');
   assert.deepEqual(posts[0].models,[{alias:'daily',channel:'core',model:'cn:workbuddy',enabled:true,note:'主力'}]);
   assert.equal(posts[0].auto_fallback,'');
+});
+
+test('模型能力 TOP ranks only pool models and tiers them by real local cost',async()=>{
+  const {ctx,get}=capabilityFixture({available:true,snapshot_at:'2026-10-05T02:00:00Z',note:'源站不标注各项评测的发布日期',rows:capabilityRows});
+  await vm.runInContext("signedIn({csrf:'c',global_enabled:true,zcode_enabled:false,qoder_enabled:false,opencode_enabled:false})",ctx);
+  await vm.runInContext('loadRoutes()',ctx);
+  await flushMicrotasks();
+  assert.match(get('cap-stamp').textContent,/4 个模型/,'loadRoutes 没有把榜单拉起来');
+  assert.equal(get('cap-note').textContent,'源站不标注各项评测的发布日期','来源说明没露出');
+  assert.equal(get('cap-note').hidden,false);
+  // 默认维度是编程：池外模型不进表，池内三个按 coding 从高到低。
+  assert.deepEqual(get('cap-body').children.map(tr=>tr.children[0].textContent),['Unknown Cost','Strong','Free One']);
+  const costs=get('cap-body').children.map(tr=>tr.children[5].children[0].textContent);
+  assert.deepEqual(costs,['未公布','×0.79','×0.00'],'倍率列丢失或把未公布当成了零');
+  assert.deepEqual(get('cap-body').children.map(tr=>tr.children[6].children[0].textContent),['未放行','未放行','已放行']);
+  assert.equal(get('cap-body').children[0].children[6].children[0].className,'badge warn','未放行应当走告警配色而不是等同可用');
+  // 三档：免费兜底与最省都只能落在明示 0 积分的模型上，上限不看花费。
+  const tiers=get('cap-tiers').children;
+  assert.equal(tiers.length,3);
+  assert.deepEqual(tiers.map(article=>article.children[1].textContent),['Free One','Free One','Unknown Cost']);
+  assert.match(tiers[2].children[2].textContent,/未公布/,'上限档必须如实交代花费未知');
+  assert.match(tiers[2].children[2].textContent,/当前未放行/);
+  // 切到全量视图：池外模型只读，不生成任何可点元素。
+  vm.runInContext("capDim='all';renderCapabilities()",ctx);
+  const all=get('cap-body').children;
+  assert.deepEqual(all.map(tr=>tr.children[1].textContent),['Strong','Free One','Unknown Cost','Outside Pool'],'全量榜单没按热度顺序给全');
+  assert.deepEqual(all.map(tr=>tr.children[2].children[0].textContent),['核心账号池','核心账号池','核心账号池','池外']);
+  assert.equal(all[3].children[8].children.length,0,'池外模型生成了可点元素');
+  assert.equal(all[0].children[8].children[0].textContent,'填入表单');
+  all[0].children[8].children[0].handlers.click();
+  assert.equal(get('routes-alias-channel').value,'core');
+  assert.equal(get('routes-alias-model').value,'cn:strong','填入表单必须写通道里的真实模型名，不是榜单里的外部 id');
+});
+
+test('模型能力 TOP renders a bounded window of the full board and says so',async()=>{
+  const rows=Array.from({length:105},(_,i)=>({heat:i+1,id:'vendor/model-'+i,name:'Model '+i,context:0,free:false,arena:[],tools:false,structured:false,reasoning:false,videoIn:false,imageIn:false}));
+  const {ctx,get}=capabilityFixture({available:true,snapshot_at:'2026-10-05T02:00:00Z',note:'源站说明。',rows});
+  await vm.runInContext("signedIn({csrf:'c',global_enabled:true,zcode_enabled:false,qoder_enabled:false,opencode_enabled:false})",ctx);
+  await vm.runInContext('loadRoutes()',ctx);
+  await flushMicrotasks();
+  vm.runInContext("capDim='all';renderCapabilities()",ctx);
+  assert.equal(get('cap-body').children.length,100,'全量视图按整份快照塞进了 DOM');
+  assert.match(get('cap-note').textContent,/只渲染前 100 行/,'截断没有向用户交代');
+  assert.match(get('cap-note').textContent,/命中 105/);
+  // 筛选作用于全表而不是渲染窗口：命中数落回窗口内就不再声明截断。
+  vm.runInContext("capFilter='model 100';renderCapabilities()",ctx);
+  assert.deepEqual(get('cap-body').children.map(tr=>tr.children[1].textContent),['Model 100']);
+  assert.equal(get('cap-note').textContent,'源站说明。','命中不足一个窗口时仍挂着截断提示');
+});
+
+test('模型能力 TOP never pads a missing index and says so instead of an empty board',async()=>{
+  const {ctx,get}=capabilityFixture({available:true,snapshot_at:'2026-10-05T02:00:00Z',note:'n',rows:capabilityRows});
+  await vm.runInContext("signedIn({csrf:'c',global_enabled:true,zcode_enabled:false,qoder_enabled:false,opencode_enabled:false})",ctx);
+  await vm.runInContext('loadRoutes()',ctx);
+  await flushMicrotasks();
+  // 智能体：池内三个模型上游都是 null，只有池外模型有分——不能拿 0 分凑一张表。
+  vm.runInContext("capDim='agentic';renderCapabilities()",ctx);
+  assert.equal(get('cap-body').children.length,0);
+  assert.equal(get('cap-empty').hidden,false,'缺数据时没有交代原因');
+  assert.match(get('cap-empty').textContent,/对齐/);
+  assert.deepEqual(get('cap-tiers').children.map(article=>article.children[1].textContent),['暂无','暂无','暂无']);
+  assert.match(get('cap-tiers').children[2].children[2].textContent,/都没有外部数据/);
+  // 设计维度按类目对齐：名次只在同类目内可比。
+  vm.runInContext("capDim='design';renderCapabilities()",ctx);
+  assert.equal(get('cap-category-wrap').hidden,false,'设计维度没给出类目选择器');
+  assert.deepEqual(get('cap-category').children.map(option=>option.value),['agenticslides','gamedev','website']);
+  assert.equal(get('cap-category').value,'agenticslides','默认类目应落在池内真有数据的类目上');
+  assert.deepEqual(get('cap-body').children.map(tr=>tr.children[2].textContent),['#1']);
+  get('cap-category').value='website';
+  await get('cap-category').handlers.change();
+  assert.deepEqual(get('cap-body').children.map(tr=>[tr.children[0].textContent,tr.children[2].textContent]),[['Strong','#2']]);
+  // 筛选只缩表，不动档位：档位是同一份候选的三种取法，跟着筛选走会自证式变矮。
+  vm.runInContext("capDim='coding';renderCapabilities()",ctx);
+  get('cap-filter').value='free';
+  await get('cap-filter').handlers.input();
+  assert.deepEqual(get('cap-body').children.map(tr=>tr.children[0].textContent),['Free One']);
+  assert.deepEqual(get('cap-tiers').children.map(article=>article.children[1].textContent),['Free One','Free One','Unknown Cost']);
+});
+
+test('模型能力 TOP shows an honest unavailable state instead of a blank board',async()=>{
+  const {ctx,get}=capabilityFixture({available:false,rows:[]});
+  await vm.runInContext("signedIn({csrf:'c',global_enabled:true,zcode_enabled:false,qoder_enabled:false,opencode_enabled:false})",ctx);
+  await vm.runInContext('loadRoutes()',ctx);
+  await flushMicrotasks();
+  assert.equal(get('cap-stamp').textContent,'外部榜单未取到');
+  assert.equal(get('cap-note').hidden,true,'没取到数据时不该展示来源说明');
+  assert.equal(get('cap-body').children.length,0);
+  assert.equal(get('cap-tiers').children.length,0,'拿不到数据还硬摆三档');
+  assert.match(get('cap-empty').textContent,/拿不到/);
+  assert.match(get('cap-empty').textContent,/不受影响/);
+});
+
+test('模型能力 TOP exists in the page shell with a labelled dimension switch',()=>{
+  const html=readFileSync(__dirname+'/web/index.html','utf8');
+  assert.match(html,/模型能力 TOP/);
+  for(const id of ['cap-stamp','cap-dims','cap-category','cap-filter','cap-tiers','cap-head','cap-body','cap-note'])assert.ok(html.includes('id="'+id+'"'),'capability module id '+id+' missing');
+  assert.match(html,/id="cap-dims"[^>]*role="group"[^>]*aria-label="能力维度"/,'维度开关缺组标签');
+  assert.match(html,/id="cap-filter"[^>]*type="search"/,'筛选框应是 search 类型');
 });
 
 test('speed column only renders a real tokensPerSec and never derives one from latency',()=>{

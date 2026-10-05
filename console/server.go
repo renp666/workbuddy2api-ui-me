@@ -93,8 +93,9 @@ type server struct {
 	// credits 缓存 core 下发的模型积分消耗规则（补丁 0011 的 credits 字段），
 	// 供模型开关判定默认态与页面展示。
 	credits *creditCache
-	// heat 缓存 OpenRouter 公开目录的全球热度名次，供「全球热度」列展示。
-	heat *heatCache
+	// catalog 缓存 OpenRouter 公开目录的一份快照，同时供「全球热度」列和
+	// 「模型能力 TOP」榜单派生，保证两列出自同一次抓取。
+	catalog *catalogCache
 }
 
 func NewServer(cfg Config) (http.Handler, error) {
@@ -168,7 +169,7 @@ func NewServer(cfg Config) (http.Handler, error) {
 	h.probes = &probeCache{}
 	h.probe = newProbeRunner()
 	h.credits = &creditCache{}
-	h.heat = &heatCache{}
+	h.catalog = &catalogCache{}
 	assets, err := fs.Sub(webFiles, "web")
 	if err != nil {
 		return nil, err
@@ -226,6 +227,8 @@ func NewServer(cfg Config) (http.Handler, error) {
 	h.mux.HandleFunc("POST /admin/model-switch", h.withAdmin(h.adminModelSwitch))
 	// 全球热度：GET 读 OpenRouter 公开目录的名次表（服务端 24h 缓存）。
 	h.mux.HandleFunc("GET /admin/heat", h.withAdmin(h.adminHeatRanks))
+	// 模型能力 TOP：GET 读同一份目录快照派生的能力榜单（只读，不写任何配置）。
+	h.mux.HandleFunc("GET /admin/capabilities", h.withAdmin(h.adminCapabilities))
 	// 手工测速探测：POST 触发一轮探测，GET 轮询进度与结论（仅内存，重启清空）。
 	h.mux.HandleFunc("POST /admin/probe", h.withAdmin(h.adminProbeStart))
 	h.mux.HandleFunc("GET /admin/probe", h.withAdmin(h.adminProbeState))

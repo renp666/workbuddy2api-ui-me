@@ -41,7 +41,7 @@ function signedOut() {
  zcodeModels=[];zcodeHistory=[];zcodeStatus=null;zcodeAuthURL='';zcodeLogoutArmed=false;zcodeBusy=false;zcodeProviderTouched=false;zcodePlanTouched=false;zcodeView='status';zcodeViewTouched=false;zcodeEnabled=false;clearTimeout(zcodePollTimer);zcodePollTimer=undefined;$('zcode-model').replaceChildren();clearMessages($('zcode-messages'));$('zcode-prompt').value='';$('zcode-usage').textContent='用量将在上游返回后显示';$('zcode-disabled').hidden=true;$('zcode-content').hidden=true;$('nav-zcode').classList.remove('nav-muted');
  qoderModels=[];qoderHistory=[];qoderStatus=null;qoderEnabled=false;qoderControl=false;qoderLoggedIn=false;qoderAuthURL='';qoderBusy=false;qoderLogoutArmed=false;qoderView='status';qoderViewTouched=false;clearTimeout(qoderPollTimer);qoderPollTimer=undefined;clearTimeout(qoderLoginTimer);qoderLoginTimer=null;$('qoder-model').replaceChildren();clearMessages($('qoder-messages'));$('qoder-prompt').value='';$('qoder-usage').textContent='用量将在上游返回后显示';$('qoder-disabled').hidden=true;$('qoder-content').hidden=true;$('nav-qoder').classList.remove('nav-muted');$('qoder-auth-row').hidden=true;$('qoder-pane-login').hidden=true;$('qoder-login-hint').textContent='';
  opencodeModels=[];opencodeHistory=[];opencodeStatus=null;opencodeEnabled=false;opencodeBusy=false;opencodeView='status';$('opencode-model').replaceChildren();clearMessages($('opencode-messages'));$('opencode-prompt').value='';$('opencode-usage').textContent='用量将在上游返回后显示';$('opencode-disabled').hidden=true;$('opencode-content').hidden=true;$('nav-opencode').classList.remove('nav-muted');$('opencode-health-wrap').hidden=true;$('opencode-health-body').replaceChildren();
- routesState=null;routesBusy=false;routesEditing=null;modelSwitchOverrides=new Map();$('routes-disabled').hidden=true;$('routes-content').hidden=true;$('routes-alias-body').replaceChildren();$('routes-channels').replaceChildren();$('routes-model-options').replaceChildren();$('routes-example').textContent='';$('routes-alias-name').value='';$('routes-alias-model').value='';$('routes-alias-note').value='';$('routes-auto-fallback').value='';
+ routesState=null;routesBusy=false;routesEditing=null;modelSwitchOverrides=new Map();capState=null;capByKeys=new Map();capDim='coding';capCategory='';capFilter='';$('routes-disabled').hidden=true;$('routes-content').hidden=true;$('routes-alias-body').replaceChildren();$('routes-channels').replaceChildren();$('routes-model-options').replaceChildren();$('routes-example').textContent='';$('routes-alias-name').value='';$('routes-alias-model').value='';$('routes-alias-note').value='';$('routes-auto-fallback').value='';$('cap-filter').value='';
  probeSnapshot={running:false,done:0,total:0,channels:{}};probeTarget='';probeBusy=false;clearTimeout(probeTimer);probeTimer=undefined;for(const n of ['core','zcode','qoder']){$('probe-'+n+'-progress').hidden=true;$('probe-'+n+'-progress').textContent='';}
  overviewUsageItems=[];overviewGeneration++;
  pinState={cn:null,global:null};lastStatus=null;renderPinBanner();
@@ -1464,8 +1464,12 @@ const routeChannelLabels={core:'核心账号池',glm:'GLM 通道',qoder:'Qoder �
 function routeChannelLabel(channel){return routeChannelLabels[channel]||channel||'—';}
 async function loadRoutes(){
  if(!csrf)return;
- try{renderRoutes(await jsonAPI('route'));}
- catch(error){notice(error.message);}
+ try{
+  const state=await jsonAPI('route');
+  renderRoutes(state);
+  // 榜单只在别名页用得上，跟着这条路走懒加载；服务端 24h 缓存，重复点「刷新」不会打穿外网。
+  if(state.enabled)void loadCapabilities();
+ }catch(error){notice(error.message);}
 }
 function renderRoutes(state){
  routesState=state;
@@ -1489,6 +1493,7 @@ function renderRoutes(state){
  renderRouteAliases(state.aliases||[]);
  renderRouteChannels(state.channels||[]);
  renderRouteExample(state);
+ renderCapabilities();
 }
 function renderRouteAliases(aliases){
  const body=$('routes-alias-body');body.replaceChildren();
@@ -1557,6 +1562,204 @@ function startRouteEdit(entry){
  fillRouteModelOptions(entry.channel);
  $('routes-alias-model').value=entry.model;$('routes-alias-note').value=entry.note||'';
 }
+// ---------- 模型能力 TOP（别名页） ----------
+// 契约见 console/capability.go：GET /admin/capabilities 返回 {available, snapshot_at, note, rows}，
+// rows 已按 OpenRouter most-popular 顺序排列，heat 从 1 起，且与模型页的「全球热度」列同源，
+// 两列不可能给出打架的名次。
+// 口径（不得偏离）：
+//  - 候选只从 routesState.channels 里已启用通道的模型中挑，对齐键沿用 modelKey（与 globalHeat 同规则）；
+//    匹配不到就只读展示，不给池外模型生成可点元素。
+//  - 指数为 null 是「没有数据」，留空不补零；快照日期是采集时间，不是评测发布日期。
+//  - 花费用 route 下发的 model_costs（core 的 credits 原始串）：glm-/qoder- 上游不公布就写
+//    「未公布」，opencode 按通道性质记免费，未公布绝不当成 0 价。
+const capDims=[{id:'coding',label:'编程'},{id:'agentic',label:'智能体'},{id:'intelligence',label:'综合智能'},{id:'design',label:'设计'},{id:'context',label:'长上下文'},{id:'all',label:'全量榜单'}];
+// 外部快照有 1400+ 个模型，整表塞进 DOM 在手机远程操作时会卡住首屏；
+// 数据仍然全量在内存里，筛选作用于全表，只是渲染窗口截到前 100 行并注明。
+const capAllLimit=100;
+let capState=null,capByKeys=new Map(),capDim='coding',capCategory='',capFilter='';
+function capRowsList(){return capState&&Array.isArray(capState.rows)?capState.rows:[];}
+async function loadCapabilities(){
+ try{capState=await jsonAPI('capabilities');}catch(error){capState={available:false,rows:[]};}
+ capByKeys=new Map();
+ for(const row of capRowsList()){
+  for(const raw of[row.id,row.slug]){
+   const key=orModelKey(raw);
+   if(key&&!capByKeys.has(key))capByKeys.set(key,row);
+  }
+ }
+ renderCapabilities();
+}
+// capMetric 把当前维度的读数统一成 {value,text}，value 一律「越大越好」便于排序：
+// 设计类目用 -名次，全量视图用 -热度，其余直接取指数。无数据返回 null，不参与排序。
+function capMetric(row){
+ if(!row)return null;
+ if(capDim==='design'){
+  const entry=(row.arena||[]).find(item=>item.category===capCategory&&item.rank>0);
+  return entry?{value:-entry.rank,text:'#'+entry.rank}:null;
+ }
+ if(capDim==='context')return row.context>0?{value:Number(row.context),text:Number(row.context).toLocaleString('en-US')}:null;
+ if(capDim==='all')return {value:-row.heat,text:'#'+row.heat};
+ const value=row[capDim];
+ return typeof value==='number'?{value,text:value.toFixed(1)}:null;
+}
+function capCost(model,channel,costs){
+ if(channel==='opencode')return{text:'免费',value:0,known:true};
+ const value=parseCreditRule(costs[model]);
+ return typeof value==='number'?{text:'×'+value.toFixed(2),value,known:true}:{text:'未公布',known:false};
+}
+function capPool(){
+ const costs=(routesState&&routesState.model_costs)||{},out=[];
+ for(const channel of(routesState&&routesState.channels)||[]){
+  if(!channel.enabled)continue;
+  for(const model of channel.models||[]){
+   const cost=capCost(model,channel.channel,costs);
+   out.push({channel:channel.channel,model,row:capByKeys.get(modelKey(model))||null,cost,
+    gate:modelSwitchEffective({id:model,switchable:channel.channel!=='opencode',creditValue:cost.known?cost.value:null})});
+  }
+ }
+ return out;
+}
+// capRanked 是当前维度下能对齐到外部数据的池内候选，好的一端在前；同分时先给已放行的模型。
+function capRanked(){
+ return capPool().map(item=>({...item,metric:capMetric(item.row)})).filter(item=>item.metric)
+  .sort((a,b)=>b.metric.value-a.metric.value||(a.gate===b.gate?0:a.gate?-1:1));
+}
+function capTierRules(list){
+ const known=list.filter(item=>item.cost.known);
+ const zero=known.filter(item=>item.cost.value===0);
+ const cheapest=known.slice().sort((a,b)=>a.cost.value-b.cost.value||b.metric.value-a.metric.value);
+ return[
+  {title:'免费兜底',rule:'倍率明示为 0 里分最高',hit:zero[0]||null,none:'池内没有倍率为 0 的候选；要走这档，先在模型积分开关页启用 0 积分模型。'},
+  {title:'最省',rule:'倍率最低，同价取分高',hit:cheapest[0]||null,none:'池内模型的积分倍率都未公布，没法比花费。'},
+  {title:'上限',rule:'不看花费，本维度分最高',hit:list[0]||null,none:'池内模型在这个维度上都没有外部数据。'},
+ ];
+}
+function capCategories(){
+ const counts=new Map();
+ for(const row of capRowsList())for(const entry of row.arena||[])if(entry.category)counts.set(entry.category,(counts.get(entry.category)||0)+1);
+ return [...counts.entries()].sort((a,b)=>b[1]-a[1]||(a[0]<b[0]?-1:1)).map(entry=>entry[0]);
+}
+function capScoreText(row){
+ const parts=[['综合','intelligence'],['编程','coding'],['智能体','agentic']].filter(pair=>typeof row[pair[1]]==='number').map(pair=>pair[0]+' '+row[pair[1]].toFixed(1));
+ return parts.length?parts.join(' · '):'—';
+}
+function capHasCategory(row,name){return !!row&&(row.arena||[]).some(entry=>entry.category===name&&entry.rank>0);}
+function capBestArena(row){
+ let best=null;
+ for(const entry of row.arena||[])if(entry.rank>0&&(!best||entry.rank<best.rank))best=entry;
+ return best?`设计最佳 #${best.rank}（${best.category}）`:'';
+}
+function capContextText(row){return row.context>0?Number(row.context).toLocaleString('en-US'):'—';}
+function capEmpty(text){const node=$('cap-empty');node.textContent=text;node.hidden=!text;}
+function capActionCell(hit){
+ const td=document.createElement('td');
+ if(!hit){td.textContent='—';return td;}
+ const button=document.createElement('button');button.className='secondary';button.textContent='填入表单';
+ button.addEventListener('click',()=>{pickRouteModel(hit.channel,hit.model);notice('已填入别名表单，起个名字保存即可');});
+ td.append(button);return td;
+}
+function capTable(columns,items){
+ const head=$('cap-head'),body=$('cap-body');head.replaceChildren();body.replaceChildren();
+ for(const column of columns){const th=document.createElement('th');th.scope='col';th.textContent=column.label;head.append(th);}
+ for(const item of items){const tr=document.createElement('tr');for(const column of columns)tr.append(column.cell(item));body.append(tr);}
+}
+function capMatched(text){return !capFilter||String(text).toLowerCase().includes(capFilter);}
+function renderCapabilities(){
+ const dims=$('cap-dims');dims.replaceChildren();
+ for(const dim of capDims){
+  const button=document.createElement('button');button.type='button';button.textContent=dim.label;
+  button.setAttribute('aria-pressed',String(dim.id===capDim));
+  button.addEventListener('click',()=>{capDim=dim.id;renderCapabilities();});
+  dims.append(button);
+ }
+ $('cap-category-wrap').hidden=capDim!=='design';
+ if(!capState){$('cap-stamp').textContent='正在读取外部榜单…';$('cap-note').hidden=true;$('cap-tiers').replaceChildren();capEmpty('正在读取外部榜单…');capTable([],[]);return;}
+ if(!capState.available){
+  $('cap-stamp').textContent='外部榜单未取到';
+  $('cap-note').hidden=true;$('cap-tiers').replaceChildren();capEmpty('外部榜单当前拿不到：源站不可达或未返回数据。别名功能本身不受影响，稍后可点「↻ 刷新」重试。');capTable([],[]);return;
+ }
+ $('cap-stamp').textContent=`快照 ${formatProbeTime(capState.snapshot_at)} · ${capRowsList().length} 个模型`;
+ const note=$('cap-note');note.textContent=capState.note||'';note.hidden=!note.textContent;
+ const pool=capPool();
+ if(capDim==='design'){
+  const list=capCategories();
+  if(!capCategory)capCategory=list.find(name=>pool.some(item=>capHasCategory(item.row,name)))||list[0]||'';
+  const select=$('cap-category');select.replaceChildren();
+  for(const name of list)select.appendChild(new Option(name,name));
+  select.value=capCategory;
+ }
+ if(capDim==='all'){
+  renderCapTiers(null);
+  const items=capAllItems(pool),shown=items.slice(0,capAllLimit);
+  if(shown.length<items.length){
+   note.textContent+=`本视图按热度只渲染前 ${capAllLimit} 行（当前命中 ${items.length} 个），要找其余模型请在筛选里输关键词。`;
+   note.hidden=false;
+  }
+  capTable(capAllColumns(),shown);
+  return;
+ }
+ const ranked=capRanked().filter(item=>capMatched(`${item.model} ${item.row.name||''} ${item.row.id||''}`));
+ renderCapTiers(capRanked());
+ if(!ranked.length){capEmpty(pool.length?'这个维度下，通道目录里没有能对齐到外部数据的模型。榜单按模型名对齐，日期后缀等差异不强行归一，所以匹配不到就如实留空。':'通道目录还没准备好，先确认上游可达。');capTable([],[]);return;}
+ capEmpty('');
+ capTable(capPoolColumns(),ranked);
+}
+// 档位永远按整份候选算，筛选只影响表格，避免「筛完只剩一个，档位也跟着变矮」。
+function renderCapTiers(list){
+ const wrap=$('cap-tiers');wrap.replaceChildren();
+ if(!list){
+  const article=document.createElement('article');
+  const name=document.createElement('span');name.textContent='当前视图';
+  const strong=document.createElement('strong');strong.textContent='全量榜单';
+  const small=document.createElement('small');small.textContent='这张表供人工判断，三档候选请按上面的能力维度查看。';
+  article.append(name,strong,small);wrap.append(article);return;
+ }
+ for(const tier of capTierRules(list)){
+  const article=document.createElement('article');
+  const name=document.createElement('span');name.textContent=`${tier.title} · ${tier.rule}`;
+  const strong=document.createElement('strong');strong.textContent=tier.hit?(tier.hit.row.name||tier.hit.model):'暂无';
+  article.append(name,strong);
+  if(!tier.hit){const small=document.createElement('small');small.textContent=tier.none;article.append(small);wrap.append(article);continue;}
+  const small=document.createElement('small');
+  small.textContent=`${tier.hit.metric.text} · 倍率 ${tier.hit.cost.text} · ${routeChannelLabel(tier.hit.channel)}${tier.hit.gate?'':' · 当前未放行，需在模型积分开关启用'}`;
+  article.append(small);
+  const button=document.createElement('button');button.className='quiet';button.textContent='填入表单';
+  button.addEventListener('click',()=>{pickRouteModel(tier.hit.channel,tier.hit.model);notice(`已填入 ${tier.hit.model}，给它起个别名（例如 my-coder）保存即可`);});
+  article.append(button);wrap.append(article);
+ }
+}
+function capPoolColumns(){
+ const label=(capDims.find(dim=>dim.id===capDim)||{}).label||'得分';
+ return[
+  {label:'模型',cell:item=>cell(item.row.name||item.model,String(item.model))},
+  {label:'通道',cell:item=>cell(routeChannelLabel(item.channel))},
+  {label:label,cell:item=>cell(item.metric.text,capDim==='design'?'类目 '+capCategory:'')},
+  {label:'其它指数',cell:item=>cell(capScoreText(item.row),capBestArena(item.row))},
+  {label:'上下文',cell:item=>cell(capContextText(item.row))},
+  {label:'倍率',cell:item=>badgeCell(item.cost.text,!item.cost.known)},
+  {label:'放行',cell:item=>badgeCell(item.gate?'已放行':'未放行',!item.gate)},
+  {label:'操作',cell:item=>capActionCell(item)},
+ ];
+}
+function capAllItems(pool){
+ const hit=new Map();
+ for(const item of pool)if(item.row&&!hit.has(item.row))hit.set(item.row,item);
+ return capRowsList().filter(row=>capMatched(`${row.id||''} ${row.name||''} ${row.slug||''}`)).map(row=>({row,pool:hit.get(row)||null}));
+}
+function capNumber(value){return typeof value==='number'?value.toFixed(1):'—';}
+function capAllColumns(){
+ return[
+  {label:'热度',cell:item=>cell('#'+item.row.heat)},
+  {label:'模型',cell:item=>cell(item.row.name||item.row.id,String(item.row.id))},
+  {label:'池内',cell:item=>badgeCell(item.pool?routeChannelLabel(item.pool.channel):'池外',!item.pool)},
+  {label:'综合',cell:item=>cell(capNumber(item.row.intelligence))},
+  {label:'编程',cell:item=>cell(capNumber(item.row.coding))},
+  {label:'智能体',cell:item=>cell(capNumber(item.row.agentic))},
+  {label:'设计',cell:item=>cell(capBestArena(item.row)||'—')},
+  {label:'上下文',cell:item=>cell(capContextText(item.row))},
+  {label:'操作',cell:item=>capActionCell(item.pool)},
+ ];
+}
 $('routes-alias-form').addEventListener('submit',async event=>{
  event.preventDefault();if(routesBusy)return;
  const alias=$('routes-alias-name').value.trim(),channel=$('routes-alias-channel').value,model=$('routes-alias-model').value.trim(),note=$('routes-alias-note').value.trim();
@@ -1571,6 +1774,8 @@ $('routes-alias-form').addEventListener('submit',async event=>{
 $('routes-alias-reset').addEventListener('click',()=>{routesEditing=null;$('routes-alias-name').value='';$('routes-alias-model').value='';$('routes-alias-note').value='';});
 $('routes-fallback-form').addEventListener('submit',async event=>{event.preventDefault();await saveRouteAliases(currentRouteAliases());});
 $('routes-alias-channel').addEventListener('change',()=>fillRouteModelOptions($('routes-alias-channel').value));
+$('cap-category').addEventListener('change',()=>{capCategory=$('cap-category').value;renderCapabilities();});
+$('cap-filter').addEventListener('input',()=>{capFilter=$('cap-filter').value.trim().toLowerCase();renderCapabilities();});
 $('routes-refresh').addEventListener('click',()=>loadRoutes());
 $('routes-copy-example').addEventListener('click',async()=>{try{await navigator.clipboard.writeText($('routes-example').textContent);notice('配置片段已复制，请替换 API Key 占位符');}catch{notice('浏览器不允许自动复制，请手动复制下方片段');}});
 $('reveal-key').addEventListener('click',async()=>{try{$('api-key').value=(await jsonAPI('access',{})).api_key;$('api-key').type='text';}catch(e){notice(e.message);}});

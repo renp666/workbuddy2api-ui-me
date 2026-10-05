@@ -30,6 +30,16 @@ type creditCache struct {
 	haveData  bool
 }
 
+// consoleCreditRules 给别名页的「模型能力 TOP」返回倍率原始串。从未取到 core 目录
+// 时返回空表：页面上表现为「未公布」，缺失不等于零价。
+func (h *server) consoleCreditRules(ctx context.Context) map[string]string {
+	rules, haveData := h.credits.rules(h, ctx)
+	if !haveData || rules == nil {
+		return map[string]string{}
+	}
+	return rules
+}
+
 // parseCreditRule 解析上游 credits 原始串：实测形态为 "x0.79 credits"、"x0.00"、
 // "x3.47"（后缀可有可无）。解析失败返回 ok=false，调用方按「未知」处理，不得伪造零。
 func parseCreditRule(raw string) (float64, bool) {
