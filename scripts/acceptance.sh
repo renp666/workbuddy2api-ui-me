@@ -197,7 +197,7 @@ import json,sys
 for container in json.load(sys.stdin):
     assert not container["Config"].get("Healthcheck")
     assert "Health" not in container["State"]
-    assert all(m["Type"] == "bind" and "/runtime/wb2api/" in m["Source"] for m in container["Mounts"])
+    assert all(m["Type"] == "bind" and "/runtime/wb2api/" in m["Source"].replace("\\", "/") for m in container["Mounts"])
 '
 standalone_compose exec -T --user 10001:10001 core sh -ec 'echo retained > /app/data/bind-smoke.txt'
 standalone_compose exec -T core python3 -c '

@@ -39,7 +39,9 @@ class ProductionConfigTest(unittest.TestCase):
             self.assertEqual(service["platform"], "linux/amd64")
             for mount in service["volumes"]:
                 self.assertEqual(mount["type"], "bind")
-                self.assertTrue(mount["source"].startswith(str(directory / "runtime/wb2api") + "/"))
+                self.assertTrue(
+                    mount["source"].replace("\\", "/").startswith(
+                        str(directory / "runtime/wb2api").replace("\\", "/") + "/"))
             self.assertNotIn("healthcheck", service)
             self.assertEqual(service["environment"], {"TZ": "Asia/Shanghai"})
         self.assertNotIn("ports", config["services"]["core"])
