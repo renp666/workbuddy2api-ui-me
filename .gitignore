@@ -38,16 +38,16 @@ LOOP.md
 PLAN.md
 SPEC.md
 
-# Local dev helpers (production entry stays `docker compose up -d`; these are host-only)
-/start.bat
-/构建并启动.bat
-/停止服务.bat
-/重启服务.bat
-/启动旁路通道.bat
-/停止旁路通道.bat
-/领取Zcode周末套餐.bat
-/重建镜像并重启.bat
+# Local dev helpers, numbered by usage frequency (production entry stays
+# `docker compose up -d`; these are host-only). 2 and 8 are committed.
+/1-重建镜像并重启.bat
+/3-开机从零构建并启动.bat
+/4-启动旁路通道.bat
+/5-停止旁路通道.bat
+/6-停止全部服务.bat
+/7-领取Zcode周末套餐.bat
 
 # Local tool artifacts
 /.mimosa/
+/.impeccable/
 /rp_probe.txt
