@@ -39,7 +39,7 @@ function logoutFixture(fetch) {
   const elements = new Map();
   const element = () => ({value:'', type:'password', hidden:false, textContent:'', children:[], handlers:{}, classList:{toggle(){},add(){},remove(){}},
     addEventListener(name, fn){this.handlers[name]=fn;},
-    replaceChildren(...children){this.children=children;}, select(){}});
+    replaceChildren(...children){this.children=children;}, select(){}, querySelector(){return null;}});
   const get = id => {if(!elements.has(id))elements.set(id,element());return elements.get(id);};
   const controller = new AbortController();
   const ctx = vm.createContext({document:{getElementById:get,querySelectorAll:()=>[]},
@@ -100,7 +100,7 @@ function taskFixture(fetch, cryptoImpl={randomUUID:()=> '11111111-2222-4333-8444
   const opened=[];
   const ctx=vm.createContext({document:{getElementById:get,querySelectorAll:selector=>selector==='[data-protocol]'?protocolButtons:[],createElement:element,hidden:false,handlers:{},addEventListener(name,fn){this.handlers[name]=fn;}},
     location:{origin:'http://console.test'},AbortController,TextDecoder,TextEncoder,Option:function(text,value){return {textContent:text,value};},
-    setInterval(){},clearTimeout(){},setTimeout(){},fetch,crypto:cryptoImpl,navigator:{clipboard:{writeText:async()=>{}}},window:{open(url){const w={closed:false,location:{href:url||''},close(){this.closed=true;}};opened.push(w);return w;}}});
+    setInterval(){},clearTimeout(){},setTimeout(){},fetch,crypto:cryptoImpl,navigator:{clipboard:{writeText:async()=>{}}},window:{scrollTo(){},open(url){const w={closed:false,location:{href:url||''},close(){this.closed=true;}};opened.push(w);return w;}}});
   vm.runInContext(readFileSync(__dirname+'/web/app.js','utf8'),ctx);
   vm.runInContext("csrf='active-csrf';page='workbuddy';workbuddyView='tasks';taskState={items:[{id:'checkin',enabled:true,hours:[9,21],timezone:'Asia/Shanghai',next_at:null}],active_run:null,latest_runs:[]};",ctx);
   return {ctx,get,opened};
@@ -1720,5 +1720,53 @@ test('overview page, probe buttons and the speed column exist in the page shell'
   assert.ok(!html.includes('id="probe-opencode"'),'opencode must not get a manual probe button');
   assert.equal((html.match(/<th>速度<\/th>/g)||[]).length,4,'every model table must carry the speed column');
   assert.match(html,/gateway-auto/,'routes page still advertises the bare auto name');
+  // 改造后的界面契约：常驻无障碍播报区存在，逐节的营销小标题不再回来。
+  assert.match(html,/id="announce"[^>]*aria-live="polite"/,'persistent live region missing');
+  assert.ok(!html.includes('class="eyebrow"'),'per-section eyebrow kickers are back');
+  assert.ok(!html.match(/尽在这里|开始你的下一次对话|接入你喜欢的客户端|一切，从连接开始|给模型起个名字/),'marketing page copy is back');
 });
 
+test('alias delete asks for a second click before it writes the route file',async()=>{
+  const {ctx,get,posts}=routeFixture({enabled:true,auto_model:'gateway-auto',auto_fallback:'',default_auto_fallback:'cn:auto',
+    auto_preview:{routed_model:'cn:workbuddy',channel:'core',reason:'探测可用',fallback:false},
+    aliases:[{alias:'my-fast',channel:'core',model:'cn:workbuddy',public_model:'cn:workbuddy',enabled:true,note:'日常'}],
+    channels:[{channel:'core',enabled:true,reachable:true,models:['cn:workbuddy']}]});
+  await vm.runInContext("signedIn({csrf:'c',global_enabled:true,zcode_enabled:false,qoder_enabled:false,opencode_enabled:false})",ctx);
+  await vm.runInContext('loadRoutes()',ctx);
+  const remove=get('routes-alias-body').children[0].children[6].children[2];
+  assert.equal(remove.textContent,'删除');
+  await remove.handlers.click({});
+  assert.equal(posts.length,0,'the first click must not write the route file');
+  assert.match(remove.textContent,/再次点击确认删除/,'delete is not armed visibly');
+  await remove.handlers.click({});
+  await new Promise(resolve=>setTimeout(resolve,0));
+  assert.equal(posts.length,1,'the second click must save');
+  assert.deepEqual(posts[0].models,[],'deleting the only alias must post an empty list');
+});
+
+
+test('clearing a transcript restores the pane invitation instead of a blank box', () => {
+  const {ctx,get}=taskFixture(async()=>({ok:true,status:200,json:async()=>({}),headers:{get:()=>null}}));
+  const box=get('messages');
+  const invitation={className:'chat-empty',textContent:'你好，想先问些什么？'};
+  invitation.remove=function(){const i=box.children.indexOf(this);if(i>=0)box.children.splice(i,1);};
+  box.children=[invitation];
+  box.querySelector=function(sel){
+    return sel==='.chat-empty'?(this.children.find(c=>c.className==='chat-empty')||null):null;
+  };
+  vm.runInContext("clearChat()",ctx);
+  assert.equal(box.children.length,1,'clearing must leave exactly the invitation node');
+  assert.equal(box.children[0].className,'chat-empty');
+  vm.runInContext("message('user','私密内容')",ctx);
+  assert.equal(box.children.some(c=>c.className==='chat-empty'),false,'a live reply must retire the invitation');
+  vm.runInContext("clearChat()",ctx);
+  assert.equal(box.children.length,1,'the remembered invitation must come back');
+  assert.equal(box.children[0].className,'chat-empty');
+});
+
+test('changing page starts the new view at its own top', () => {
+  const {ctx}=taskFixture(async()=>({ok:true,status:200,json:async()=>({}),headers:{get:()=>null}}));
+  const scrolls=vm.runInContext(
+    "let n=0;window.scrollTo=()=>{n++};showPage('usage');n",ctx);
+  assert.equal(scrolls,1,'a deliberate page change must reset the scroll once');
+});
