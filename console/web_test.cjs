@@ -1451,12 +1451,13 @@ test('usage page aggregates by channel, filters the detail list and keeps missin
   assert.equal(get('usage-calls').textContent,'4');
   assert.equal(get('usage-tokens').textContent,'342');
   assert.equal(get('usage-credit').textContent,'3.5');
-  assert.match(get('usage-note').textContent,/1 条记录未回报 token 用量/,'unknown token not surfaced');
+  assert.match(get('usage-note').textContent,/1 条记录未回报输入 token/,'unknown input token not surfaced');
+  assert.doesNotMatch(get('usage-note').textContent,/未回报输出 token/,'输出都回报了却声称缺失：'+get('usage-note').textContent);
   assert.match(get('usage-note').textContent,/1 条记录未回报积分扣费/,'missing credit not surfaced');
   const dist=get('usage-by-channel-body').children;
   assert.deepEqual(dist.map(tr=>tr.children[0].textContent),['WorkBuddy','GLM（Zcode）','Qoder','OpenCode'],'distribution rows missing or misordered');
   assert.deepEqual(dist[1].children.map(td=>td.textContent),['GLM（Zcode）','1','10','20','—'],'zcode missing credit must show dash, not 0');
-  assert.deepEqual(dist[2].children.map(td=>td.textContent),['Qoder','1','0','5','0'],'qoder unknown token counted as 0 observed, real 0 credit kept');
+  assert.deepEqual(dist[2].children.map(td=>td.textContent),['Qoder','1','—','5','0'],'qoder 整组输入缺失要显示「—」，真实 0 积分保留');
   // Filtering narrows only the detail list; the distribution keeps the full picture.
   ctx.USAGE_ITEMS=items;
   vm.runInContext("usageChannel='zcode';renderUsage({items:USAGE_ITEMS})",ctx);
@@ -1465,6 +1466,43 @@ test('usage page aggregates by channel, filters the detail list and keeps missin
   assert.equal(detail.length,1,'detail list not filtered to the selected channel');
   assert.equal(detail[0].children[1].textContent,'GLM（Zcode）','detail channel column wrong');
   assert.equal(get('usage-by-channel-body').children.length,4,'distribution must stay full while detail is filtered');
+});
+
+test('token 缺失按输入与输出分别计数：只回报输入时输出不得当 0 带过',async()=>{
+  const items=[
+    {ts:1000,uid:'u1',account:'alice',model:'cn:m',mode:'sync',prompt_tokens:7,completion_tokens:-1,credit:1},
+    {ts:1001,uid:'zcode',account:'GLM 通道',model:'glm-5',mode:'stream',prompt_tokens:-1,completion_tokens:-1,credit:null},
+  ];
+  const {ctx,get}=taskFixture(async()=>({ok:true,status:200,json:async()=>({range:'today',items,summary:{}})}));
+  await vm.runInContext('loadUsage()',ctx);
+  assert.equal(get('usage-calls').textContent,'2');
+  assert.equal(get('usage-tokens').textContent,'7','合计只能包含已观测的值');
+  const note=get('usage-note').textContent;
+  assert.match(note,/1 条记录未回报输入 token/,'输入缺失计数错：'+note);
+  assert.match(note,/2 条记录未回报输出 token/,'输出缺失必须单独报，否则合计少报无人知道：'+note);
+  assert.match(note,/1 条记录未回报积分扣费/,'积分缺失口径错：'+note);
+  assert.doesNotMatch(note,/未回报 token 用量/,'仍在使用输入输出合并的旧口径：'+note);
+  // 通道分布表同样按字段留空：输出缺失的通道显示「—」而不是 0。
+  const dist=get('usage-by-channel-body').children;
+  assert.deepEqual(dist[0].children.map(td=>td.textContent),['WorkBuddy','1','7','—','1'],'输出缺失被写成 0：'+dist[0].children.map(td=>td.textContent));
+});
+
+test('全部未观测时两张卡的积分与 Tokens 都读「—」，概览与调用统计口径一致',async()=>{
+  const items=[
+    {ts:1000,uid:'u1',account:'alice',model:'cn:m',mode:'stream',prompt_tokens:-1,completion_tokens:-1,credit:null},
+    {ts:1001,uid:'zcode',account:'GLM 通道',model:'glm-5',mode:'sync',prompt_tokens:-1,completion_tokens:-1,credit:null},
+  ];
+  const usage=taskFixture(async()=>({ok:true,status:200,json:async()=>({range:'today',items,summary:{}})}));
+  await vm.runInContext('loadUsage()',usage.ctx);
+  assert.equal(usage.get('usage-calls').textContent,'2','调用次数照常统计');
+  assert.equal(usage.get('usage-tokens').textContent,'—','一条都没观测到 token 却显示 0：'+usage.get('usage-tokens').textContent);
+  assert.equal(usage.get('usage-credit').textContent,'—','一条都没观测到积分却显示 0：'+usage.get('usage-credit').textContent);
+  const overview=overviewFixture(items,{enabled:true,reachable:true,model_count:3});
+  await vm.runInContext("signedIn({csrf:'c',global_enabled:true,zcode_enabled:true,qoder_enabled:false,opencode_enabled:false})",overview.ctx);
+  await vm.runInContext('loadOverview()',overview.ctx);
+  await new Promise(r=>setImmediate(r));
+  assert.equal(overview.get('overview-usage-tokens').textContent,'—','概览与调用统计必须同口径');
+  assert.equal(overview.get('overview-usage-credit').textContent,'—','概览与调用统计必须同口径');
 });
 
 test('调用明细带出协议入口、来源网段与客户端标识，缺失一律破折号',async()=>{
@@ -1851,12 +1889,12 @@ test('overview aggregates every enabled channel and filters the metric cards by 
   assert.deepEqual(rows[0].children.map(text),['WorkBuddy','运行中','1','1','100','200','1.5']);
   // 旁路状态来自页签缓存：未访问过的通道如实标「未加载」，不伪造在线。
   assert.deepEqual(rows[1].children.map(text),['GLM（Zcode）','在线','3','1','10','20','—'],'zcode missing credit must show dash, not 0');
-  assert.deepEqual(rows[2].children.map(text),['Qoder','未加载','—','1','0','5','0']);
+  assert.deepEqual(rows[2].children.map(text),['Qoder','未加载','—','1','—','5','0'],'qoder 输入整组缺失显示「—」，输出与真实 0 积分保留');
   assert.match(text(rows[3].children[1]),/不可达|未加载/);
   assert.equal(get('overview-usage-calls').textContent,'4');
   assert.equal(get('overview-usage-tokens').textContent,'342');
   assert.equal(get('overview-usage-credit').textContent,'3.5');
-  assert.match(get('overview-usage-note').textContent,/1 条记录未回报 token 用量/);
+  assert.match(get('overview-usage-note').textContent,/1 条记录未回报输入 token/);
   assert.match(get('overview-usage-note').textContent,/1 条记录未回报积分扣费/);
   // 单通道筛选只作用于指标卡，通道总览表保持全量。
   get('overview-usage-channel').handlers.change({target:{value:'zcode'}});

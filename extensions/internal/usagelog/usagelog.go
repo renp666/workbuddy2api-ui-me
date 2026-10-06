@@ -50,14 +50,16 @@ type Denied struct {
 }
 
 // Summary 时间范围内的聚合。Prompt/Completion/Credit 只累计已知观测；
-// Missing 计数让展示层区分「0 消耗」与「未观测」，不把缺失当零。
+// Missing 按字段各自计数（输入回报了、输出没回报是真实存在的一种响应），
+// 让展示层区分「0 消耗」与「未观测」，不把缺失当零。
 type Summary struct {
-	Calls         int     `json:"calls"`
-	Prompt        int64   `json:"prompt_tokens"`
-	Completion    int64   `json:"completion_tokens"`
-	Credit        float64 `json:"credit"`
-	CreditMissing int     `json:"credit_missing"`
-	UsageMissing  int     `json:"usage_missing"`
+	Calls             int     `json:"calls"`
+	Prompt            int64   `json:"prompt_tokens"`
+	Completion        int64   `json:"completion_tokens"`
+	Credit            float64 `json:"credit"`
+	CreditMissing     int     `json:"credit_missing"`
+	PromptMissing     int     `json:"prompt_missing"`
+	CompletionMissing int     `json:"completion_missing"`
 }
 
 // Log 按天文件的追加式用量账本。零值不可用，经 Open 构造。
@@ -280,10 +282,12 @@ func Summarize(entries []Entry) Summary {
 		if e.Prompt >= 0 {
 			s.Prompt += int64(e.Prompt)
 		} else {
-			s.UsageMissing++
+			s.PromptMissing++
 		}
 		if e.Completion >= 0 {
 			s.Completion += int64(e.Completion)
+		} else {
+			s.CompletionMissing++
 		}
 		if e.Credit != nil {
 			s.Credit += *e.Credit

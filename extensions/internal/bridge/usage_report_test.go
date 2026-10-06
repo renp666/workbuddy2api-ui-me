@@ -69,7 +69,7 @@ func TestUsageReportValidatesAndRecords(t *testing.T) {
 	if second.UID != "qoder" || second.Model != "qoder-glm-4.6" || second.Prompt != -1 || second.Completion != -1 || second.Credit != nil {
 		t.Fatalf("第二条观测不符：%+v", second)
 	}
-	if got.Summary.Calls != 2 || got.Summary.Prompt != 120 || got.Summary.Completion != 80 || got.Summary.Credit != credit || got.Summary.CreditMissing != 1 || got.Summary.UsageMissing != 1 {
+	if got.Summary.Calls != 2 || got.Summary.Prompt != 120 || got.Summary.Completion != 80 || got.Summary.Credit != credit || got.Summary.CreditMissing != 1 || got.Summary.PromptMissing != 1 || got.Summary.CompletionMissing != 1 {
 		t.Fatalf("汇总缺失语义不符：%+v", got.Summary)
 	}
 }

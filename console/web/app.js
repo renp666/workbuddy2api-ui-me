@@ -466,16 +466,17 @@ function renderOverview(){
   const credit=s.calls?s.creditMissing===s.calls?'—':String(s.credit):'—';
   const tr=document.createElement('tr');
   const td=document.createElement('td');const tag=document.createElement('span');tag.className='badge'+(status.warn?' warn':'');tag.textContent=status.label;td.append(tag);
-  tr.append(cell(usageChannelNames[c]),td,cell(count===null?'—':String(count)),cell(String(s.calls)),cell(String(s.prompt)),cell(String(s.completion)),cell(credit));
+  tr.append(cell(usageChannelNames[c]),td,cell(count===null?'—':String(count)),cell(String(s.calls)),cell(formatUsageGroup(s.prompt,s.promptMissing,s.calls)),cell(formatUsageGroup(s.completion,s.completionMissing,s.calls)),cell(credit));
   body.append(tr);
  }
  const items=overviewUsageChannel==='all'?overviewUsageItems:overviewUsageItems.filter(e=>usageChannelOf(e)===overviewUsageChannel);
  const s=summarizeUsage(items);
  $('overview-usage-calls').textContent=String(s.calls);
- $('overview-usage-tokens').textContent=String(s.prompt+s.completion);
- $('overview-usage-credit').textContent=s.calls&&s.creditMissing===s.calls?'—':String(s.credit);
+ $('overview-usage-tokens').textContent=formatUsageTokensTotal(s);
+ $('overview-usage-credit').textContent=formatUsageGroup(s.credit,s.creditMissing,s.calls);
  const notes=[];
- if(s.usageMissing)notes.push(`${s.usageMissing} 条记录未回报 token 用量，未计入合计`);
+ if(s.promptMissing)notes.push(`${s.promptMissing} 条记录未回报输入 token，未计入合计`);
+ if(s.completionMissing)notes.push(`${s.completionMissing} 条记录未回报输出 token，未计入合计`);
  if(s.creditMissing)notes.push(`${s.creditMissing} 条记录未回报积分扣费，未计入合计`);
  $('overview-usage-note').textContent=notes.join('；');$('overview-usage-note').hidden=!notes.length;
  renderTrend(items);
@@ -830,9 +831,15 @@ const usageAPINames={chat:'Chat',messages:'Messages',responses:'Responses'};
 const usageChannelNames={workbuddy:'WorkBuddy',zcode:'GLM（Zcode）',qoder:'Qoder',opencode:'OpenCode'};
 const usageChannelOrder=['workbuddy','zcode','qoder','opencode'];
 function usageChannelOf(entry){const uid=entry.uid||'';return uid==='zcode'||uid==='qoder'||uid==='opencode'?uid:'workbuddy';}
-// summarizeUsage 复刻 core usagelog.Summarize 口径：token 未知（<0）不累加且计入 usage_missing，
-// credit 缺失（null）不累加且计入 credit_missing，缺失≠零。
-function summarizeUsage(items){const s={calls:items.length,prompt:0,completion:0,credit:0,creditMissing:0,usageMissing:0};for(const e of items){if(e.prompt_tokens>=0)s.prompt+=e.prompt_tokens;else s.usageMissing++;if(e.completion_tokens>=0)s.completion+=e.completion_tokens;if(e.credit!=null)s.credit+=e.credit;else s.creditMissing++;}return s;}
+// summarizeUsage 复刻 core usagelog.Summarize 口径：输入与输出各自判定未知（<0 不累加、
+// 各自计入 prompt_missing / completion_missing），credit 缺失（null）不累加且计入 credit_missing。
+// 一个通道只回报了输入、没回报输出是真实存在的响应，把输出当 0 会静悄悄少报总量。
+function summarizeUsage(items){const s={calls:items.length,prompt:0,completion:0,credit:0,creditMissing:0,promptMissing:0,completionMissing:0};for(const e of items){if(e.prompt_tokens>=0)s.prompt+=e.prompt_tokens;else s.promptMissing++;if(e.completion_tokens>=0)s.completion+=e.completion_tokens;else s.completionMissing++;if(e.credit!=null)s.credit+=e.credit;else s.creditMissing++;}return s;}
+// formatUsageGroup 聚合值展示：整组都未回报时给「—」，部分回报才给累计数。
+function formatUsageGroup(total,missing,calls){return calls>0&&missing===calls?'—':String(total);}
+// formatUsageTokensTotal Tokens 合计口径：输入与输出都没有任何观测时读「—」，
+// 只有回报值的和才当数字展示（0 条观测不等于 0 消耗）。
+function formatUsageTokensTotal(s){return s.calls>0&&s.promptMissing===s.calls&&s.completionMissing===s.calls?'—':String(s.prompt+s.completion);}
 function formatUsageTokens(value){return value<0?'—':String(value);}
 function formatUsageCredit(value){return value==null||value===undefined?'—':String(value);}
 function renderUsage(data){
@@ -840,10 +847,11 @@ function renderUsage(data){
  const items=all.filter(e=>usageChannel==='all'||usageChannelOf(e)===usageChannel).slice().reverse();
  const summary=summarizeUsage(items);
  $('usage-calls').textContent=String(summary.calls);
- $('usage-tokens').textContent=String(summary.prompt+summary.completion);
- $('usage-credit').textContent=String(summary.credit);
+ $('usage-tokens').textContent=formatUsageTokensTotal(summary);
+ $('usage-credit').textContent=formatUsageGroup(summary.credit,summary.creditMissing,summary.calls);
  const notes=[];
- if(summary.usageMissing)notes.push(`${summary.usageMissing} 条记录未回报 token 用量，明细按「—」展示`);
+ if(summary.promptMissing)notes.push(`${summary.promptMissing} 条记录未回报输入 token，未计入合计`);
+ if(summary.completionMissing)notes.push(`${summary.completionMissing} 条记录未回报输出 token，未计入合计`);
  if(summary.creditMissing)notes.push(`${summary.creditMissing} 条记录未回报积分扣费，未计入合计`);
  $('usage-note').textContent=notes.join('；');$('usage-note').hidden=!notes.length;
  // 鉴权失败留痕来自 core 的 denied 账本，按当前时间范围统计，与通道筛选无关；零失败不占位。
@@ -858,7 +866,7 @@ function renderUsage(data){
  const distBody=$('usage-by-channel-body');distBody.replaceChildren();
  const distRows=usageChannelOrder.filter(c=>byChannel.has(c));
  $('usage-by-channel-empty').hidden=distRows.length>0;
-	for(const c of distRows){const s=summarizeUsage(byChannel.get(c));const credit=s.creditMissing===s.calls?'—':String(s.credit);const tr=document.createElement('tr');tr.append(cell(usageChannelNames[c]),cell(String(s.calls)),cell(String(s.prompt)),cell(String(s.completion)),cell(credit));distBody.append(tr);}
+	for(const c of distRows){const s=summarizeUsage(byChannel.get(c));const credit=s.creditMissing===s.calls?'—':String(s.credit);const tr=document.createElement('tr');tr.append(cell(usageChannelNames[c]),cell(String(s.calls)),cell(formatUsageGroup(s.prompt,s.promptMissing,s.calls)),cell(formatUsageGroup(s.completion,s.completionMissing,s.calls)),cell(credit));distBody.append(tr);}
  const body=$('usage-body');body.replaceChildren();$('usage-empty').hidden=items.length>0;
  for(const e of items){
   const tr=document.createElement('tr');

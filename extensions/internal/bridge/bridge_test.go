@@ -437,7 +437,7 @@ func TestUsageEndpointValidatesAndSummarizes(t *testing.T) {
 	if got.Summary.Prompt != 110 || got.Summary.Completion != 220 {
 		t.Fatalf("token 汇总错误：%+v", got.Summary)
 	}
-	if got.Summary.Credit != 1.5 || got.Summary.CreditMissing != 1 || got.Summary.UsageMissing != 1 {
+	if got.Summary.Credit != 1.5 || got.Summary.CreditMissing != 1 || got.Summary.PromptMissing != 1 || got.Summary.CompletionMissing != 1 {
 		t.Fatalf("缺失观测不得并入零值：%+v", got.Summary)
 	}
 	if got.Denied.Calls != 2 || len(got.Denied.Sources) != 2 {

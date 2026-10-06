@@ -153,12 +153,16 @@ func TestSummarizeKeepsMissingApartFromZero(t *testing.T) {
 		{Prompt: 10, Completion: 5, Credit: creditPtr(1.25)},
 		{Prompt: -1, Completion: -1, Credit: creditPtr(0)}, // 免费 + usage 缺失
 		{Prompt: 0, Completion: 0},                         // 无 credit 观测
+		{Prompt: 7, Completion: -1},                        // 只回报输入：输出缺失不得静悄悄并入 0
 	}
 	s := Summarize(entries)
-	if s.Calls != 3 || s.Prompt != 10 || s.Completion != 5 {
+	if s.Calls != 4 || s.Prompt != 17 || s.Completion != 5 {
 		t.Fatalf("已知值聚合错误：%+v", s)
 	}
-	if s.Credit != 1.25 || s.CreditMissing != 1 || s.UsageMissing != 1 {
+	if s.PromptMissing != 1 || s.CompletionMissing != 2 {
+		t.Fatalf("输入与输出的缺失必须各自计数，否则「已观测」口径会少报：%+v", s)
+	}
+	if s.Credit != 1.25 || s.CreditMissing != 2 {
 		t.Fatalf("缺失计数不得并入零值：%+v", s)
 	}
 	if math.IsNaN(s.Credit) || math.IsInf(s.Credit, 0) {
