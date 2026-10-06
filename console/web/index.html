@@ -23,7 +23,7 @@
   <section class="page" data-page="overview"><div class="page-heading"><div><h1>运行概览</h1><p class="muted">四个通道的可达性、所选范围的用量与按天趋势。</p></div></div>
    <div class="channel-cards" id="overview-cards"></div>
    <div class="section-title"><h2>通道总览</h2><span class="muted small">每个通道一行；旁路通道未启用时如实标注</span></div>
-   <div class="panel table-wrap"><table><thead><tr><th>通道</th><th>状态</th><th>模型数</th><th>调用次数</th><th>输入 tokens</th><th>输出 tokens</th><th>积分</th></tr></thead><tbody id="overview-channels-body"></tbody></table></div>
+   <div class="panel table-wrap"><table><thead><tr><th>通道</th><th>状态</th><th class="num">模型数</th><th class="num">调用次数</th><th class="num">输入 tokens</th><th class="num">输出 tokens</th><th class="num">积分</th></tr></thead><tbody id="overview-channels-body"></tbody></table></div>
    <div class="section-title"><h2>用量统计</h2><span class="muted small"><label for="overview-usage-channel">通道</label>&nbsp;<select id="overview-usage-channel"><option value="all" selected>全部通道</option><option value="workbuddy">WorkBuddy（核心账号池）</option><option value="zcode">GLM（Zcode 通道）</option><option value="qoder">Qoder 通道</option><option value="opencode">OpenCode 通道</option></select>&nbsp;<label for="overview-usage-range">时间范围</label>&nbsp;<select id="overview-usage-range"><option value="today" selected>今天</option><option value="yesterday">前一天</option><option value="week">本周</option><option value="month">本月</option></select></span></div>
    <div class="metrics"><article><span>调用次数</span><strong id="overview-usage-calls">—</strong><small>所选范围与通道</small></article><article><span>Tokens</span><strong id="overview-usage-tokens">—</strong><small>输入 + 输出（已观测）</small></article><article><span>积分扣费</span><strong id="overview-usage-credit">—</strong><small>上游明确回报的扣费</small></article></div>
    <p id="overview-usage-note" class="muted small" hidden></p>
@@ -38,7 +38,7 @@
     </article>
     <div class="section-title"><h2>已连接账号</h2><span class="muted small">每 15 秒刷新本地状态</span></div>
     <div id="pin-banner" class="pin-banner" hidden></div>
-    <div class="panel table-wrap"><table><thead><tr><th>账号 / 版本</th><th>状态</th><th>积分快照</th><th>成功 / 错误</th><th>在途</th><th>限制与说明</th><th>操作</th></tr></thead><tbody id="accounts-body"></tbody></table><p id="accounts-empty" class="empty">还没有账号。点击上方「浏览器授权」开始。</p></div><p class="muted small">积分为最近观测值；未查询时显示「待确认」。同账号重新授权会更新凭据，保留现有限流记录。锁定后该平台的对话消费严格只走锁定账号，账号不可用时直接报错、不切换其他账号。</p>
+    <div class="panel table-wrap"><table><thead><tr><th>账号 / 版本</th><th>状态</th><th>积分快照</th><th class="num">成功 / 错误</th><th class="num">在途</th><th>限制与说明</th><th>操作</th></tr></thead><tbody id="accounts-body"></tbody></table><p id="accounts-empty" class="empty">还没有账号。点击上方「浏览器授权」开始。</p></div><p class="muted small">积分为最近观测值；未查询时显示「待确认」。同账号重新授权会更新凭据，保留现有限流记录。锁定后该平台的对话消费严格只走锁定账号，账号不可用时直接报错、不切换其他账号。</p>
    </div>
    <div id="workbuddy-pane-tasks" hidden>
     <div class="section-title"><h2>自动任务</h2><span class="muted small">配置与下次执行时间来自核心调度器；立即执行覆盖全部符合条件账号</span><button id="task-refresh" class="secondary">↻ 刷新任务</button></div>
@@ -50,7 +50,7 @@
    <div id="workbuddy-pane-models" hidden>
     <div class="section-title"><h2>模型列表</h2><span class="muted small">来自 core 的 <code>/v1/models</code>；core 不提供探测结论，需点「测速探测」手工触发</span><button id="models-group-toggle" class="secondary" aria-pressed="true">▤ 按账号分层</button><button id="probe-core" class="secondary">⚡ 测速探测</button></div>
     <p id="probe-core-progress" class="muted small" role="status" aria-live="polite" hidden></p>
-    <div class="panel table-wrap"><table><thead><tr><th>模型 ID</th><th>能力</th><th>状态</th><th>耗时</th><th>速度</th><th>说明</th><th>热度</th><th>全球热度</th><th>积分消耗</th><th>操作</th></tr></thead><tbody id="core-models-body"></tbody></table><p id="core-models-empty" class="empty">暂无模型。</p></div>
+    <div class="panel table-wrap"><table><thead><tr><th>模型 ID</th><th>能力</th><th>状态</th><th class="num">耗时</th><th class="num">速度</th><th>说明</th><th>热度</th><th>全球热度</th><th class="num">积分消耗</th><th>操作</th></tr></thead><tbody id="core-models-body"></tbody></table><p id="core-models-empty" class="empty">暂无模型。</p></div>
    </div>
    <div id="workbuddy-pane-chat" hidden>
     <div class="section-title"><h2>对话测试</h2><span class="muted small">真实请求经过同一账号池；对话只保留在当前页面，刷新即清空</span><button id="clear-chat" class="secondary">清空对话</button></div>
@@ -77,7 +77,7 @@
     <div id="zcode-pane-models" hidden>
     <div class="section-title" id="zcode-models-title"><h2>GLM 模型</h2><span class="muted small">来自 zcode-proxy 的 <code>/v1/models</code>；zcode 不提供探测结论，需点「测速探测」手工触发</span><button id="probe-zcode" class="secondary">⚡ 测速探测</button></div>
     <p id="probe-zcode-progress" class="muted small" role="status" aria-live="polite" hidden></p>
-    <div class="panel table-wrap" id="zcode-models-table"><table><thead><tr><th>模型 ID</th><th>能力</th><th>状态</th><th>耗时</th><th>速度</th><th>说明</th><th>热度</th><th>全球热度</th><th>积分消耗</th><th>操作</th></tr></thead><tbody id="zcode-models-body"></tbody></table><p id="zcode-models-empty" class="empty">暂无模型。</p></div>
+    <div class="panel table-wrap" id="zcode-models-table"><table><thead><tr><th>模型 ID</th><th>能力</th><th>状态</th><th class="num">耗时</th><th class="num">速度</th><th>说明</th><th>热度</th><th>全球热度</th><th class="num">积分消耗</th><th>操作</th></tr></thead><tbody id="zcode-models-body"></tbody></table><p id="zcode-models-empty" class="empty">暂无模型。</p></div>
     <p id="zcode-models-note" class="muted small" hidden>当前为 Start Plan 档位，仅展示可用的 <code>-flash</code> 模型。</p>
     </div>
     <div id="zcode-pane-chat" hidden>
@@ -105,7 +105,7 @@
     <div id="qoder-pane-models" hidden>
     <div class="section-title"><h2>Qoder 模型</h2><span class="muted small">来自 qoder-proxy 的 <code>/v1/models</code>；qoder 不提供探测结论，需点「测速探测」手工触发</span><button id="probe-qoder" class="secondary">⚡ 测速探测</button></div>
     <p id="probe-qoder-progress" class="muted small" role="status" aria-live="polite" hidden></p>
-    <div class="panel table-wrap"><table><thead><tr><th>模型 ID</th><th>能力</th><th>状态</th><th>耗时</th><th>速度</th><th>说明</th><th>热度</th><th>全球热度</th><th>积分消耗</th><th>操作</th></tr></thead><tbody id="qoder-models-body"></tbody></table><p id="qoder-models-empty" class="empty">暂无模型。</p></div>
+    <div class="panel table-wrap"><table><thead><tr><th>模型 ID</th><th>能力</th><th>状态</th><th class="num">耗时</th><th class="num">速度</th><th>说明</th><th>热度</th><th>全球热度</th><th class="num">积分消耗</th><th>操作</th></tr></thead><tbody id="qoder-models-body"></tbody></table><p id="qoder-models-empty" class="empty">暂无模型。</p></div>
     </div>
     <div id="qoder-pane-chat" hidden>
     <div class="section-title"><h2>对话测试</h2><span class="muted small">OpenAI 流式协议，真实请求转发给 qoder-proxy</span></div>
@@ -125,7 +125,7 @@
     </div>
     <div id="opencode-pane-models" hidden>
     <div class="section-title"><h2>OpenCode 模型</h2><span class="muted small">来自 OW Bridge 的 <code>/v1/models</code>，并合并 <code>/health</code> 的探测结论（含探测未通过的模型）</span></div>
-    <div class="panel table-wrap"><table><thead><tr><th>模型 ID</th><th>能力</th><th>状态</th><th>耗时</th><th>速度</th><th>说明</th><th>热度</th><th>全球热度</th></tr></thead><tbody id="opencode-models-body"></tbody></table><p id="opencode-models-empty" class="empty">暂无模型。</p></div>
+    <div class="panel table-wrap"><table><thead><tr><th>模型 ID</th><th>能力</th><th>状态</th><th class="num">耗时</th><th class="num">速度</th><th>说明</th><th>热度</th><th>全球热度</th></tr></thead><tbody id="opencode-models-body"></tbody></table><p id="opencode-models-empty" class="empty">暂无模型。</p></div>
     </div>
     <div id="opencode-pane-chat" hidden>
     <div class="section-title"><h2>对话测试</h2><span class="muted small">OpenAI 流式协议，真实请求转发给 OW Bridge sidecar</span></div>
@@ -148,9 +148,11 @@
    <div class="metrics"><article><span>调用次数</span><strong id="usage-calls">—</strong><small>所选范围内成功调用</small></article><article><span>Tokens</span><strong id="usage-tokens">—</strong><small>输入 + 输出（已观测）</small></article><article><span>积分扣费</span><strong id="usage-credit">—</strong><small>usage.credit 实测值合计</small></article></div>
    <p id="usage-denied" class="muted small" hidden></p>
    <div class="section-title"><h2>通道分布</h2><span class="muted small">按通道聚合所选范围；旁路通道用量由 console 观测后上报 core 账本</span></div>
-   <div class="panel table-wrap"><table><thead><tr><th>通道</th><th>调用次数</th><th>输入 tokens</th><th>输出 tokens</th><th>积分</th></tr></thead><tbody id="usage-by-channel-body"></tbody></table><p id="usage-by-channel-empty" class="empty">所选范围内还没有调用记录。</p></div>
+   <div class="panel table-wrap"><table><thead><tr><th>通道</th><th class="num">调用次数</th><th class="num">输入 tokens</th><th class="num">输出 tokens</th><th class="num">积分</th></tr></thead><tbody id="usage-by-channel-body"></tbody></table><p id="usage-by-channel-empty" class="empty">所选范围内还没有调用记录。</p></div>
    <div class="section-title"><h2>调用明细</h2><span class="muted small">最近调用在最上方；来源只记录到 IP 网段，不保存完整地址</span></div>
-   <div class="panel table-wrap"><table><thead><tr><th>时间</th><th>通道</th><th>账号</th><th>模型</th><th>入口</th><th>方式</th><th>输入 tokens</th><th>输出 tokens</th><th>积分</th><th>来源</th><th>客户端</th></tr></thead><tbody id="usage-body"></tbody></table><p id="usage-empty" class="empty">所选范围内还没有调用记录。</p><p id="usage-note" class="muted small" hidden></p></div>
+   <div class="panel table-wrap"><table><thead><tr><th>时间</th><th>通道</th><th>账号</th><th>模型</th><th>入口</th><th>方式</th><th class="num">输入 tokens</th><th class="num">输出 tokens</th><th class="num">积分</th><th>来源</th><th>客户端</th></tr></thead><tbody id="usage-body"></tbody></table><p id="usage-empty" class="empty">所选范围内还没有调用记录。</p><p id="usage-note" class="muted small" hidden></p></div>
+   <!-- 翻页只切下面的表格；上方指标条与通道分布始终按整个时间范围算。 -->
+   <div id="usage-pager-bar" class="pager-bar" hidden><span id="usage-pager-info" class="muted small"></span><div class="pager-actions"><label class="muted small" for="usage-page-size">每页</label><select id="usage-page-size"><option value="30">30</option><option value="50" selected>50</option><option value="100">100</option></select><div id="usage-pager" class="pager"></div></div></div>
   </section>
   <section class="page" data-page="routes" hidden><div class="page-heading"><div><h1>模型别名</h1><p class="muted">你可以给任意通道里的真实模型起一个自己好记的名字（下面叫它「别名」）。之后所有 Agent 都只填这个名字；哪天想换模型，改这里一处就够了，不用挨个去改客户端。</p></div></div>
    <p id="routes-disabled" class="empty" hidden>这个功能还没打开。部署时给控制台挂载一个可写目录，并设置 <code>WB2A_ROUTE_FILE</code>，这里就会出现别名表和可用的模型清单。</p>

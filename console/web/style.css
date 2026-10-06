@@ -23,6 +23,19 @@
  --focus:#3a2bc4;
  --focus-dark:#8ee3ff;
  --prism:linear-gradient(135deg,#5b4bf0 0%,#7c4bec 52%,#0a7f96 100%);
+ /* 四束光 = 四条通道，全站唯一取色处：一条通道一束色，色值只在这里定义一次。
+    --ch 是本色（描边/色点/色带），--ch-ink 是浅色底上的文字版，--ch-wash 是极浅底。
+    文字版全部实测 ≥4.5:1（在各自 wash 上：靛 7.40 / 青 5.45 / 紫罗兰 6.66 / 玫红 5.28），
+    本色只做图形不做正文。 */
+ --ch-workbuddy:#4f52d6;--ch-zcode:#0a7f96;--ch-qoder:#7a3fc4;--ch-opencode:#c4356f;
+ --ch-workbuddy-ink:#3d40a8;--ch-zcode-ink:#076b80;--ch-qoder-ink:#6a36ab;--ch-opencode-ink:#b02f63;
+ --ch-workbuddy-wash:#eef0fa;--ch-zcode-wash:#e6f4f7;--ch-qoder-wash:#f2ecfb;--ch-opencode-wash:#fbeaf1;
+ /* --ch-lit 是暗底（机架面）上的文字版，同样逐个实测过 4.5:1。 */
+ --ch-workbuddy-lit:#8f92ff;--ch-zcode-lit:#4fd6e8;--ch-qoder-lit:#b78cf5;--ch-opencode-lit:#ff8fb8;
+ /* 谱线按色相排（靛→紫罗兰→青→玫红），不是 usageChannelOrder 的通道顺序：
+    隔色相邻会断成四段色条，顺色相才读成一道连续的光。列表顺序仍以通道为准。 */
+ --spectrum:linear-gradient(90deg,var(--ch-workbuddy) 0%,var(--ch-qoder) 34%,var(--ch-zcode) 67%,var(--ch-opencode) 100%);
+ --spectrum-v:linear-gradient(180deg,var(--ch-workbuddy) 0%,var(--ch-qoder) 34%,var(--ch-zcode) 67%,var(--ch-opencode) 100%);
  --sidebar:#0f1120;
  --sidebar-hi:#262b50;
  --sidebar-ink:#d3d6ee;
@@ -79,6 +92,18 @@ code{font-family:var(--font-mono);font-size:.92em}
 .muted,.subtle{color:var(--muted)}
 .small{font-size:12px}
 
+/* ---------- 通道谱系 ---------- */
+/* 一束色代表一条通道，认一次全站通用。类名挂在元素上，--ch 族随之生效。 */
+.ch-workbuddy{--ch:var(--ch-workbuddy);--ch-ink:var(--ch-workbuddy-ink);--ch-wash:var(--ch-workbuddy-wash);--ch-lit:var(--ch-workbuddy-lit)}
+.ch-zcode{--ch:var(--ch-zcode);--ch-ink:var(--ch-zcode-ink);--ch-wash:var(--ch-zcode-wash);--ch-lit:var(--ch-zcode-lit)}
+.ch-qoder{--ch:var(--ch-qoder);--ch-ink:var(--ch-qoder-ink);--ch-wash:var(--ch-qoder-wash);--ch-lit:var(--ch-qoder-lit)}
+.ch-opencode{--ch:var(--ch-opencode);--ch-ink:var(--ch-opencode-ink);--ch-wash:var(--ch-opencode-wash);--ch-lit:var(--ch-opencode-lit)}
+/* 通道名单元格：色点由 ::before 画，不另起 <span>——文字仍是这个单元格的唯一子节点，
+   读屏念出来也只有通道名，不会多出一段无意义的点。 */
+.ch-name{color:var(--ch-ink);font-weight:650;white-space:nowrap}
+.ch-name::before{content:"";display:inline-block;width:8px;height:8px;border-radius:50%;background:var(--ch);margin-right:7px;vertical-align:middle}
+.ch-band{background:var(--ch-wash)}
+
 /* ---------- 品牌 ---------- */
 .brand{display:flex;align-items:center;gap:10px;font-size:18px;font-weight:700;letter-spacing:-.3px}
 .brand-icon{background:var(--prism);color:#fff;border-radius:var(--radius);width:34px;height:34px;display:grid;place-items:center;flex:none}
@@ -99,7 +124,9 @@ code{font-family:var(--font-mono);font-size:.92em}
 
 /* ---------- 外壳与侧边栏 ---------- */
 .shell{display:flex;min-height:100vh}
-.sidebar{position:fixed;width:224px;inset:0 auto 0 0;background:var(--sidebar);color:var(--sidebar-ink);padding:26px 16px;display:flex;flex-direction:column;overflow-y:auto;border-right:1px solid #1d2038}
+.sidebar{position:fixed;width:224px;inset:0 auto 0 0;background:var(--sidebar);color:var(--sidebar-ink);padding:26px 16px;display:flex;flex-direction:column;overflow-y:auto}
+/* 机架的右边界是一条谱线，不是一根灰边：整站的通道识别从这条线开始。 */
+.sidebar::after{content:"";position:absolute;top:0;bottom:0;right:0;width:2px;background:var(--spectrum-v);opacity:.85}
 .sidebar .brand{font-size:17px;color:#fff}
 .sidebar nav{display:grid;gap:4px;margin-top:30px}
 .nav{display:flex;gap:12px;align-items:center;text-align:left;background:none;color:var(--sidebar-muted);font-size:13px;font-weight:500;padding:11px 12px;border-radius:var(--radius)}
@@ -118,7 +145,9 @@ code{font-family:var(--font-mono);font-size:.92em}
    暗底上通道色做文字都够不到正文 4.5:1（实测靛蓝 3.13、青 4.00、紫罗兰 2.97、玫红 3.64），
    所以这条轨上只用实测达标的信号色，四条通道配色一律留在浅色内容区里表达。 */
 .workspace{margin-left:224px;width:calc(100% - 224px)}
-.topbar{min-height:64px;padding:0 32px;border-bottom:1px solid #1d2038;display:flex;align-items:center;justify-content:space-between;gap:14px;background:var(--sidebar);position:sticky;top:0;z-index:20}
+.topbar{min-height:64px;padding:0 32px;display:flex;align-items:center;justify-content:space-between;gap:14px;background:var(--sidebar);position:sticky;top:0;z-index:20}
+/* 机架下沿整条换成谱线：滚到哪一页，头顶都是那四条通道。 */
+.topbar::after{content:"";position:absolute;left:0;right:0;bottom:0;height:2px;background:var(--spectrum)}
 .breadcrumb{font-size:12px;color:var(--sidebar-muted)}
 .breadcrumb span{margin-left:12px}
 .breadcrumb span:last-child{color:#fff;font-weight:600}
@@ -139,10 +168,30 @@ code{font-family:var(--font-mono);font-size:.92em}
 /* 机架压在暗底上，浅色 wash 会糊成一片，所以同样五档各配一套深底亮字：
    实测 ok 8.56 / warn 8.78 / bad 8.22 / idle 6.10，全部 ≥4.5。
    没带档位的徽章退回 .badge 的浅紫胶囊——状态未确认时也不给绿色。 */
+.badge.rail-state{background:var(--sidebar-hi);color:#a6accf}
 .badge.rail-state.ok{background:#123a2e;color:#7fe9bd}
 .badge.rail-state.warn{background:#3a2a0c;color:#f2c879}
 .badge.rail-state.bad{background:#3a1015;color:#ff9aa2}
 .badge.rail-state.idle{background:var(--sidebar-hi);color:#a6accf}
+/* 未探测在暗机架上仍要"看着像没有数据"：虚线描边 + 机架高亮底，实测 #a6accf 对
+   #0f1120 为 8.40:1。机架面与顶栏同色，所以这套深底亮字在概览机架上同样成立。 */
+.badge.rail-state.unknown{background:transparent;border:1px dashed #4a5180;color:#a6accf;padding:3px 10px}
+
+/* ---------- 折线描边 ---------- */
+/* 折线与图例必须同色：先前线用一组临时亮色、图例用通道色，同一个通道在一张图里
+   有两种蓝。描边改走 class，色值只认 --ch-* 那一处。 */
+.stroke-workbuddy{stroke:var(--ch-workbuddy)}
+.stroke-zcode{stroke:var(--ch-zcode)}
+.stroke-qoder{stroke:var(--ch-qoder)}
+.stroke-opencode{stroke:var(--ch-opencode)}
+/* viewBox 会被 .trend-svg 的 width:100% 等比放大，stroke-width:2 跟着一起变粗，
+   宽屏上线糊成一片。non-scaling-stroke 把线宽钉回 2 个 CSS 像素，与缩放无关。 */
+.trend-line{vector-effect:non-scaling-stroke}
+/* 折点跟线同一条令牌；SVG 圆点默认填黑，漏写这四条就会在图上长出四个不属于任何通道的黑点。 */
+.fill-workbuddy{fill:var(--ch-workbuddy)}
+.fill-zcode{fill:var(--ch-zcode)}
+.fill-qoder{fill:var(--ch-qoder)}
+.fill-opencode{fill:var(--ch-opencode)}
 
 /* ---------- 页面骨架 ---------- */
 .page{max-width:1360px;margin:auto;padding:26px 32px 34px}
@@ -150,25 +199,36 @@ code{font-family:var(--font-mono);font-size:.92em}
 .page-heading p.muted{font-size:13px;margin:0;max-width:76ch}
 
 /* ---------- 统计条 ---------- */
-.metrics{display:grid;grid-template-columns:repeat(auto-fit,minmax(190px,1fr));border:1px solid var(--line);border-radius:var(--radius-lg);background:var(--surface);overflow:hidden;margin-bottom:26px}
-.metrics article{padding:16px 20px;border-left:1px solid var(--line-soft)}
+/* 读数条按仪表口径排：标签 11px 退到边上，数字 32px 等宽占满视线，
+   差到 3 倍才分得出主次。底沿一条谱线收口，与顶栏那条呼应。 */
+.metrics{position:relative;display:grid;grid-template-columns:repeat(auto-fit,minmax(190px,1fr));border:1px solid var(--line);border-radius:var(--radius-lg);background:var(--surface);overflow:hidden;margin-bottom:26px}
+.metrics::after{content:"";position:absolute;left:0;right:0;bottom:0;height:2px;background:var(--spectrum)}
+.metrics article{padding:16px 20px 18px;border-left:1px solid var(--line-soft)}
 .metrics article:first-child{border-left:0}
-.metrics span{font-size:11px;color:var(--muted);display:block}
-.metrics strong{display:block;font-size:24px;font-weight:650;letter-spacing:-.6px;margin:8px 0 2px;font-variant-numeric:tabular-nums}
+.metrics span{font-size:11px;color:var(--muted);display:block;letter-spacing:.02em}
+.metrics strong{display:block;font-family:var(--font-mono);font-size:32px;font-weight:700;letter-spacing:-1.2px;line-height:1.1;margin:7px 0 3px;font-variant-numeric:tabular-nums;overflow-wrap:anywhere}
 .metrics small{font-size:11px;color:var(--muted)}
 
-/* ---------- 通道卡片 ---------- */
-.channel-cards{display:grid;grid-template-columns:repeat(auto-fit,minmax(240px,1fr));gap:12px;margin-bottom:26px}
-.channel-card{background:var(--surface);border:1px solid var(--line);border-radius:var(--radius-lg);padding:16px 18px;display:flex;flex-direction:column;gap:12px}
-.channel-card.warn{border-color:#e6c48f;background:#fffcf6}
-/* 不可达比「要处理」更确定，所以给红而不是继续用琥珀；未启用/未加载是中性事实，卡片保持平静。 */
-.channel-card.bad{border-color:#e2a9ae;background:#fffafa}
+/* ---------- 通道机架（运行概览招牌） ---------- */
+/* 概览顶部这块不是"四张卡片"，是一根机架里并排的四束光：底色与顶栏同族，
+   顶沿一条谱线切出四段，读数用白、通道名用各自的亮版通道色（暗底实测靛 6.89、
+   青 10.81、紫罗兰 7.21、玫红 8.80，全部 ≥4.5）。浅色 wash 在暗底上会糊成一片，
+   所以这里一律走 --ch-lit 亮版，浅色区那套 --ch-ink 深版不在这个面上用。 */
+.channel-cards{position:relative;display:grid;grid-template-columns:repeat(auto-fit,minmax(240px,1fr));background:var(--sidebar);border:1px solid #1d2038;border-radius:var(--radius-lg);overflow:hidden;margin-bottom:26px}
+.channel-cards::before{content:"";position:absolute;left:0;right:0;top:0;height:3px;background:var(--spectrum);z-index:1}
+.channel-card{background:transparent;border:0;border-left:1px solid #1d2038;border-radius:0;padding:20px 20px 18px;display:flex;flex-direction:column;gap:12px;transition:background .14s ease}
+.channel-card:first-child{border-left:0}
+.channel-card:hover{background:#141731}
+.channel-card.warn{background:#191305}
+.channel-card.bad{background:#1b0d11}
+.channel-card.warn:hover,.channel-card.bad:hover{background:#221a08}
+.channel-card.bad:hover{background:#240f14}
 .channel-card-head{display:flex;align-items:center;justify-content:space-between;gap:10px}
-.channel-card-name{font-size:13px;font-weight:650;color:var(--ink)}
+.channel-card-name{font-size:13px;font-weight:700;color:var(--ch-lit);letter-spacing:-.1px}
 .channel-card-stats{display:grid;grid-template-columns:repeat(2,1fr);gap:8px 14px}
 .channel-card-stats div{display:flex;flex-direction:column}
-.channel-card-stats span{font-size:11px;color:var(--muted)}
-.channel-card-stats strong{font-size:16px;font-weight:650;letter-spacing:-.3px;color:var(--ink);font-variant-numeric:tabular-nums}
+.channel-card-stats span{font-size:11px;color:var(--sidebar-muted)}
+.channel-card-stats strong{font-family:var(--font-mono);font-size:18px;font-weight:700;letter-spacing:-.6px;color:#fff;font-variant-numeric:tabular-nums}
 /* Actions sit under the stats rather than pinned to the card floor: a bypass
    channel reports one stat where WorkBuddy reports five, and pinning turns that
    difference into a hole in the middle of the short cards. */
@@ -184,10 +244,10 @@ code{font-family:var(--font-mono);font-size:.92em}
 .trend-legend{display:flex;flex-wrap:wrap;gap:14px;margin-top:12px}
 .trend-legend-item{display:inline-flex;align-items:center;gap:6px;font-size:12px;color:var(--muted)}
 .trend-swatch{width:12px;height:3px;border-radius:2px;display:inline-block}
-.sw-workbuddy{background:#4f52d6}
-.sw-zcode{background:#0a7f96}
-.sw-qoder{background:#7a3fc4}
-.sw-opencode{background:#c4356f}
+.sw-workbuddy{background:var(--ch-workbuddy)}
+.sw-zcode{background:var(--ch-zcode)}
+.sw-qoder{background:var(--ch-qoder)}
+.sw-opencode{background:var(--ch-opencode)}
 
 /* ---------- 调用统计：Token 热力图 / 每日趋势 / 模型占比 ---------- */
 /* hm1-4 的紫阶与 sw-r0..r4 / sw-other 的取色，和 app.js 里的 modelColors、
@@ -245,20 +305,51 @@ code{font-family:var(--font-mono);font-size:.92em}
 .flow a{margin-right:18px}
 
 /* ---------- 区块标题与表格 ---------- */
+/* 标题左侧一根谱色短柱：这是全站唯一的"分区记号"，比再加一层灰字更能划出段落。 */
 .section-title{display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap;margin-top:26px;margin-bottom:12px}
-.section-title h2{font-size:16px;margin:0}
+.section-title h2{display:flex;align-items:center;gap:9px;font-size:16px;margin:0}
+.section-title h2::before{content:"";width:3px;height:15px;border-radius:2px;background:var(--spectrum);flex:none}
 .section-title>span{max-width:70ch}
 .table-wrap{padding:0;overflow:auto}
-table{border-collapse:collapse;width:100%;font-size:12px;min-width:720px}
-th{color:var(--muted);font-weight:600;text-align:left;background:var(--table-head);padding:12px 16px;border-bottom:1px solid var(--line);font-size:11px}
+/* 三档层次：主字段（首列）13px/650 抬起，其余 12px 常规，注行 11px 退到边上；
+   数值列一律等宽右对齐，位数再多也能竖着比。 */
+table{border-collapse:collapse;width:100%;font-size:12px;min-width:720px;font-variant-numeric:tabular-nums}
+th{color:var(--muted);font-weight:600;text-align:left;background:var(--table-head);padding:12px 16px;border-bottom:1px solid var(--line);font-size:11px;letter-spacing:.02em}
 td{padding:14px 16px;border-bottom:1px solid var(--line-soft);vertical-align:middle;line-height:1.6}
+td:first-child{font-size:13px;font-weight:650;letter-spacing:-.1px}
+th.num,td.num{text-align:right;font-family:var(--font-mono);font-weight:400}
+td.num{font-size:12px;color:var(--ink)}
+td small{display:block;font-size:11px;font-weight:400;letter-spacing:0;color:var(--muted)}
 tbody tr:last-child td{border-bottom:0}
 tbody tr:hover td{background:var(--bg-soft)}
+/* 探测结论是坏消息时整行抬色，不只在状态列挂一个小胶囊；行色的 hover 变体必须
+   显式写，否则被上面那条通用 hover 盖掉，一进鼠标就把坏信号洗成灰。 */
+tbody tr.row-warn td{background:#fffcf6}
+tbody tr.row-bad td{background:#fff7f8}
+tbody tr.row-warn:hover td{background:#fdf4e8}
+tbody tr.row-bad:hover td{background:#fdeef0}
 .model-group-head td{background:var(--group-band);font-weight:700;font-size:12px;color:var(--ink);border-bottom:1px solid var(--line)}
 .model-group-head:hover td{background:var(--group-band)}
-td small{display:block;color:var(--muted)}
 td button,.channel-card-actions button,.task-actions button{padding:7px 12px;font-size:12px}
 .empty{padding:30px;text-align:center;color:var(--muted);font-size:13px;margin:0}
+/* 通道占比条：分母是所选范围内的总调用数，按 10% 一档取整（宽度只能走 class，
+   CSP 禁内联样式）。只有这一处用占比条，指标条上的三个数没有共同分母，不硬造。
+   靠右对齐：它挂在 .num 单元格里，数字是右对齐的，条子留在左边会对不上自己的读数。 */
+.share{display:block;height:4px;border-radius:2px;background:var(--group-band);margin:6px 0 0 auto;max-width:150px;overflow:hidden}
+.share i{display:block;height:100%;background:var(--ch);border-radius:2px}
+.share i.w1{width:10%}.share i.w2{width:20%}.share i.w3{width:30%}.share i.w4{width:40%}.share i.w5{width:50%}
+.share i.w6{width:60%}.share i.w7{width:70%}.share i.w8{width:80%}.share i.w9{width:90%}.share i.w10{width:100%}
+
+/* ---------- 明细分页 ---------- */
+/* 当前页用实底靛蓝（白字实测 5.66:1），其余页保持白底描边：一眼能认出脚下是哪一页。 */
+.pager-bar{display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap;margin-top:12px}
+.pager-actions{display:flex;align-items:center;gap:10px;flex-wrap:wrap}
+.pager-actions select{padding:7px 10px;font-size:12px;width:auto}
+.pager{display:flex;align-items:center;gap:4px;flex-wrap:wrap}
+.pager-btn{background:var(--surface);border:1px solid var(--line);color:var(--ink);font-size:12px;font-weight:600;padding:7px 11px;min-width:34px}
+.pager-btn:hover:not(:disabled){background:var(--accent-soft);border-color:var(--accent-line)}
+.pager-btn.current{background:var(--accent);border-color:var(--accent);color:#fff}
+.pager-gap{color:var(--muted);font-size:12px;padding:0 2px}
 
 /* ---------- 对话面板 ---------- */
 .chat-panel{padding:20px}

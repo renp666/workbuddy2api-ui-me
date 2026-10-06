@@ -6,6 +6,7 @@ let page = 'overview', workbuddyView = 'accounts', sessionGeneration = 0;
 let protocol = 'openai';
 let taskState = {items:[],active_run:null,latest_runs:[]}, taskHistory = [], taskBefore = null, taskStarting = false, taskPollTimer, taskRenderKey, detailController, detailGeneration = 0;
 let usageRange = 'today', usageChannel = 'all', usageGeneration = 0;
+let usagePage = 1, usagePageSize = 50, usageDetailRows = [];
 let zcodeModels = [], zcodeHistory = [], zcodeStatus = null, zcodePollTimer, zcodeBusy = false, zcodeAuthURL = '', zcodeLogoutArmed = false, zcodeProviderTouched = false, zcodePlanTouched = false, zcodeView = 'status', zcodeViewTouched = false, zcodeEnabled = false;
 let qoderModels = [], qoderHistory = [], qoderStatus = null, qoderPollTimer, qoderBusy = false, qoderAuthURL = '', qoderLogoutArmed = false, qoderControl = false, qoderLoggedIn = false, qoderLoginTimer = null, qoderView = 'status', qoderViewTouched = false, qoderEnabled = false;
 let opencodeModels = [], opencodeHistory = [], opencodeStatus = null, opencodeBusy = false, opencodeView = 'status', opencodeEnabled = false;
@@ -114,6 +115,9 @@ $('login-form').addEventListener('submit', async event => {
 });
 $('logout').addEventListener('click', async () => {$('login-error').textContent='';const pending=jsonAPI('logout', {});signedOut();try {await pending;} catch(e){$('login-error').textContent=e.message;} });
 function cell(text, small) { const td = document.createElement('td'); td.textContent = text; if (small) { const s=document.createElement('small');s.textContent=small;td.append(s); } return td; }
+// numCell 数值列：等宽右对齐才能竖着比位数，表头要挂同样的 class 才对得齐。
+// 小字副行（如耗时是网页测的还是上游回报的）跟在数字下面，不再另起一列。
+function numCell(text, small) { const td = document.createElement('td'); td.className = 'num'; td.textContent = text; if (small) { const s=document.createElement('small');s.textContent=small;td.append(s); } return td; }
 // zcode / qoder / opencode / core 共用的模型表渲染。能力与探测结论都取自上游探测结果；
 // 没有探测数据的通道显式显示「未探测」而不是隐藏列，后续上游补上同构数据即可直接复用。
 // modelHeat 是调用统计账本按 modelKey 聚合的调用次数，供「热度」列排名。
@@ -332,7 +336,9 @@ function renderModelTable(channel,list,health){
  const cols=channel==='opencode'?8:10;
  const appendRow=row=>{
   const tr=document.createElement('tr');
-  tr.append(cell(row.label),chipsCell(row.caps,[row.limit,row.variants].filter(Boolean).join(' · ')),badgeCell(row.state.label,row.state.tone),cell(row.duration,row.source),cell(row.speed),cell(row.note),modelHeatCell(row.key),globalHeatCell(row.key));
+  // 只有异常行抬底色：可用/未知是常态，整表染色等于没染色，失败行反而被淹掉。
+  if(row.state.tone==='warn'||row.state.tone==='bad')tr.className='row-'+row.state.tone;
+  tr.append(cell(row.label),chipsCell(row.caps,[row.limit,row.variants].filter(Boolean).join(' · ')),badgeCell(row.state.label,row.state.tone),numCell(row.duration,row.source),numCell(row.speed),cell(row.note),modelHeatCell(row.key),globalHeatCell(row.key));
   // opencode 免费通道不采集倍率、不加开关列；其余通道追加「积分消耗」与「操作」两列。
   if(row.switchable){ tr.append(creditCell(row),switchOpCell(row)); }
   body.append(tr);
@@ -365,8 +371,8 @@ function renderModelTable(channel,list,health){
 }
 // creditCell 渲染积分消耗倍率：已知显示「×N」，未知显示「未知」。
 function creditCell(row){
- if(row.creditValue===null||row.creditValue===undefined)return cell('未知');
- return cell(`×${row.creditValue}`);
+ if(row.creditValue===null||row.creditValue===undefined)return numCell('未知');
+ return numCell(`×${row.creditValue}`);
 }
 // switchOpCell 构造模型开关单元格：启用中的模型显示「停用」按钮，
 // 停用中的显示「启用」按钮，并带一个状态徽标说明当前生效态与默认来源。
@@ -469,8 +475,9 @@ function renderOverview(){
   const count=overviewChannelModelCount(c);
   const credit=s.calls?s.creditMissing===s.calls?'—':String(s.credit):'—';
   const tr=document.createElement('tr');
+  tr.className='ch-'+c+' ch-band';
   const td=document.createElement('td');const tag=document.createElement('span');tag.className='badge'+(status.tone?' '+status.tone:'');tag.textContent=status.label;td.append(tag);
-  tr.append(cell(usageChannelNames[c]),td,cell(count===null?'—':String(count)),cell(String(s.calls)),cell(formatUsageGroup(s.prompt,s.promptMissing,s.calls)),cell(formatUsageGroup(s.completion,s.completionMissing,s.calls)),cell(credit));
+  tr.append(channelCell(usageChannelNames[c],c),td,numCell(count===null?'—':String(count)),numCell(String(s.calls)),numCell(formatUsageGroup(s.prompt,s.promptMissing,s.calls)),numCell(formatUsageGroup(s.completion,s.completionMissing,s.calls)),numCell(credit));
   body.append(tr);
  }
  const items=overviewUsageChannel==='all'?overviewUsageItems:overviewUsageItems.filter(e=>usageChannelOf(e)===overviewUsageChannel);
@@ -523,25 +530,27 @@ function renderCards(){
   const enabled=c==='workbuddy'||(c==='zcode'&&zcodeEnabled)||(c==='qoder'&&qoderEnabled)||(c==='opencode'&&opencodeEnabled);
   if(!enabled)continue;
   const status=cardStatus(c);
-  // 卡片只在「需要处理」时抬起来：告警和不可达给边框底色，未启用/未加载是中性事实，保持平静。
-  const card=document.createElement('article');card.className='channel-card'+(status.tone==='bad'?' bad':status.tone==='warn'?' warn':'');
+  // 机架上的每个仓位顶着自己的通道色，状态徽章走暗底那一套深底亮字；
+  // 告警与不可达只是把仓位底色压深一点，未启用/未加载是中性事实，保持平静。
+  const card=document.createElement('article');card.className='channel-card ch-'+c+(status.tone==='bad'?' bad':status.tone==='warn'?' warn':'');
   const head=document.createElement('div');head.className='channel-card-head';
   const name=document.createElement('span');name.className='channel-card-name';name.textContent=usageChannelNames[c];
-  const badge=document.createElement('span');badge.className='badge'+(status.tone?' '+status.tone:'');badge.textContent=status.label;
+  const badge=document.createElement('span');badge.className='badge rail-state'+(status.tone?' '+status.tone:'');badge.textContent=status.label;
   head.append(name,badge);card.append(head);
   const stats=document.createElement('div');stats.className='channel-card-stats';
   for(const [k,v] of cardStats(c)){const d=document.createElement('div');const s=document.createElement('span');s.textContent=k;const strong=document.createElement('strong');strong.textContent=v;d.append(s,strong);stats.append(d);}
   card.append(stats);
   const actions=document.createElement('div');actions.className='channel-card-actions';
-  for(const a of cardActions(c)){const btn=document.createElement('button');btn.className='secondary';btn.textContent=a.label;btn.addEventListener('click',()=>{if(a.sub&&a.view==='workbuddy')setWorkBuddyView(a.sub);showPage(a.view);});actions.append(btn);}
+  for(const a of cardActions(c)){const btn=document.createElement('button');btn.className='rail-btn';btn.textContent=a.label;btn.addEventListener('click',()=>{if(a.sub&&a.view==='workbuddy')setWorkBuddyView(a.sub);showPage(a.view);});actions.append(btn);}
   card.append(actions);
   wrap.append(card);
  }
 }
-// renderTrend 用内联 SVG 画「每日调用次数」折线图：全部通道时每个已启用通道一条线（配色
-// 与卡片一致），筛选单通道时只画该通道。按 Asia/Shanghai 本地日分桶，缺失观测天然不计入。
-// 范围不足两天时不画折线，改用文字提示，避免用单点误导趋势。
-const trendColors={workbuddy:'#6366f1',zcode:'#06b6d4',qoder:'#8b5cf6',opencode:'#ec4899'};
+// renderTrend 用内联 SVG 画「每日调用次数」折线图：全部通道时每个已启用通道一条线，筛选
+// 单通道时只画该通道。配色不再在脚本里另养一份——线、点、图例一律挂 stroke-/fill-/sw- 类，
+// 色值只在 style.css 的 --ch-* 令牌里存在一份，改通道色不会让图例和折线分家。
+// 按 Asia/Shanghai 本地日分桶，缺失观测天然不计入。范围不足两天时不画折线，改用文字提示，
+// 避免用单点误导趋势。
 function dayKey(ts){const date=new Date(ts*1000);return Number.isNaN(date.getTime())?'':date.toLocaleDateString('en-CA',{timeZone:'Asia/Shanghai'});}
 function renderTrend(items){
  const wrap=$('overview-trend');const noteEl=$('overview-trend-note');
@@ -573,8 +582,8 @@ function renderTrend(items){
  for(const i of axisTicks(days.length)){const t=mk('text',{x:x(i),y:padT+plotH+16,class:'trend-tick','text-anchor':'middle'});t.textContent=days[i].slice(5);svg.append(t);}
  for(const [c,m] of series){
   const pts=days.map((d,i)=>`${x(i)},${y(m.get(d)||0)}`).join(' ');
-  svg.append(mk('polyline',{points:pts,fill:'none',stroke:trendColors[c]||'#6366f1','stroke-width':2,'stroke-linejoin':'round','stroke-linecap':'round'}));
-  days.forEach((d,i)=>{const v=m.get(d)||0;svg.append(mk('circle',{cx:x(i),cy:y(v),r:2.6,fill:trendColors[c]||'#6366f1'}));});
+  svg.append(mk('polyline',{points:pts,fill:'none',class:'trend-line stroke-'+c,'stroke-width':2,'stroke-linejoin':'round','stroke-linecap':'round'}));
+  days.forEach((d,i)=>{const v=m.get(d)||0;svg.append(mk('circle',{cx:x(i),cy:y(v),r:2.6,class:'fill-'+c}));});
  }
  wrap.append(svg);
  const legend=document.createElement('div');legend.className='trend-legend';
@@ -605,7 +614,7 @@ function renderAccounts(data) {
   const accountTone={'可用':'ok','冷却中':'warn','已禁用':'idle'}[state];
   const status=cell('');const badge=document.createElement('span');badge.className='badge '+accountTone;badge.textContent=state;status.append(badge);
   const limits=(a.rate_limited_models||[]).map(m => `${m.model} 至 ${new Date(m.until).toLocaleString()}`).join('；');
-  tr.append(cell(a.nickname||a.uid,`${a.realm === 'global'?'国际版':'国内版'} · ${a.uid}`),status,cell(a.credits_known ? String(a.credits) : a.credits>0 ? `${a.credits}（历史）` : '待确认'),cell(`${a.success_count||0} / ${a.err_total||0}`),cell(String(a.in_flight)),cell(limits||a.disabled_reason||a.reason||'—', a.cool_remaining_sec ? `约 ${Math.ceil(a.cool_remaining_sec/60)} 分钟后恢复` : ''), pinOpCell(a));
+  tr.append(cell(a.nickname||a.uid,`${a.realm === 'global'?'国际版':'国内版'} · ${a.uid}`),status,cell(a.credits_known ? String(a.credits) : a.credits>0 ? `${a.credits}（历史）` : '待确认'),numCell(`${a.success_count||0} / ${a.err_total||0}`),numCell(String(a.in_flight)),cell(limits||a.disabled_reason||a.reason||'—', a.cool_remaining_sec ? `约 ${Math.ceil(a.cool_remaining_sec/60)} 分钟后恢复` : ''), pinOpCell(a));
   $('accounts-body').append(tr);
  }
  updateModelHint();
@@ -842,6 +851,23 @@ const usageAPINames={chat:'Chat',messages:'Messages',responses:'Responses'};
 const usageChannelNames={workbuddy:'WorkBuddy',zcode:'GLM（Zcode）',qoder:'Qoder',opencode:'OpenCode'};
 const usageChannelOrder=['workbuddy','zcode','qoder','opencode'];
 function usageChannelOf(entry){const uid=entry.uid||'';return uid==='zcode'||uid==='qoder'||uid==='opencode'?uid:'workbuddy';}
+// 一束色认一条通道。routes 那侧的键是 core/glm，账本这侧是 workbuddy/zcode，
+// 指的是同一束光；翻译只写这一处，别在调用点各摆一份映射。
+// 通道类挂在单元格上，整行都是同一束光时（通道总览、通道分布）再挂到 <tr>，
+// 占比条那类不在通道列里的图形才继承得到 --ch。
+function channelKeyOf(name){return name==='core'?'workbuddy':name==='glm'?'zcode':name;}
+function channelCell(name,raw){
+ const td=document.createElement('td');td.className='ch-name ch-'+channelKeyOf(raw);td.textContent=name;return td;
+}
+// shareCell 占比条：分母是同一范围内的总量，按 10% 一档取整，宽度只能走 class
+// （style-src 'self' 会静默丢掉内联 style）。四舍五入到最小一档，非零不画成空。
+function shareCell(value,total){
+ const wrap=document.createElement('span');wrap.className='share';
+ const bar=document.createElement('i');
+ const steps=total>0?Math.max(1,Math.round(value/total*10)):0;
+ if(steps)bar.className='w'+steps;
+ wrap.append(bar);return wrap;
+}
 // summarizeUsage 复刻 core usagelog.Summarize 口径：输入与输出各自判定未知（<0 不累加、
 // 各自计入 prompt_missing / completion_missing），credit 缺失（null）不累加且计入 credit_missing。
 // 一个通道只回报了输入、没回报输出是真实存在的响应，把输出当 0 会静悄悄少报总量。
@@ -877,13 +903,56 @@ function renderUsage(data){
  const distBody=$('usage-by-channel-body');distBody.replaceChildren();
  const distRows=usageChannelOrder.filter(c=>byChannel.has(c));
  $('usage-by-channel-empty').hidden=distRows.length>0;
-	for(const c of distRows){const s=summarizeUsage(byChannel.get(c));const credit=s.creditMissing===s.calls?'—':String(s.credit);const tr=document.createElement('tr');tr.append(cell(usageChannelNames[c]),cell(String(s.calls)),cell(formatUsageGroup(s.prompt,s.promptMissing,s.calls)),cell(formatUsageGroup(s.completion,s.completionMissing,s.calls)),cell(credit));distBody.append(tr);}
- const body=$('usage-body');body.replaceChildren();$('usage-empty').hidden=items.length>0;
- for(const e of items){
-  const tr=document.createElement('tr');
-  tr.append(cell(formatTaskTime(e.ts*1000)),cell(usageChannelNames[usageChannelOf(e)]),cell(e.account||e.uid||'—'),cell(e.model||'—'),cell(usageAPINames[e.api]||'—'),cell(usageModeNames[e.mode]||e.mode||'—'),cell(formatUsageTokens(e.prompt_tokens)),cell(formatUsageTokens(e.completion_tokens)),cell(formatUsageCredit(e.credit)),cell(e.src||'—'),cell(e.client||'—'));
+ for(const c of distRows){
+  const s=summarizeUsage(byChannel.get(c));const credit=s.creditMissing===s.calls?'—':String(s.credit);
+  const tr=document.createElement('tr');tr.className='ch-'+c+' ch-band';
+  const calls=numCell(String(s.calls));calls.append(shareCell(s.calls,all.length));
+  tr.append(channelCell(usageChannelNames[c],c),calls,numCell(formatUsageGroup(s.prompt,s.promptMissing,s.calls)),numCell(formatUsageGroup(s.completion,s.completionMissing,s.calls)),numCell(credit));
+  distBody.append(tr);
+ }
+ $('usage-empty').hidden=items.length>0;
+ usageDetailRows=items;
+ renderUsageDetail();
+}
+// 明细一次建全部行会在月度几千条时拖慢首屏，长表本身也读不动。整段数据留在内存里
+// 切片展示：上方指标条与通道分布按整个时间范围算，翻页不改任何汇总口径。
+function renderUsageDetail(){
+ const body=$('usage-body');body.replaceChildren();
+ const pages=Math.max(1,Math.ceil(usageDetailRows.length/usagePageSize));
+ if(usagePage>pages)usagePage=pages;
+ if(usagePage<1)usagePage=1;
+ const start=(usagePage-1)*usagePageSize;
+ for(const e of usageDetailRows.slice(start,start+usagePageSize)){
+  const channel=usageChannelOf(e);
+  const tr=document.createElement('tr');tr.className='ch-'+channel;
+  tr.append(cell(formatTaskTime(e.ts*1000)),channelCell(usageChannelNames[channel],channel),cell(e.account||e.uid||'—'),cell(e.model||'—'),cell(usageAPINames[e.api]||'—'),cell(usageModeNames[e.mode]||e.mode||'—'),numCell(formatUsageTokens(e.prompt_tokens)),numCell(formatUsageTokens(e.completion_tokens)),numCell(formatUsageCredit(e.credit)),cell(e.src||'—'),cell(e.client||'—'));
   body.append(tr);
  }
+ renderUsagePager(pages);
+}
+// 页码窗口最多 7 格：两端固定，当前页左右各带一格，中间断档压成一个省略号。
+function usagePageWindow(page,pages){
+ if(pages<=7)return Array.from({length:pages},(_,i)=>i+1);
+ const sorted=[...new Set([1,page-1,page,page+1,pages].filter(p=>p>=1&&p<=pages))].sort((a,b)=>a-b);
+ const out=[];
+ for(const [i,p] of sorted.entries()){if(i&&p-sorted[i-1]>1)out.push('…');out.push(p);}
+ return out;
+}
+function renderUsagePager(pages){
+ const bar=$('usage-pager-bar'),host=$('usage-pager');
+ host.replaceChildren();
+ bar.hidden=usageDetailRows.length===0;
+ $('usage-pager-info').textContent=`共 ${usageDetailRows.length} 条 · 第 ${usagePage}/${pages} 页`;
+ const goto=(page)=>()=>{usagePage=page;renderUsageDetail();};
+ const step=(label,page,disabled)=>{const b=document.createElement('button');b.className='pager-btn';b.textContent=label;b.disabled=disabled;b.addEventListener('click',goto(page));host.append(b);};
+ step('‹ 上一页',usagePage-1,usagePage<=1);
+ for(const slot of usagePageWindow(usagePage,pages)){
+  if(slot==='…'){const gap=document.createElement('span');gap.className='pager-gap';gap.textContent='…';host.append(gap);continue;}
+  const b=document.createElement('button');b.className='pager-btn'+(slot===usagePage?' current':'');b.textContent=String(slot);
+  if(slot===usagePage)b.setAttribute('aria-current','page');else b.addEventListener('click',goto(slot));
+  host.append(b);
+ }
+ step('下一页 ›',usagePage+1,usagePage>=pages);
 }
 async function loadUsage(){
  if(!csrf)return;
@@ -891,8 +960,9 @@ async function loadUsage(){
  try{const data=await jsonAPI('usage?range='+encodeURIComponent(usageRange));if(generation===usageGeneration)renderUsage(data);}
  catch(error){if(generation===usageGeneration)notice(error.message);}
 }
-$('usage-range').addEventListener('change',event=>{usageRange=event.target.value;usageGeneration++;loadUsage();});
-$('usage-channel').addEventListener('change',event=>{usageChannel=event.target.value;usageGeneration++;loadUsage();});
+$('usage-range').addEventListener('change',event=>{usageRange=event.target.value;usagePage=1;usageGeneration++;loadUsage();});
+$('usage-channel').addEventListener('change',event=>{usageChannel=event.target.value;usagePage=1;usageGeneration++;loadUsage();});
+$('usage-page-size').addEventListener('change',event=>{usagePageSize=Number(event.target.value);usagePage=1;renderUsageDetail();});
 $('usage-refresh').addEventListener('click',()=>{usageGeneration++;usageDailyGeneration++;loadUsage();loadUsageDaily();});
 
 // —— 调用统计·日度汇总视图：全历史指标条 / Token 热力图 / 每日按模型趋势 / 模型用量环形图 ——
@@ -1777,7 +1847,7 @@ function renderRouteAliases(aliases){
  $('routes-alias-empty').hidden=aliases.length>0;
  for(const entry of aliases){
   const tr=document.createElement('tr');
-  tr.append(cell(entry.alias),cell(routeChannelLabel(entry.channel)),cell(entry.model),cell(entry.public_model),badgeCell(entry.enabled?'启用':'停用',entry.enabled?'ok':'idle'),cell(entry.note||'—'));
+  tr.append(cell(entry.alias),channelCell(routeChannelLabel(entry.channel),entry.channel),cell(entry.model),cell(entry.public_model),badgeCell(entry.enabled?'启用':'停用',entry.enabled?'ok':'idle'),cell(entry.note||'—'));
   const actions=document.createElement('td');
   const edit=document.createElement('button');edit.className='secondary';edit.textContent='编辑';edit.addEventListener('click',()=>startRouteEdit(entry));
   const toggle=document.createElement('button');toggle.className='secondary';toggle.textContent=entry.enabled?'停用':'启用';toggle.addEventListener('click',()=>saveRouteAliases(currentRouteAliases().map(item=>item.alias===entry.alias?{...item,enabled:!entry.enabled}:item)));
@@ -2009,7 +2079,7 @@ function capPoolColumns(){
  const label=(capDims.find(dim=>dim.id===capDim)||{}).label||'得分';
  return[
   {label:'模型',cell:item=>cell(item.row.name||item.model,String(item.model))},
-  {label:'通道',cell:item=>cell(routeChannelLabel(item.channel))},
+  {label:'通道',cell:item=>channelCell(routeChannelLabel(item.channel),item.channel)},
   {label:label,cell:item=>cell(item.metric.text,capDim==='design'?'类目 '+capCategory:'')},
   {label:'其它指数',cell:item=>cell(capScoreText(item.row),capBestArena(item.row))},
   {label:'上下文',cell:item=>cell(capContextText(item.row))},

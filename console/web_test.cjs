@@ -1324,6 +1324,9 @@ test('model table sorts by probe outcome first and ascending latency second',asy
   const rows=get('opencode-models-body').children;
   assert.deepEqual(rows.map(tr=>tr.children[0].textContent),['opencode-OC · Alpha','opencode-OC · Charlie','opencode-OC · Bravo'],'rows are not ordered 可用 → 仅对话 → 不可用');
   assert.deepEqual(rows.map(tr=>tr.children[2].children[0].textContent),['可用','仅对话','探测超时']);
+  // 只有异常行抬底色：可用行留在白底上。整表染色等于没染色，失败行反而被淹掉。
+  assert.deepEqual(rows.map(tr=>tr.className),['','row-warn','row-bad'],'异常行没抬底色，或把可用行也一起染了');
+  assert.equal(rows[0].children[3].className,'num','耗时是数值列，单元格要和表头同侧对齐');
   assert.equal(rows[0].children[3].textContent,'9.0 秒');
   assert.equal(rows[2].children[3].textContent,'0.1 秒','a faster failing probe must not outrank a healthy one');
 });
@@ -1467,6 +1470,39 @@ test('usage page aggregates by channel, filters the detail list and keeps missin
   assert.equal(detail.length,1,'detail list not filtered to the selected channel');
   assert.equal(detail[0].children[1].textContent,'GLM（Zcode）','detail channel column wrong');
   assert.equal(get('usage-by-channel-body').children.length,4,'distribution must stay full while detail is filtered');
+});
+
+test('调用明细按页展示：默认 50 行，翻页只换表格，汇总口径不随页变', async()=>{
+  const items=Array.from({length:120},(_,i)=>({ts:1000+i,uid:'u1',account:'alice',model:'m'+i,mode:'sync',prompt_tokens:1,completion_tokens:1,credit:1}));
+  const {ctx,get}=taskFixture(async()=>({ok:true,status:200,json:async()=>({range:'today',items,summary:{}})}));
+  await vm.runInContext('loadUsage()',ctx);
+  assert.equal(vm.runInContext('usagePageSize',ctx),50,'默认每页不是 50 行');
+  assert.equal(get('usage-body').children.length,50,'首屏仍把全部行建进 DOM：'+get('usage-body').children.length);
+  assert.equal(get('usage-calls').textContent,'120','指标条必须按整个时间范围算，不能只算当前页');
+  assert.equal(get('usage-pager-info').textContent,'共 120 条 · 第 1/3 页');
+  assert.equal(get('usage-pager-bar').hidden,false,'有明细却不给分页条');
+  const pager=get('usage-pager').children;
+  assert.equal(pager[0].textContent,'‹ 上一页');assert.equal(pager[0].disabled,true,'首页还能点上一页');
+  assert.equal(pager[pager.length-1].disabled,false,'末页不该禁用下一页');
+  assert.equal(pager[1]['aria-current'],'page','当前页没有 aria-current');
+  pager[pager.length-1].handlers.click();
+  assert.equal(get('usage-pager-info').textContent,'共 120 条 · 第 2/3 页');
+  assert.equal(get('usage-body').children.length,50);
+  assert.equal(get('usage-calls').textContent,'120','翻页后汇总口径变了');
+  assert.equal(get('usage-by-channel-body').children.length,1,'通道分布跟着翻页被重切了');
+  vm.runInContext('usagePage=3;renderUsageDetail()',ctx);
+  assert.equal(get('usage-body').children.length,20,'末页应剩 20 行');
+  get('usage-page-size').handlers.change({target:{value:'30'}});
+  assert.equal(vm.runInContext('usagePageSize',ctx),30);
+  assert.equal(vm.runInContext('usagePage',ctx),1,'换每页条数后没回到第 1 页');
+  assert.equal(get('usage-body').children.length,30);
+  assert.equal(get('usage-pager-info').textContent,'共 120 条 · 第 1/4 页');
+  vm.runInContext('renderUsage({items:[]})',ctx);
+  assert.equal(get('usage-pager-bar').hidden,true,'空表还挂着分页条');
+  // 跨 realm 的数组直接 deepEqual 会比原型，一律 join 成字符串再判。
+  assert.equal(vm.runInContext('usagePageWindow(10,20).join("|")',ctx),'1|…|9|10|11|…|20','页码窗口错');
+  assert.equal(vm.runInContext('usagePageWindow(1,3).join("|")',ctx),'1|2|3');
+  assert.equal(vm.runInContext('usagePageWindow(4,7).join("|")',ctx),'1|2|3|4|5|6|7');
 });
 
 test('token 缺失按输入与输出分别计数：只回报输入时输出不得当 0 带过',async()=>{
@@ -2223,6 +2259,10 @@ test('overview channel cards summarize each enabled channel and jump to its tab'
   await vm.runInContext('loadOverview()',ctx);
   await new Promise(r=>setImmediate(r));
   const cards=get('overview-cards').children;
+  // 机架上的每个仓位顶着自己的通道色：卡片必须挂 ch-<通道>，否则 --ch-lit 在名称上解析不出来。
+  assert.deepEqual(cards.map(c=>c.className),['channel-card ch-workbuddy','channel-card ch-zcode'],'通道卡片没有挂通道类');
+  assert.deepEqual(cards.map(c=>c.children[0].children[1].className),['badge rail-state ok','badge rail-state ok'],'机架上的状态徽章没走深底那一套');
+  assert.deepEqual(cards.map(c=>c.children[2].children[0].className),['rail-btn','rail-btn'],'机架上的入口按钮不该是白底 secondary');
   assert.deepEqual(cards.map(c=>c.children[0].children[0].textContent),['WorkBuddy','GLM（Zcode）'],'cards must follow enabled channels');
   const stats=card=>card.children[1].children.map(d=>d.children[0].textContent+':'+d.children[1].textContent);
   assert.deepEqual(stats(cards[0]),['账号:1','可用:1','冷却 / 禁用:0 / 0','在途:0','模型:1'],'workbuddy card must mirror the account pool snapshot');
@@ -2251,6 +2291,14 @@ test('overview trend draws one polyline per channel and degrades to a note below
   assert.equal(svg.children.filter(c=>c.tag==='polyline').length,2,'one line per reporting channel');
   assert.equal(legend.children.length,2,'legend missing a channel');
   assert.equal(get('overview-trend-note').hidden,true);
+  // 线、折点、图例必须认同一束光：先前线用一组临时亮色、图例用通道色，同一个通道在一张图里
+  // 长出了两种蓝。三处都只能挂 class，色值归 --ch-* 那一处管。
+  assert.deepEqual(svg.children.filter(c=>c.tag==='polyline').map(c=>c.attrs.class),
+    ['trend-line stroke-workbuddy','trend-line stroke-zcode'],'折线没有挂通道 class');
+  assert.deepEqual([...new Set(svg.children.filter(c=>c.tag==='circle').map(c=>c.attrs.class))],
+    ['fill-workbuddy','fill-zcode'],'折点没有挂通道 class');
+  assert.deepEqual(legend.children.map(i=>i.children[0].className),
+    ['trend-swatch sw-workbuddy','trend-swatch sw-zcode'],'图例色块没有挂通道 class');
   // 单通道筛选后只剩 workbuddy 一条线。
   get('overview-usage-channel').handlers.change({target:{value:'workbuddy'}});
   const [svg2]=get('overview-trend').children;
@@ -2277,7 +2325,8 @@ test('overview page, probe buttons and the speed column exist in the page shell'
   assert.match(html,/id="overview-usage-channel"[\s\S]*id="overview-usage-range"/,'overview usage filters missing');
   for(const id of ['probe-core','probe-zcode','probe-qoder'])assert.ok(html.includes('id="'+id+'"'),'probe button '+id+' missing');
   assert.ok(!html.includes('id="probe-opencode"'),'opencode must not get a manual probe button');
-  assert.equal((html.match(/<th>速度<\/th>/g)||[]).length,4,'every model table must carry the speed column');
+  // 允许表头带 class（数值列要挂 class="num" 才能和单元格同侧对齐），只认列名本身。
+  assert.equal((html.match(/<th[^>]*>速度<\/th>/g)||[]).length,4,'every model table must carry the speed column');
   assert.match(html,/gateway-auto/,'routes page still advertises the bare auto name');
   // 改造后的界面契约：常驻无障碍播报区存在，逐节的营销小标题不再回来。
   assert.match(html,/id="announce"[^>]*aria-live="polite"/,'persistent live region missing');
@@ -2399,4 +2448,104 @@ test('状态徽章分五档：可用、打折、不可达、未启用、未探�
     +"{uid:'u3',nickname:'丙',disabled:true,credits:0,credits_known:true}]})",ctx);
   assert.deepEqual(get('accounts-body').children.map(tr=>[tr.children[1].children[0].textContent,tr.children[1].children[0].className].join('|')),
     ['可用|badge ok','冷却中|badge warn','已禁用|badge idle'],'账号池三态没各占一档');
+});
+
+// 视觉契约只能按字面核对：选择器或类名写错不会报错，只会静默退回默认色/默认对齐。
+function cssRuleBody(css,selector){
+  const at=css.indexOf(selector+'{');
+  assert.notEqual(at,-1,'style.css 里找不到规则 '+selector);
+  const open=at+selector.length+1;
+  return css.slice(open,css.indexOf('}',open));
+}
+function numHeaderCells(html,tbodyId){
+  const head=html.match(new RegExp('<thead><tr>(.*?)</tr></thead><tbody id="'+tbodyId+'">'));
+  assert.ok(head,`找不到 ${tbodyId} 的表头`);
+  return (head[1].match(/<th class="num">/g)||[]).length;
+}
+
+test('通道色只有一处真源：app.js 不再自带调色板，stroke/fill/sw 全部指向同一条 --ch-*',()=>{
+  const js=readFileSync(__dirname+'/web/app.js','utf8');
+  const css=readFileSync(__dirname+'/web/style.css','utf8');
+  // 旧的临时亮色一旦按通道名写回脚本，改令牌就不会改到图上的线，图例和折线会分家。
+  // （modelColors 那五条是「模型名次」的调色板，与通道无关，允许留在脚本里。）
+  assert.ok(!/(workbuddy|zcode|qoder|opencode)\s*:\s*['"]#[0-9a-f]{3,8}['"]/i.test(js),'app.js 里还留着「通道名 → 十六进制」的私有调色板');
+  assert.ok(!js.includes('trendColors'),'trendColors 又回来了：折线色必须走 stroke-* 类');
+  for(const channel of ['workbuddy','zcode','qoder','opencode']){
+    const defs=css.match(new RegExp('--ch-'+channel+':#[0-9a-f]{6}','g'))||[];
+    assert.equal(defs.length,1,`--ch-${channel} 在 :root 里定义了 ${defs.length} 次，改色要改的地方不止一处`);
+    for(const selector of ['.stroke-'+channel,'.fill-'+channel,'.sw-'+channel]){
+      const body=cssRuleBody(css,selector);
+      assert.ok(body.includes('var(--ch-'+channel+')'),selector+' 没有从 --ch-'+channel+' 取色');
+    }
+    // 文字版和图形版是两条令牌：本色在浅 wash 上只有 4.15:1，够不到正文的 4.5。
+    assert.ok(css.includes('--ch-'+channel+'-ink:'),`缺 --ch-${channel}-ink，通道名会把本色当文字用`);
+  }
+});
+
+test('通道名单元格：文字是唯一的子节点，色点由 ::before 画；routes 的 core/glm 也认同一束光',()=>{
+  const {ctx}=taskFixture(async()=>({ok:true,status:200,json:async()=>({}),headers:{get:()=>null}}));
+  const shape=expr=>vm.runInContext(`(()=>{const td=${expr};return [td.className,td.textContent,String(td.children.length)].join('|')})()`,ctx);
+  assert.equal(shape("channelCell('GLM（Zcode）','zcode')"),'ch-name ch-zcode|GLM（Zcode）|0');
+  assert.equal(shape("channelCell('核心账号池','core')"),'ch-name ch-workbuddy|核心账号池|0','core 没翻译成 workbuddy 那束光');
+  assert.equal(shape("channelCell('GLM 通道','glm')"),'ch-name ch-zcode|GLM 通道|0','glm 没翻译成 zcode 那束光');
+  const css=readFileSync(__dirname+'/web/style.css','utf8');
+  assert.match(cssRuleBody(css,'.ch-name'),/color:var\(--ch-ink\)/,'通道名没有走浅色底专用的 ink 版');
+  assert.match(cssRuleBody(css,'.ch-name::before'),/background:var\(--ch\)/,'色点没有从 --ch 取色');
+});
+
+test('数值列：表头挂 num 的列数与单元格挂 num 的列数必须一致，右对齐才不会错开一列',async()=>{
+  const html=readFileSync(__dirname+'/web/index.html','utf8');
+  const items=[
+    {ts:1000,uid:'u1',account:'alice',model:'cn:m',mode:'sync',prompt_tokens:100,completion_tokens:200,credit:1.5},
+    {ts:1001,uid:'zcode',account:'GLM 通道',model:'glm-5.3',mode:'stream',prompt_tokens:10,completion_tokens:20,credit:null},
+  ];
+  const {ctx,get}=overviewFixture(items,{enabled:true,reachable:true,model_count:2});
+  await vm.runInContext("signedIn({csrf:'c',global_enabled:true,zcode_enabled:true,qoder_enabled:false,opencode_enabled:false})",ctx);
+  await vm.runInContext('loadZcode()',ctx);
+  await vm.runInContext('loadOverview()',ctx);
+  await new Promise(r=>setImmediate(r));
+  const numOf=tr=>tr.children.filter(td=>String(td.className).split(' ').includes('num')).length;
+  assert.ok(numHeaderCells(html,'overview-channels-body')>0,'通道总览表没有任何数值列表头');
+  assert.equal(numOf(get('overview-channels-body').children[0]),numHeaderCells(html,'overview-channels-body'),'通道总览的数值单元格与表头不对齐');
+  // 明细与分布是另一张页面、另一套列：翻页和筛选都不该改变对齐。
+  const usage=taskFixture(async()=>({ok:true,status:200,json:async()=>({range:'today',items,summary:{}})}));
+  await vm.runInContext('loadUsage()',usage.ctx);
+  const detailRow=usage.get('usage-body').children[0];
+  assert.equal(numOf(detailRow),numHeaderCells(html,'usage-body'),'调用明细的数值单元格与表头不对齐');
+  // 明细最新在上（items 进来先 .slice().reverse()），第一行是 ts 更大的那条 zcode。
+  assert.equal(detailRow.children[1].className,'ch-name ch-zcode','明细的通道列没认色');
+  assert.equal(numOf(usage.get('usage-by-channel-body').children[0]),numHeaderCells(html,'usage-by-channel-body'),'通道分布的数值单元格与表头不对齐');
+});
+
+test('通道分布的占比条：分母是整个范围，10% 一档取整，最小一格不许画成空条',async()=>{
+  const items=[];
+  for(let i=0;i<8;i++)items.push({ts:1000+i,uid:'u'+i,account:'a',model:'cn:m',mode:'sync',prompt_tokens:1,completion_tokens:1,credit:0});
+  for(let i=0;i<2;i++)items.push({ts:2000+i,uid:'zcode',account:'GLM 通道',model:'glm-5',mode:'sync',prompt_tokens:1,completion_tokens:1,credit:0});
+  items.push({ts:3000,uid:'opencode',account:'OpenCode 通道',model:'oc-y',mode:'sync',prompt_tokens:1,completion_tokens:1,credit:0});
+  const {ctx,get}=taskFixture(async()=>({ok:true,status:200,json:async()=>({range:'month',items,summary:{}})}));
+  await vm.runInContext('loadUsage()',ctx);
+  const rows=get('usage-by-channel-body').children;
+  assert.deepEqual(rows.map(tr=>tr.className),['ch-workbuddy ch-band','ch-zcode ch-band','ch-opencode ch-band'],'分布行没有按通道认色');
+  const barOf=tr=>tr.children[1].children[0].children[0].className;
+  // 8/11 → 72.7% → 第七档；2/11 → 18.2% → 第二档；1/11 → 9.1% → 四舍五入到第一档而不是空条。
+  assert.deepEqual(rows.map(barOf),['w7','w2','w1'],'占比条档位算错');
+  assert.equal(rows[1].children[1].children[0].className,'share','占比条没挂进 .share 容器');
+  // 通道筛选只切明细，分布仍是整个范围的全景：分母跟着变会让占比条失去意义。
+  ctx.USAGE_ITEMS=items;
+  vm.runInContext("usageChannel='zcode';renderUsage({items:USAGE_ITEMS})",ctx);
+  assert.deepEqual(get('usage-by-channel-body').children.map(tr=>tr.children[1].children[0].children[0].className),['w7','w2','w1'],'筛选通道后占比条被改分了母');
+  // 条子在右对齐的 .num 单元格里，块级元素不吃 text-align，得自己靠右，否则和读数错开一截。
+  assert.match(cssRuleBody(readFileSync(__dirname+'/web/style.css','utf8'),'.share'),/margin:[^;}]*auto/,'占比条没有靠右，会落在数值格的左边缘');
+});
+
+test('机架面（暗底）用深底亮字那一套：五档徽章与通道名都有 lit 版，浅色 wash 不许出现在机架上',()=>{
+  const css=readFileSync(__dirname+'/web/style.css','utf8');
+  assert.match(cssRuleBody(css,'.channel-cards'),/background:var\(--sidebar\)/,'概览顶部没有落成机架暗底');
+  assert.match(cssRuleBody(css,'.channel-cards::before'),/background:var\(--spectrum\)/,'机架顶沿缺谱线');
+  assert.match(cssRuleBody(css,'.topbar::after'),/background:var\(--spectrum\)/,'顶栏下沿缺谱线');
+  assert.match(cssRuleBody(css,'.sidebar::after'),/background:var\(--spectrum-v\)/,'侧栏右沿缺竖向谱线');
+  assert.match(cssRuleBody(css,'.channel-card-name'),/color:var\(--ch-lit\)/,'机架上的通道名没用暗底专用的亮版');
+  assert.match(cssRuleBody(css,'.channel-card-stats strong'),/color:#fff/,'机架读数不是白字，暗底上会读不清');
+  for(const tone of ['ok','warn','bad','idle','unknown'])
+    assert.ok(css.includes(`.badge.rail-state.${tone}{`),`缺 .badge.rail-state.${tone}，机架上的该档位会退回浅紫胶囊`);
 });
