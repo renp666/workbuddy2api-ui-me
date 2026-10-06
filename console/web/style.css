@@ -166,6 +166,49 @@ code{font-family:var(--font-mono);font-size:.92em}
 .sw-qoder{background:#7a3fc4}
 .sw-opencode{background:#c4356f}
 
+/* ---------- 调用统计：Token 热力图 / 每日趋势 / 模型占比 ---------- */
+/* hm1-4 的紫阶与 sw-r0..r4 / sw-other 的取色，和 app.js 里的 modelColors、
+   otherModelColor 一一对应；改一处必须同时改另一处。 */
+.chart{width:100%}
+/* 两张图在窄视口下不靠等比缩小适配：viewBox 一压，10px 的轴标签就读不出了。
+   min-width 等于各自 viewBox 的宽度（缩放 1:1），超出部分交给 .chart-scroll 横滑。 */
+.chart-scroll{overflow-x:auto}
+#usage-heat .heat-svg{min-width:827px}
+#usage-daily-trend .trend-svg{min-width:620px}
+.heat-svg{width:100%;height:auto;display:block}
+.heat-cell{shape-rendering:crispEdges}
+.hm0{fill:#eef0f7;background:#eef0f7}
+.hm1{fill:#dcd8f9;background:#dcd8f9}
+.hm2{fill:#b6adf2;background:#b6adf2}
+.hm3{fill:#8a80ea;background:#8a80ea}
+.hm4{fill:#5b4bf0;background:#5b4bf0}
+.heat-dark{fill:url(#heat-dark)}
+.heat-month{fill:var(--muted);font-size:10px;font-family:var(--font-mono)}
+.heat-legend{display:flex;align-items:center;flex-wrap:wrap;gap:6px;margin-top:14px;font-size:11px;color:var(--muted)}
+.heat-sw{width:12px;height:12px;border-radius:3px;display:inline-block;flex:none}
+.heat-sw-dark{background:var(--warn-bg);border:1px solid var(--warn-ink)}
+.heat-sw-label{margin-right:6px}
+.trend-bar{shape-rendering:crispEdges}
+.sw-r0{background:#6366f1}
+.sw-r1{background:#06b6d4}
+.sw-r2{background:#8b5cf6}
+.sw-r3{background:#ec4899}
+.sw-r4{background:#d97706}
+.sw-other{background:#94a3b8}
+.usage-share{display:flex;flex-wrap:wrap;gap:26px;align-items:center}
+.donut{flex:0 0 150px;margin:0 auto}
+.donut-svg{width:150px;height:150px;display:block}
+.donut-track{stroke:var(--line-soft)}
+.donut-total{fill:var(--ink);font-size:17px;font-weight:650;font-family:var(--font-mono)}
+.donut-unit{fill:var(--muted);font-size:10px;letter-spacing:.06em}
+.donut-legend{flex:1 1 280px;display:flex;flex-direction:column;gap:8px;min-width:0}
+.donut-row{display:grid;grid-template-columns:14px minmax(0,1fr) auto 56px 62px;align-items:center;gap:8px;font-size:12px}
+.donut-row .trend-swatch{width:12px;height:12px;border-radius:3px}
+.donut-name{color:var(--ink);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.donut-value{font-family:var(--font-mono);font-variant-numeric:tabular-nums;text-align:right}
+.donut-pct{color:var(--muted);font-family:var(--font-mono);text-align:right}
+.donut-calls{color:var(--muted);font-family:var(--font-mono);text-align:right}
+
 /* ---------- 面板 ---------- */
 .panel{background:var(--surface);border:1px solid var(--line);border-radius:var(--radius-lg);padding:22px}
 .footer{padding:14px 32px 26px;font-size:11px;color:var(--muted);display:flex;justify-content:space-between;gap:12px;flex-wrap:wrap}

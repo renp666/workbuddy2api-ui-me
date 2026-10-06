@@ -88,7 +88,7 @@ function showPage(value) {
  if (page === 'workbuddy') setWorkBuddyView(workbuddyView);
  if (page === 'workbuddy' && workbuddyView === 'tasks') loadTaskPage();
  if (page === 'overview') loadOverview();
- if (page === 'usage') loadUsage();
+ if (page === 'usage') { loadUsage(); loadUsageDaily(); }
  if (page === 'zcode') loadZcode();
  if (page === 'qoder') loadQoder();
  if (page === 'opencode') loadOpenCode();
@@ -563,8 +563,7 @@ function renderTrend(items){
  svg.append(mk('line',{x1:padL,y1:y(yMax),x2:padL+plotW,y2:y(yMax),class:'trend-grid'}));
  const maxLabel=mk('text',{x:padL-6,y:y(yMax)+4,class:'trend-tick','text-anchor':'end'});maxLabel.textContent=String(yMax);svg.append(maxLabel);
  const zeroLabel=mk('text',{x:padL-6,y:y(0)+4,class:'trend-tick','text-anchor':'end'});zeroLabel.textContent='0';svg.append(zeroLabel);
- const step=Math.max(1,Math.ceil(days.length/7));
- days.forEach((d,i)=>{if(i%step&&i!==days.length-1)return;const t=mk('text',{x:x(i),y:padT+plotH+16,class:'trend-tick','text-anchor':'middle'});t.textContent=d.slice(5);svg.append(t);});
+ for(const i of axisTicks(days.length)){const t=mk('text',{x:x(i),y:padT+plotH+16,class:'trend-tick','text-anchor':'middle'});t.textContent=days[i].slice(5);svg.append(t);}
  for(const [c,m] of series){
   const pts=days.map((d,i)=>`${x(i)},${y(m.get(d)||0)}`).join(' ');
   svg.append(mk('polyline',{points:pts,fill:'none',stroke:trendColors[c]||'#6366f1','stroke-width':2,'stroke-linejoin':'round','stroke-linecap':'round'}));
@@ -882,7 +881,248 @@ async function loadUsage(){
 }
 $('usage-range').addEventListener('change',event=>{usageRange=event.target.value;usageGeneration++;loadUsage();});
 $('usage-channel').addEventListener('change',event=>{usageChannel=event.target.value;usageGeneration++;loadUsage();});
-$('usage-refresh').addEventListener('click',()=>{usageGeneration++;loadUsage();});
+$('usage-refresh').addEventListener('click',()=>{usageGeneration++;usageDailyGeneration++;loadUsage();loadUsageDaily();});
+
+// —— 调用统计·日度汇总视图：全历史指标条 / Token 热力图 / 每日按模型趋势 / 模型用量环形图 ——
+// 数据来自 core 的 daily- 汇总（永久保留），因此逐次明细被 90 天裁掉之后，跨年的
+// 指标与图形照样读得到；这里的「全历史」与页面所选窗口无关。
+const usageDailyWindows = {'30d':30,'90d':90,'365d':365};
+let usageWindow = '30d', usageDailyDays = [], usageDailyLifetime = null, usageDailyGeneration = 0;
+// 模型配色沿用通道色，前五名之外并入「其他模型」并用中性灰，避免与任何模型撞色。
+const modelColors = ['#6366f1','#06b6d4','#8b5cf6','#ec4899','#d97706'];
+const otherModelColor = '#94a3b8';
+const heatCut = ['hm0','hm1','hm2','hm3','hm4'];
+function chartEl(tag,attrs){const el=document.createElementNS('http://www.w3.org/2000/svg',tag);for(const k in attrs)el.setAttribute(k,attrs[k]);return el;}
+// Node 页面测试的 DOM 夹具默认没有 createElementNS，只有装过 SVG 夹具的用例才有；
+// 三张图各自降级成一句文字，页面其余部分（指标条、明细表）照常可测可看。
+function canDrawCharts(){return typeof document.createElementNS==='function';}
+function chartTitle(parent,text){const t=chartEl('title',{});t.textContent=text;parent.append(t);}
+// chartScroll 把 SVG 单独装进横向滚动容器：窄视口下只靠 viewBox 等比缩小的话，
+// 10px 的轴标签会被压到 5px 以下，图形还在但字读不出来。图例留在容器外面，
+// 滑动图形时不会跟着划出可视区。
+function chartScroll(parent,svg){const box=document.createElement('div');box.className='chart-scroll';box.append(svg);parent.append(box);}
+// axisTicks 给出 x 轴该打标签的下标：均匀取最多 max 个，末位必须落在最后一个数据点上。
+// 最后一个点离上一个候选标签不足一档时顶替掉它，而不是并排追加——并排就是压字。
+function axisTicks(n,max){
+ const limit=max||7;
+ if(n<1)return [];
+ const step=Math.max(1,Math.ceil(n/limit));
+ const ticks=[];
+ for(let i=0;i<n;i+=step)ticks.push(i);
+ const last=n-1;
+ if(ticks[ticks.length-1]!==last){
+  if(last-ticks[ticks.length-1]<step)ticks[ticks.length-1]=last;
+  else ticks.push(last);
+ }
+ return ticks;
+}
+function formatUsageInt(value){return Number(value||0).toLocaleString('en-US');}
+// dayShift 只在 Asia/Shanghai 的日历日上加减：用宿主时区的 Date 边界会把窗口和
+// 热力图的起始列挪错一天，读数会整体平移但看着仍然「像是对的」。
+function dayShift(baseISO,delta){const p=baseISO.split('-').map(Number);const d=new Date(Date.UTC(p[0],p[1]-1,p[2]));d.setUTCDate(d.getUTCDate()+delta);return d.toISOString().slice(0,10);}
+function todayISO(){return new Date().toLocaleDateString('en-CA',{timeZone:'Asia/Shanghai'});}
+// dailyDark：那天有调用但一个 token 都没回报。它不是「0 消耗」，图形必须与
+// 「没有调用」分开，否则热力图会把在用的一天画成空档。
+function dailyDark(d){return d.calls>0&&d.prompt_missing===d.calls&&d.completion_missing===d.calls;}
+function dailyTokens(d){return (d.prompt_tokens||0)+(d.completion_tokens||0);}
+function windowDays(){return usageDailyDays.filter(d=>d.date>=dayShift(todayISO(),-(usageDailyWindows[usageWindow]-1)));}
+// modelShare 把窗口内的按模型分解折成「前五名 + 其他模型」，按 Token 降序。
+// Token 合计为 0 的模型不参与占比（分母只算已观测），单列出来供页面说明。
+function modelShare(days){
+ const byModel=new Map();
+ for(const d of days)for(const m of (d.models||[])){
+  const cur=byModel.get(m.model)||{model:m.model,tokens:0,calls:0};
+  cur.tokens+=(m.prompt_tokens||0)+(m.completion_tokens||0);
+  cur.calls+=m.calls||0;
+  byModel.set(m.model,cur);
+ }
+ const sorted=[...byModel.values()].sort((a,b)=>b.tokens-a.tokens||(a.model<b.model?-1:1));
+ const observed=sorted.filter(m=>m.tokens>0),unobserved=sorted.filter(m=>m.tokens<=0);
+ const items=observed.slice(0,5).map((m,i)=>({...m,rank:i,color:modelColors[i]}));
+ const rest=observed.slice(5);
+ if(rest.length)items.push({model:'其他模型',tokens:rest.reduce((s,m)=>s+m.tokens,0),calls:rest.reduce((s,m)=>s+m.calls,0),color:otherModelColor,other:true});
+ return {items,unobserved,total:items.reduce((s,m)=>s+m.tokens,0)};
+}
+// modelSwatchClass 让图例色块走 CSS 类而不是内联 style：控制台开着 CSP 的
+// style-src 'self'，setAttribute('style',…) 会被静默丢弃，测试夹具里也没有 .style。
+function modelSwatchClass(m){return 'trend-swatch '+(m.other?'sw-other':'sw-r'+m.rank);}
+function renderUsageLifetime(){
+ const lt=usageDailyLifetime;
+ if(!lt){$('usage-life-line').textContent='正在读取日度汇总…';return;}
+ $('usage-life-line').textContent=lt.calls>0?`全历史 ${lt.days} 个自然日有调用，累计 ${formatUsageInt(lt.calls)} 次（自 ${lt.first_date}）`:'账本里还没有成功调用记录。';
+ $('usage-life-tokens').textContent=lt.tokens_missing?'—':formatUsageInt(lt.tokens);
+ $('usage-life-peak').textContent=!lt.peak_date||lt.peak_tokens_missing?'—':formatUsageInt(lt.peak_tokens);
+ $('usage-life-peak-note').textContent=lt.peak_date?`Token 最多的一天：${lt.peak_date}`:'Token 最多的那一天';
+ $('usage-life-streak').textContent=String(lt.current_streak);
+ $('usage-life-longest').textContent=String(lt.longest_streak);
+}
+// renderUsageHeat 铺满近一年（53 周 × 7 天），颜色分档按这一年内实际有 Token 的
+// 日子取四分位，而不是写死阈值：网关流量量级差几个数量级，固定阈值会把整张图
+// 刷成同一档。窗口选择只作用于趋势与占比，不切热力图。
+function renderUsageHeat(){
+ const wrap=$('usage-heat'),note=$('usage-heat-note');
+ wrap.replaceChildren();
+ const start=dayShift(todayISO(),-364);
+ const days=usageDailyDays.filter(d=>d.date>=start&&d.date<=todayISO());
+ if(!days.length){note.textContent='近一年没有任何日度汇总：这个网关还没有记录到成功调用。';note.hidden=false;return;}
+ if(!canDrawCharts()){note.textContent='热力图需要浏览器绘制 SVG，当前环境不支持。';note.hidden=false;return;}
+ const values=days.map(dailyTokens).filter(v=>v>0).sort((a,b)=>a-b);
+ const quartile=p=>values.length?values[Math.min(values.length-1,Math.round(p*(values.length-1)))]:0;
+ const cuts=[quartile(.25),quartile(.5),quartile(.75)];
+ const level=v=>v<=0?0:v<=cuts[0]?1:v<=cuts[1]?2:v<=cuts[2]?3:4;
+ const byDate=new Map(days.map(d=>[d.date,d]));
+ const startD=new Date(start+'T00:00:00Z'),lead=startD.getUTCDay();
+ const size=12,gap=3,step=size+gap,padL=26,padT=18;
+ const weeks=Math.ceil((lead+365)/7),W=padL+weeks*step+6,H=padT+7*step+4;
+ const svg=chartEl('svg',{viewBox:`0 0 ${W} ${H}`,class:'heat-svg',role:'img','aria-label':'近一年每日 Token 用量热力图'});
+ const defs=chartEl('defs',{}),pat=chartEl('pattern',{id:'heat-dark',width:4,height:4,patternUnits:'userSpaceOnUse',patternTransform:'rotate(45)'});
+ pat.append(chartEl('rect',{width:4,height:4,fill:'#fdf1dc'}),chartEl('line',{x1:0,y1:0,x2:0,y2:4,stroke:'#7a5210','stroke-width':1.5}));
+ defs.append(pat);svg.append(defs);
+ const months=[];
+ for(let i=0;i<365;i++){
+  const date=dayShift(start,i);
+  if(date>todayISO())break;
+  const d=byDate.get(date),col=Math.floor((lead+i)/7),row=(lead+i)%7;
+  const x=padL+col*step,y=padT+row*step;
+  const label=date.slice(5,7)+'月';
+  // 月标签固定落在网格上方，跟着该月第一列的 x 走；贴着格子会飘进网格中间。
+  if(Number(date.slice(8,10))<=7&&months[months.length-1]!==label){months.push(label);const t=chartEl('text',{x,y:padT-6,class:'heat-month'});t.textContent=label;svg.append(t);}
+  const rect=chartEl('rect',{x,y,width:size,height:size,rx:2,'data-date':date,class:'heat-cell '+heatCut[0],'data-level':'0'});
+  if(d&&d.calls){
+   if(dailyDark(d)){rect.setAttribute('class','heat-cell heat-dark');rect.setAttribute('data-level','dark');}
+   else{const lv=level(dailyTokens(d));rect.setAttribute('class','heat-cell '+heatCut[lv]);rect.setAttribute('data-level',String(lv));}
+  }
+  chartTitle(rect,`${date} · ${d?d.calls:0} 次调用 · ${!d?'无记录':dailyDark(d)?'Token 未观测':formatUsageInt(dailyTokens(d))+' tokens'}${d&&d.denied?` · 鉴权失败 ${d.denied} 次`:''}`);
+  svg.append(rect);
+ }
+ for(const [row,name] of [[1,'一'],[3,'三'],[5,'五']]){const t=chartEl('text',{x:0,y:padT+row*step+10,class:'heat-month'});t.textContent=name;svg.append(t);}
+ chartScroll(wrap,svg);
+ const legend=document.createElement('div');legend.className='heat-legend';
+ const swatch=(cls,text)=>{const s=document.createElement('span');s.className='heat-sw '+cls;const label=document.createElement('span');label.className='heat-sw-label';label.textContent=text;legend.append(s,label);};
+ swatch(heatCut[0],'无调用');swatch(heatCut[1],'少');swatch(heatCut[2],'');swatch(heatCut[3],'');swatch(heatCut[4],'多');
+ const darkCount=days.filter(d=>d.calls>0&&dailyDark(d)).length;
+ swatch('heat-sw-dark',darkCount?`Token 未观测（${darkCount} 天）`:'Token 未观测');
+ wrap.append(legend);
+ note.hidden=true;
+}
+// renderUsageTrend 画按日（超过 60 个点则按周合并）堆叠柱：一根柱一个时间段，
+// 柱内按模型分段。整段都没回报 Token 的时间段画不出高度，改由下方文字交代。
+function renderUsageTrend(days,share){
+ const wrap=$('usage-daily-trend'),note=$('usage-daily-note');
+ wrap.replaceChildren();
+ if(!days.length){note.textContent='统计窗口内没有日度汇总：把窗口放宽一档，或先在网关发起几次调用。';note.hidden=false;return;}
+ const span=Math.max(1,Math.ceil(days.length/60));
+ const buckets=[];
+ for(let i=0;i<days.length;i+=span){
+  const part=days.slice(i,i+span);
+  buckets.push({label:span>1?`${part[0].date} ~ ${part[part.length-1].date}`:part[0].date,parts:part});
+ }
+ // 段序固定按图例里的排名（Token 降序）从下往上堆，不随当天数据抖动，
+ // 同一份账本每次刷新画出的是同一张图。
+ const top=new Set(share.items.filter(m=>!m.other).map(m=>m.model));
+ const hasOther=share.items.some(m=>m.other);
+ const colorOf=new Map(share.items.map(m=>[m.model,m.color]));
+ const stacks=buckets.map(b=>{
+  const acc=new Map();
+  for(const d of b.parts)for(const m of (d.models||[])){
+   const tokens=(m.prompt_tokens||0)+(m.completion_tokens||0);
+   if(tokens<=0)continue;
+   const key=top.has(m.model)?m.model:(hasOther?'其他模型':'');
+   if(!key)continue;
+   const cur=acc.get(key)||{model:key,tokens:0,calls:0};
+   cur.tokens+=tokens;cur.calls+=m.calls||0;
+   acc.set(key,cur);
+  }
+  return {label:b.label,segs:share.items.filter(m=>acc.has(m.model)).map(m=>acc.get(m.model)),tot:b.parts.reduce((s,d)=>s+dailyTokens(d),0)};
+ });
+ if(stacks.every(s=>!s.tot)){note.textContent='统计窗口内有调用，但上游都没有回报 Token，趋势柱与占比无从画起（次数与积分见下方明细表）。';note.hidden=false;return;}
+ if(!canDrawCharts()){note.textContent='趋势图需要浏览器绘制 SVG，当前环境不支持。';note.hidden=false;return;}
+ const W=620,H=240,padL=48,padR=14,padT=14,padB=36,plotW=W-padL-padR,plotH=H-padT-padB;
+ let yMax=1;for(const s of stacks)if(s.tot>yMax)yMax=s.tot;
+ const band=plotW/stacks.length,barW=Math.min(20,band*.72);
+ const x=i=>padL+band*i+(band-barW)/2;
+ const y=v=>padT+plotH-(v/yMax)*plotH;
+ const svg=chartEl('svg',{viewBox:`0 0 ${W} ${H}`,class:'trend-svg',role:'img','aria-label':'每日 Token 用量堆叠柱状图（按模型）'});
+ svg.append(chartEl('line',{x1:padL,y1:y(0),x2:padL+plotW,y2:y(0),class:'trend-axis'}));
+ const maxTick=chartEl('text',{x:padL-6,y:y(yMax)+4,class:'trend-tick','text-anchor':'end'});maxTick.textContent=formatUsageInt(yMax);svg.append(maxTick);
+ const zeroTick=chartEl('text',{x:padL-6,y:y(0)+4,class:'trend-tick','text-anchor':'end'});zeroTick.textContent='0';svg.append(zeroTick);
+ for(const i of axisTicks(stacks.length)){const s=stacks[i];const t=chartEl('text',{x:padL+band*i+band/2,y:padT+plotH+16,class:'trend-tick','text-anchor':'middle'});t.textContent=s.label.slice(5,10);chartTitle(t,s.label);svg.append(t);}
+ stacks.forEach((s,i)=>{
+  let acc=0;
+  for(const seg of s.segs){
+   const rect=chartEl('rect',{x:x(i),y:y(acc+seg.tokens),width:barW,height:Math.max(1,y(acc)-y(acc+seg.tokens)),fill:colorOf.get(seg.model),class:'trend-bar','data-model':seg.model,'data-date':s.label});
+   chartTitle(rect,`${s.label} · ${seg.model} · ${formatUsageInt(seg.tokens)} tokens（${seg.calls} 次）`);
+   svg.append(rect);acc+=seg.tokens;
+  }
+ });
+ chartScroll(wrap,svg);
+ const legend=document.createElement('div');legend.className='trend-legend';
+ for(const m of share.items){
+  const item=document.createElement('span');item.className='trend-legend-item';
+  const sw=document.createElement('i');sw.className=modelSwatchClass(m);
+  const label=document.createElement('span');label.textContent=m.model;
+  item.append(sw,label);legend.append(item);
+ }
+ wrap.append(legend);
+ const notes=[];
+ const darkDays=days.filter(d=>d.calls&&dailyDark(d)).length;
+ if(darkDays)notes.push(`${darkDays} 天有调用但未回报 Token，未计入柱高`);
+ if(share.unobserved.length)notes.push(`Token 合计为 0 的模型：${share.unobserved.map(m=>`${m.model}（${m.calls} 次）`).join('、')}`);
+ note.textContent=notes.join('；');note.hidden=!notes.length;
+}
+// renderUsageShare 画环形图 + 排名。环形只表达已观测 Token 的份额，中心读数与
+// 排名合计同源，避免两处各自取整后对不上。
+function renderUsageShare(share){
+ const wrap=$('usage-model-donut'),legend=$('usage-model-legend');
+ wrap.replaceChildren();legend.replaceChildren();
+ if(!share.items.length||!share.total){
+  const p=document.createElement('p');p.className='empty';p.textContent='统计窗口内没有任何可累计的 Token 观测，环形占比无从算起。';
+  wrap.append(p);return;
+ }
+ if(canDrawCharts()){
+  const R=52,C=2*Math.PI*R;
+  const svg=chartEl('svg',{viewBox:'0 0 140 140',class:'donut-svg',role:'img','aria-label':`模型 Token 用量占比环形图，合计 ${formatUsageInt(share.total)} tokens`});
+  svg.append(chartEl('circle',{cx:70,cy:70,r:R,fill:'none',class:'donut-track','stroke-width':24}));
+  let offset=0;
+  for(const m of share.items){
+   const len=m.tokens/share.total*C;
+   const seg=chartEl('circle',{cx:70,cy:70,r:R,fill:'none',stroke:m.color,'stroke-width':24,'stroke-dasharray':`${len} ${C-len}`,'stroke-dashoffset':-offset,transform:'rotate(-90 70 70)',class:'donut-seg','data-model':m.model});
+   chartTitle(seg,`${m.model} · ${formatUsageInt(m.tokens)} tokens（${(m.tokens/share.total*100).toFixed(1)}%）`);
+   svg.append(seg);offset+=len;
+  }
+  const totalText=chartEl('text',{x:70,y:68,class:'donut-total','text-anchor':'middle'});totalText.textContent=formatUsageInt(share.total);
+  const unitText=chartEl('text',{x:70,y:84,class:'donut-unit','text-anchor':'middle'});unitText.textContent='Tokens';
+  svg.append(totalText,unitText);
+  wrap.append(svg);
+ }
+ share.items.forEach((m,i)=>{
+  const row=document.createElement('div');row.className='donut-row';row.setAttribute('data-model',m.model);
+  const sw=document.createElement('i');sw.className=modelSwatchClass(m);
+  const name=document.createElement('span');name.className='donut-name';name.textContent=`${i+1}. ${m.model}`;name.title=m.model;
+  const tokens=document.createElement('span');tokens.className='donut-value';tokens.textContent=formatUsageInt(m.tokens);
+  const pct=document.createElement('span');pct.className='donut-pct';pct.textContent=(m.tokens/share.total*100).toFixed(1)+'%';
+  const calls=document.createElement('span');calls.className='donut-calls';calls.textContent=Number(m.calls).toLocaleString('en-US')+' 次';
+  row.append(sw,name,tokens,pct,calls);legend.append(row);
+ });
+}
+function renderUsageDaily(){
+ renderUsageLifetime();
+ renderUsageHeat();
+ const days=windowDays(),share=modelShare(days);
+ renderUsageTrend(days,share);
+ renderUsageShare(share);
+}
+async function loadUsageDaily(){
+ if(!csrf)return;
+ const generation=usageDailyGeneration;
+ try{
+  const data=await jsonAPI('usage-daily?window=365d');
+  if(generation!==usageDailyGeneration)return;
+  usageDailyDays=data.days||[];usageDailyLifetime=data.lifetime||null;
+  renderUsageDaily();
+ }catch(error){if(generation===usageDailyGeneration)$('usage-life-line').textContent=`日度汇总读取失败：${error.message}`;}
+}
+$('usage-window').addEventListener('change',event=>{usageWindow=usageDailyWindows[event.target.value]?event.target.value:'30d';renderUsageDaily();});
 
 async function loadZcode(){
  if(!csrf)return;

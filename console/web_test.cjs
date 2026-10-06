@@ -1550,6 +1550,272 @@ test('鉴权失败留痕在调用统计页成一条来源分布，零失败不�
   assert.equal(absent.get('usage-denied').hidden,true,'后端未带该字段时不得报错或显示零');
 });
 
+// —— 调用统计·日度汇总视图（指标条 / 热力图 / 趋势 / 环形图）——
+// 期望日期用 Intl 独立算一次上海日历日，而不是复制 app.js 的 dayShift：
+// 实现把窗口算错一天时，跟着复制的测试会一起错。
+const shanghaiDay=new Intl.DateTimeFormat('en-CA',{timeZone:'Asia/Shanghai'});
+function dayAgoISO(n){const p=shanghaiDay.format(new Date()).split('-').map(Number);return new Date(Date.UTC(p[0],p[1]-1,p[2])-n*864e5).toISOString().slice(0,10);}
+function dailyFixture({days=[],lifetime=null,withSvg=true,fail=false}={}) {
+  const urls=[];
+  const usage=taskFixture(async(url)=>{
+    // app.js 装载时会自取一次 /admin/session；夹具回一个带 csrf 的会话，
+    // 免得异步的 signedIn 把稍后刷新要用的 csrf 清掉。这条请求不计入断言。
+    if(url==='/admin/session')return {ok:true,status:200,json:async()=>({csrf:'active-csrf'})};
+    urls.push(url);
+    if(fail)throw new Error('核心服务没有响应');
+    if(url.startsWith('/admin/usage-daily'))return {ok:true,status:200,json:async()=>({window:'365d',days,lifetime})};
+    return {ok:true,status:200,json:async()=>({range:'today',items:[],summary:{}})};
+  });
+  if(withSvg)usage.ctx.document.createElementNS=(ns,tag)=>({tag,children:[],attrs:{},setAttribute(k,v){this.attrs[k]=v;},append(...c){this.children.push(...c);},textContent:''});
+  return {ctx:usage.ctx,get:usage.get,urls,load:()=>vm.runInContext('loadUsageDaily()',usage.ctx)};
+}
+
+test('日度指标条只读 usage-daily 端点一次，累计/峰值/连续天数各自守住未观测不等于零',async()=>{
+  const lifetime={calls:1234567,prompt_tokens:200,completion_tokens:100,tokens:1234567,tokens_missing:false,credit:3.5,days:42,first_date:'2026-01-05',peak_date:'2026-05-05',peak_tokens:88888,peak_tokens_missing:false,current_streak:3,longest_streak:9};
+  const fx=dailyFixture({lifetime});
+  await fx.load();
+  assert.deepEqual(fx.urls,['/admin/usage-daily?window=365d'],'日度视图必须一次拉满近一年，窗口切片留给客户端：'+fx.urls);
+  assert.equal(fx.get('usage-life-tokens').textContent,'1,234,567');
+  assert.equal(fx.get('usage-life-peak').textContent,'88,888');
+  assert.equal(fx.get('usage-life-peak-note').textContent,'Token 最多的一天：2026-05-05');
+  assert.equal(fx.get('usage-life-streak').textContent,'3');
+  assert.equal(fx.get('usage-life-longest').textContent,'9');
+  assert.match(fx.get('usage-life-line').textContent,/全历史 42 个自然日有调用/);
+  assert.match(fx.get('usage-life-line').textContent,/自 2026-01-05/);
+  const dark=dailyFixture({lifetime:{...lifetime,tokens_missing:true,peak_tokens_missing:true,peak_tokens:0,tokens:0}});
+  await dark.load();
+  assert.equal(dark.get('usage-life-tokens').textContent,'—','一个 token 都没观测到却显示数字：'+dark.get('usage-life-tokens').textContent);
+  assert.equal(dark.get('usage-life-peak').textContent,'—');
+  assert.equal(dark.get('usage-life-peak-note').textContent,'Token 最多的一天：2026-05-05','峰值读数缺失不等于峰值日期也不知道');
+  const none=dailyFixture();
+  await none.load();
+  assert.equal(none.get('usage-life-line').textContent,'正在读取日度汇总…');
+  // 夹具里的格子没有 HTML 的初始「—」，所以这里断言的是「一个格子都没被写入」：
+  // 浏览器里这四格会原样保留破折号，而不是被补成 0。
+  for(const id of ['usage-life-tokens','usage-life-peak','usage-life-streak','usage-life-longest'])
+    assert.equal(none.get(id).textContent,'','后端没带 lifetime 时不该往 '+id+' 写值');
+  const broken=dailyFixture({fail:true});
+  await broken.load();
+  assert.match(broken.get('usage-life-line').textContent,/日度汇总读取失败：核心服务没有响应/);
+});
+
+test('Token 热力图固定铺满近一年：分档只按已观测 Token 分布，未观测日不并成空格',async()=>{
+  const num=n=>({calls:1,prompt_tokens:n,completion_tokens:0,prompt_missing:0,completion_missing:0,denied:0,models:[]});
+  const darkDay={date:dayAgoISO(4),calls:2,prompt_tokens:0,completion_tokens:0,prompt_missing:2,completion_missing:2,denied:3,models:[]};
+  const fx=dailyFixture({days:[Object.assign({date:dayAgoISO(3)},num(100)),Object.assign({date:dayAgoISO(2)},num(200)),Object.assign({date:dayAgoISO(1)},num(300)),Object.assign({date:dayAgoISO(0)},num(400)),darkDay,{date:dayAgoISO(400),calls:9,prompt_tokens:99999,completion_tokens:0,prompt_missing:0,completion_missing:0,denied:0,models:[]}]});
+  await fx.load();
+  const [scroller,legend]=fx.get('usage-heat').children;
+  const svg=scroller.children[0];
+  assert.equal(svg.attrs.class,'heat-svg');
+  assert.equal(fx.get('usage-heat-note').hidden,true);
+  const cells=svg.children.filter(c=>c.tag==='rect'&&c.attrs['data-date']);
+  assert.equal(cells.length,365,'热力图必须按近一年固定铺格，与统计窗口无关：'+cells.length);
+  const cell=date=>cells.find(c=>c.attrs['data-date']===date);
+  // 已观测值只有 100/200/300/400 四个，四分位取 200/300/300；未观测那天不参与分档。
+  assert.equal(cell(dayAgoISO(0)).attrs['data-level'],'4');
+  assert.equal(cell(dayAgoISO(0)).attrs.class,'heat-cell hm4');
+  assert.equal(cell(dayAgoISO(1)).attrs['data-level'],'2','未观测的零被当成了分档样本');
+  assert.equal(cell(dayAgoISO(2)).attrs['data-level'],'1');
+  assert.equal(cell(dayAgoISO(3)).attrs['data-level'],'1');
+  assert.equal(cell(dayAgoISO(4)).attrs['data-level'],'dark','有调用但没回报 Token 的一天被画成了空格');
+  assert.equal(cell(dayAgoISO(4)).attrs.class,'heat-cell heat-dark');
+  assert.equal(cell(dayAgoISO(5)).attrs['data-level'],'0');
+  assert.match(cell(dayAgoISO(5)).children[0].textContent,/无记录/);
+  assert.match(cell(dayAgoISO(4)).children[0].textContent,/Token 未观测/);
+  assert.match(cell(dayAgoISO(4)).children[0].textContent,/鉴权失败 3 次/);
+  assert.match(cell(dayAgoISO(0)).children[0].textContent,/400 tokens/);
+  assert.equal(cell(dayAgoISO(365)),undefined,'近一年之外还多铺了一格');
+  assert.equal(cell(dayAgoISO(400)),undefined,'超出近一年的一天不该出现在热力图里');
+  const texts=svg.children.filter(c=>c.tag==='text'&&c.attrs.class==='heat-month');
+  assert.ok(texts.filter(t=>/月$/.test(t.textContent)).length>=12,'月份刻度不足：'+texts.map(t=>t.textContent).join());
+  assert.deepEqual(texts.filter(t=>['一','三','五'].includes(t.textContent)).map(t=>t.textContent),['一','三','五'],'星期刻度错');
+  assert.equal(legend.children.filter(c=>String(c.className).includes('heat-sw-dark')).length,1);
+  assert.equal(legend.children[legend.children.length-1].textContent,'Token 未观测（1 天）');
+  assert.match(legend.children[0].className,/hm0/);
+});
+
+test('热力图没有日度汇总时给一句人话，不铺一张全空的网格',async()=>{
+  const fx=dailyFixture({days:[]});
+  await fx.load();
+  assert.equal(fx.get('usage-heat').children.length,0);
+  assert.equal(fx.get('usage-heat-note').hidden,false);
+  assert.match(fx.get('usage-heat-note').textContent,/近一年没有任何日度汇总/);
+});
+
+test('每日趋势与环形图：前五名之外并入「其他模型」，无 Token 的模型与天数各自有文字交代',async()=>{
+  const m=(model,tokens,calls)=>({model,prompt_tokens:tokens,completion_tokens:0,calls});
+  const darkDay={date:dayAgoISO(1),calls:2,prompt_tokens:0,completion_tokens:0,prompt_missing:2,completion_missing:2,denied:0,models:[m('m9',0,2)]};
+  const today={date:dayAgoISO(0),calls:10,prompt_tokens:2800,completion_tokens:0,prompt_missing:0,completion_missing:0,denied:0,
+    models:[m('m1',700,1),m('m2',600,1),m('m3',500,1),m('m4',400,1),m('m5',300,1),m('m6',200,1),m('m7',100,1),m('m8',0,3)]};
+  const fx=dailyFixture({days:[darkDay,today]});
+  await fx.load();
+  const rows=fx.get('usage-model-legend').children;
+  assert.deepEqual(rows.map(r=>r['data-model']),['m1','m2','m3','m4','m5','其他模型'],'环形排名该是前五名加一档「其他模型」');
+  assert.equal(rows[0].children[1].textContent,'1. m1');
+  assert.equal(rows[0].children[2].textContent,'700');
+  assert.equal(rows[0].children[3].textContent,'25.0%');
+  assert.equal(rows[0].children[4].textContent,'1 次');
+  assert.equal(rows[5].children[2].textContent,'300','其他模型没并入第六、七名');
+  assert.equal(rows[5].children[3].textContent,'10.7%');
+  assert.equal(rows[5].children[4].textContent,'2 次');
+  const [scroller,legend]=fx.get('usage-daily-trend').children;
+  const svg=scroller.children[0];
+  assert.equal(svg.attrs.class,'trend-svg');
+  const segs=date=>svg.children.filter(c=>c.tag==='rect'&&c.attrs['data-date']===date);
+  assert.deepEqual(segs(dayAgoISO(0)).map(c=>c.attrs['data-model']),['m1','m2','m3','m4','m5','其他模型'],'趋势柱里「其他模型」永远画不出来');
+  assert.equal(segs(dayAgoISO(1)).length,0,'整段没有 Token 却被画出了柱高');
+  assert.equal(segs(dayAgoISO(0))[0].attrs.fill,'#6366f1');
+  assert.equal(segs(dayAgoISO(0))[5].attrs.fill,'#94a3b8','其他模型的分段颜色与图例不同源');
+  assert.ok(svg.children.filter(c=>c.attrs&&c.attrs.class==='trend-tick').map(c=>c.textContent).includes('2,800'),'纵轴没有柱顶读数');
+  assert.equal(legend.children.length,6);
+  assert.equal(legend.children[5].children[0].className,'trend-swatch sw-other');
+  // 该柱合计就是纵轴最大值，所以分段高度之和必须正好铺满绘图区，堆叠不能留缝。
+  assert.ok(Math.abs(segs(dayAgoISO(0)).reduce((s,c)=>s+c.attrs.height,0)-190)<1e-6,'分段高度之和没有铺满纵轴');
+  assert.equal(segs(dayAgoISO(0))[5].attrs.y,14);
+  assert.equal(fx.get('usage-daily-note').hidden,false);
+  assert.match(fx.get('usage-daily-note').textContent,/1 天有调用但未回报 Token，未计入柱高/);
+  assert.match(fx.get('usage-daily-note').textContent,/Token 合计为 0 的模型：m8（3 次）、m9（2 次）/);
+  const donut=fx.get('usage-model-donut').children[0];
+  assert.equal(donut.attrs['aria-label'],'模型 Token 用量占比环形图，合计 2,800 tokens');
+  assert.equal(donut.children.filter(c=>c.tag==='circle'&&c.attrs['data-model']).length,6);
+  assert.deepEqual(donut.children.filter(c=>c.tag==='circle'&&c.attrs['data-model']).map(c=>c.attrs.stroke),
+    ['#6366f1','#06b6d4','#8b5cf6','#ec4899','#d97706','#94a3b8'],'环形分段颜色与图例不同源');
+  assert.equal(donut.children.find(c=>c.attrs&&c.attrs.class==='donut-total').textContent,'2,800');
+  const none=dailyFixture({days:[darkDay]});
+  await none.load();
+  assert.equal(none.get('usage-daily-trend').children.length,0);
+  assert.match(none.get('usage-daily-note').textContent,/上游都没有回报 Token/);
+  assert.equal(none.get('usage-model-donut').children[0].className,'empty');
+  assert.equal(none.get('usage-model-legend').children.length,0,'没有份额可算却仍列出排名');
+});
+
+test('统计窗口只在客户端切片：切换窗口不再请求，超过 60 天才按周合并柱子',async()=>{
+  const mk=(date,tokens)=>({date,calls:1,prompt_tokens:tokens,completion_tokens:0,prompt_missing:0,completion_missing:0,denied:0,models:[{model:'mx',prompt_tokens:tokens,completion_tokens:0,calls:1}]});
+  const days=[mk(dayAgoISO(200),50)];
+  for(let i=60;i>=0;i--)days.push(mk(dayAgoISO(i),100));
+  const fx=dailyFixture({days});
+  await fx.load();
+  assert.equal(fx.get('usage-model-legend').children[0].children[4].textContent,'30 次','默认近 30 天窗口切片错了');
+  assert.equal(fx.get('usage-daily-note').hidden,true);
+  const svgOf=()=>fx.get('usage-daily-trend').children[0].children[0];
+  assert.ok(svgOf().children.filter(c=>c.tag==='rect').every(c=>!String(c.attrs['data-date']).includes(' ~ ')),'30 个点不该按周合并');
+  const far=fx.get('usage-heat').children[0].children[0].children.filter(c=>c.tag==='rect'&&c.attrs['data-date']).find(c=>c.attrs['data-date']===dayAgoISO(200));
+  assert.ok(far&&far.attrs['data-level']!=='0','热力图跟着统计窗口缩了短');
+  fx.get('usage-window').handlers.change({target:{value:'365d'}});
+  assert.equal(fx.urls.length,1,'切换统计窗口又发了一次请求：'+fx.urls);
+  assert.equal(fx.get('usage-model-legend').children[0].children[4].textContent,'62 次','窗口切到近一年没生效');
+  assert.match(svgOf().children.filter(c=>c.tag==='rect')[0].attrs['data-date'],/ ~ /,'超过 60 个点应按周合并时间段');
+  fx.get('usage-window').handlers.change({target:{value:'7d'}});
+  assert.equal(fx.get('usage-model-legend').children[0].children[4].textContent,'30 次','非法档位没退回默认窗口');
+  assert.equal(fx.urls.length,1);
+});
+
+test('趋势 x 轴标签只写起始 MM-DD，末位落在最后一根柱上且相邻标签不压字',async()=>{
+  const mk=(date,tokens)=>({date,calls:1,prompt_tokens:tokens,completion_tokens:0,prompt_missing:0,completion_missing:0,denied:0,models:[{model:'mx',prompt_tokens:tokens,completion_tokens:0,calls:1}]});
+  const svgOf=fx=>fx.get('usage-daily-trend').children[0].children[0];
+  const ticksOf=svg=>svg.children.filter(c=>c.tag==='text'&&c.attrs['text-anchor']==='middle');
+  const centersOf=svg=>svg.children.filter(c=>c.tag==='rect').map(c=>Number(c.attrs.x)+Number(c.attrs.width)/2);
+  // 26 根柱（近 30 天里跳过 4 个周日）正好踩中真实数据里的形状：step=4，
+  // 最后一个点距上一个候选标签只差一档，并排追加就会压字。30 根连续日柱测不出来。
+  const daily=[];for(let i=29;i>=0;i--)if(i%7!==3)daily.push(mk(dayAgoISO(i),100+i));
+  const a=dailyFixture({days:daily});
+  await a.load();
+  const svgA=svgOf(a),ta=ticksOf(svgA);
+  assert.ok(ta.length>=2,'26 根日柱一个 x 轴标签都没有');
+  for(const t of ta)assert.match(t.textContent,/^\d{2}-\d{2}$/,'日柱标签不是 MM-DD：'+t.textContent);
+  const centersA=centersOf(svgA);
+  assert.ok(Math.abs(Number(ta[ta.length-1].attrs.x)-centersA[centersA.length-1])<0.01,'最后一根柱没有 x 轴标签');
+  assert.equal(ta[ta.length-1].textContent,dayAgoISO(0).slice(5),'末位标签写的不是最后一个数据点');
+  for(let i=1;i<ta.length;i++)assert.ok(Number(ta[i].attrs.x)-Number(ta[i-1].attrs.x)>=30,'相邻 x 轴标签间距不足一个标签宽度，会互相压字');
+  const weekly=[];for(let i=364;i>=0;i--)weekly.push(mk(dayAgoISO(i),100));
+  const b=dailyFixture({days:weekly});
+  await b.load();
+  b.get('usage-window').handlers.change({target:{value:'365d'}});
+  const svgB=svgOf(b),tb=ticksOf(svgB);
+  assert.ok(svgB.children.filter(c=>c.tag==='rect')[0].attrs['data-date'].includes(' ~ '),'这份夹具没触发按周合并，测不到区间标签');
+  for(const t of tb){
+    assert.match(t.textContent,/^\d{2}-\d{2}$/,'周合并后轴标签漏出了年份或半截区间：'+t.textContent);
+    assert.match(t.children[0].textContent,/ ~ /,'轴标签只留 MM-DD，完整时间段要能用 title 读到');
+  }
+  const xb=tb.map(t=>Number(t.attrs.x));
+  for(let i=1;i<xb.length;i++)assert.ok(xb[i]-xb[i-1]>=30,'周合并视图的 x 轴标签互相压字');
+});
+
+test('窄视口下热力图与趋势图按原始宽度出图，由容器横向滚动而不是等比压小轴标签',async()=>{
+  const css=readFileSync(__dirname+'/web/style.css','utf8');
+  const ruleOf=selector=>{
+    const at=css.indexOf(selector);
+    assert.notEqual(at,-1,'style.css 里找不到规则 '+selector);
+    const open=css.indexOf('{',at);
+    return css.slice(open+1,css.indexOf('}',open));
+  };
+  const mk=(date,tokens)=>({date,calls:1,prompt_tokens:tokens,completion_tokens:0,prompt_missing:0,completion_missing:0,denied:0,models:[{model:'mx',prompt_tokens:tokens,completion_tokens:0,calls:1}]});
+  const days=[];for(let i=40;i>=0;i--)days.push(mk(dayAgoISO(i),100));
+  const fx=dailyFixture({days});
+  await fx.load();
+  assert.match(ruleOf('.chart-scroll'),/overflow-x:auto/,'缺少 .chart-scroll 滚动容器：窄屏只能把 SVG 等比缩小');
+  for(const [id,selector,cls] of [['usage-heat','#usage-heat .heat-svg','.heat-svg'],['usage-daily-trend','#usage-daily-trend .trend-svg','.trend-svg']]){
+    const wrap=fx.get(id),scroller=wrap.children[0];
+    assert.equal(scroller.className,'chart-scroll',id+' 的 SVG 没有包进滚动容器');
+    const svg=scroller.children[0];
+    assert.equal(svg.tag,'svg');
+    const min=ruleOf(selector).match(/min-width:(\d+)px/);
+    assert.ok(min,cls+' 缺少与视口无关的 min-width：手机上 10px 的轴标签会被压到读不清');
+    assert.equal(Number(min[1]),Number(svg.attrs.viewBox.split(' ')[2]),cls+' 的 min-width 与 viewBox 宽度脱钩，缩放比例不再是 1:1');
+  }
+  // 图例留在滚动容器之外：横向滑动图形时图例不该跟着一起划出可视区。
+  assert.equal(fx.get('usage-heat').children[1].className,'heat-legend','热力图图例被卷进了滚动容器');
+  assert.ok(fx.get('usage-daily-trend').children.some(c=>c.className==='trend-legend'),'趋势图图例被卷进了滚动容器');
+});
+
+test('没有 SVG 的渲染环境里三张图各自降级成文字，指标条与排名照常可读',async()=>{
+  const lifetime={calls:2,days:1,first_date:dayAgoISO(0),tokens:700,tokens_missing:false,peak_date:dayAgoISO(0),peak_tokens:700,peak_tokens_missing:false,current_streak:1,longest_streak:1};
+  const days=[{date:dayAgoISO(0),calls:2,prompt_tokens:700,completion_tokens:0,prompt_missing:0,completion_missing:0,denied:0,models:[{model:'m1',prompt_tokens:700,completion_tokens:0,calls:2}]}];
+  const fx=dailyFixture({withSvg:false,days,lifetime});
+  await fx.load();
+  assert.equal(fx.get('usage-life-tokens').textContent,'700');
+  assert.equal(fx.get('usage-heat').children.length,0);
+  assert.match(fx.get('usage-heat-note').textContent,/需要浏览器绘制 SVG/);
+  assert.equal(fx.get('usage-daily-trend').children.length,0);
+  assert.match(fx.get('usage-daily-note').textContent,/需要浏览器绘制 SVG/);
+  assert.equal(fx.get('usage-model-donut').children.length,0,'不支持 SVG 却仍试图画环');
+  assert.equal(fx.get('usage-model-legend').children.length,1,'没有环形也要给出模型排名：份额、Token 与次数都在排名行里');
+});
+
+test('刷新同时重取明细与日度，新版容器、窗口档位与不伪造的口径都落在页面上',async()=>{
+  const fx=dailyFixture({days:[]});
+  await fx.load();
+  assert.equal(fx.urls.length,1);
+  fx.get('usage-refresh').handlers.click();
+  await new Promise(r=>setImmediate(r));
+  assert.equal(fx.urls.filter(u=>u.includes('usage-daily')).length,2,'刷新没有重取日度汇总：'+fx.urls);
+  assert.equal(fx.urls.filter(u=>!u.includes('usage-daily')).length,1,'刷新应当同时重取逐次明细');
+  const html=readFileSync(__dirname+'/web/index.html','utf8');
+  const page=html.match(/data-page="usage"[\s\S]*?<\/section>/)[0];
+  for(const id of ['usage-life-line','usage-life-tokens','usage-life-peak','usage-life-peak-note','usage-life-streak','usage-life-longest','usage-window','usage-heat','usage-heat-note','usage-daily-trend','usage-daily-note','usage-model-donut','usage-model-legend'])
+    assert.ok(page.includes('id="'+id+'"'),'新版调用统计缺少容器 '+id);
+  assert.deepEqual((page.match(/<option value="\d+d"/g)||[]).map(s=>s.match(/\d+/)[0]),['30','90','365'],'页面档位与 core 的 usageDailyWindows 不再一致');
+  assert.ok(!/style="/.test(page),"新版区块出现内联 style，CSP 的 style-src 'self' 会把它静默丢掉");
+  assert.ok(!/聊天时长|会话时长/.test(html),'账本只有逐次时间戳，观测不到聊天时长，页面上不得出现该项');
+  assert.match(page,/明细筛选/);
+  assert.match(page,/只作用于下方两张表/,'明细筛选没说明它不再作用于上方图表');
+  assert.match(page,/永久保留/,'日度汇总永久保留这条口径没写在页面上');
+});
+
+test('热力图分档与模型图例配色在 CSS 与 app.js 里必须同源',()=>{
+  const css=readFileSync(__dirname+'/web/style.css','utf8');
+  const {ctx}=taskFixture(async()=>({ok:true,status:200,json:async()=>({})}));
+  const colors=JSON.parse(vm.runInContext('JSON.stringify(modelColors)',ctx));
+  const other=vm.runInContext('otherModelColor',ctx);
+  const cuts=JSON.parse(vm.runInContext('JSON.stringify(heatCut)',ctx));
+  assert.equal(colors.length,5);
+  assert.deepEqual(cuts,['hm0','hm1','hm2','hm3','hm4']);
+  const background=sel=>(css.match(new RegExp('\\.'+sel+'\\{background:(#[0-9a-f]{6})\\}'))||[])[1];
+  for(let i=0;i<colors.length;i++)assert.equal(background('sw-r'+i),colors[i],'图例第 '+(i+1)+' 档配色与 app.js 不同源');
+  assert.equal(background('sw-other'),other,'「其他模型」配色与 app.js 不同源');
+  for(const cls of cuts)assert.ok(new RegExp('\\.'+cls+'\\{fill:').test(css),'热力图分档类 '+cls+' 在 CSS 里没有填充色');
+});
+
 test('credit rule parsing matches the server and never invents a zero',()=>{
   const {ctx}=logoutFixture(()=>new Promise(()=>{}));
   assert.equal(vm.runInContext("parseCreditRule('x0.79 credits')",ctx),0.79);

@@ -12,6 +12,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -39,6 +40,160 @@ type previewRun struct {
 	Accounts     []map[string]any `json:"accounts"`
 	Log          string           `json:"log"`
 	LogTruncated bool             `json:"log_truncated"`
+}
+
+type previewDailyModel struct {
+	Model             string  `json:"model"`
+	Calls             int     `json:"calls"`
+	Prompt            int64   `json:"prompt_tokens"`
+	Completion        int64   `json:"completion_tokens"`
+	PromptMissing     int     `json:"prompt_missing"`
+	CompletionMissing int     `json:"completion_missing"`
+	Credit            float64 `json:"credit"`
+	CreditMissing     int     `json:"credit_missing"`
+}
+
+type previewDaily struct {
+	Date              string              `json:"date"`
+	Calls             int                 `json:"calls"`
+	Prompt            int64               `json:"prompt_tokens"`
+	Completion        int64               `json:"completion_tokens"`
+	Credit            float64             `json:"credit"`
+	PromptMissing     int                 `json:"prompt_missing"`
+	CompletionMissing int                 `json:"completion_missing"`
+	CreditMissing     int                 `json:"credit_missing"`
+	Denied            int                 `json:"denied"`
+	Models            []previewDailyModel `json:"models"`
+}
+
+// previewDailySeries 造近一年多的日度汇总，数值纯属模拟，但每种边界都得在图里看得见：
+// 周日不干活（热力图留空档）、整日没回报 Token 的日子（斜纹档，不能画成空）、
+// 只在个别日子出现且从不回报 Token 的模型（页面单列，不并入占比）、鉴权失败留痕。
+func previewDailySeries(now time.Time) []previewDaily {
+	names := []string{"cn:glm-5.2", "global:claude-sonnet-4.6", "glm-5.3-flash", "qoder-glm-5.3-flash", "opencode-OC · Free", "cn:deepseek-v3"}
+	out := make([]previewDaily, 0, 380)
+	origin := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, now.Location())
+	for back := 380; back >= 0; back-- {
+		day := origin.AddDate(0, 0, -back)
+		if day.Weekday() == time.Sunday {
+			continue
+		}
+		d := previewDaily{Date: day.Format("2006-01-02"), Denied: (back * 11) % 5}
+		for j, name := range names {
+			if (back+j)%5 == 4 {
+				continue
+			}
+			calls := 1 + (back*(j+3))%7
+			if back%37 == 5 {
+				calls++
+				d.Models = append(d.Models, previewDailyModel{Model: name, Calls: calls, PromptMissing: calls, CompletionMissing: calls, CreditMissing: calls})
+				d.Calls += calls
+				d.PromptMissing += calls
+				d.CompletionMissing += calls
+				d.CreditMissing += calls
+				continue
+			}
+			prompt := int64(180+j*95) * int64(1+(back*13)%6) * int64(calls)
+			completion := int64(70+j*45) * int64(1+(back*7)%5) * int64(calls)
+			credit := float64(prompt+completion) / 25000
+			d.Models = append(d.Models, previewDailyModel{Model: name, Calls: calls, Prompt: prompt, Completion: completion, Credit: credit})
+			d.Calls += calls
+			d.Prompt += prompt
+			d.Completion += completion
+			d.Credit += credit
+		}
+		if back%53 == 11 {
+			d.Models = append(d.Models, previewDailyModel{Model: "glm-4.7-noquota", Calls: 3, CreditMissing: 3})
+			d.Calls += 3
+			d.CreditMissing += 3
+		}
+		if d.Calls > 0 {
+			out = append(out, d)
+		}
+	}
+	return out
+}
+
+// previewLifetime 按 core SummarizeLifetime 的同一口径汇总全部日度（与窗口无关），
+// 夹具里的连续天数因此和页面读数对得上。
+func previewLifetime(days []previewDaily, now time.Time) map[string]any {
+	type lifetime struct {
+		Calls             int64   `json:"calls"`
+		Prompt            int64   `json:"prompt_tokens"`
+		Completion        int64   `json:"completion_tokens"`
+		Tokens            int64   `json:"tokens"`
+		TokensMissing     bool    `json:"tokens_missing"`
+		Credit            float64 `json:"credit"`
+		Days              int     `json:"days"`
+		FirstDate         string  `json:"first_date"`
+		LastDate          string  `json:"last_date"`
+		PeakDate          string  `json:"peak_date"`
+		PeakTokens        int64   `json:"peak_tokens"`
+		PeakTokensMissing bool    `json:"peak_tokens_missing"`
+		CurrentStreak     int     `json:"current_streak"`
+		LongestStreak     int     `json:"longest_streak"`
+	}
+	s := lifetime{}
+	active := map[string]bool{}
+	var promptMissing, completionMissing int64
+	dates := make([]string, 0, len(days))
+	for _, d := range days {
+		s.Calls += int64(d.Calls)
+		s.Prompt += d.Prompt
+		s.Completion += d.Completion
+		s.Credit += d.Credit
+		if d.Calls == 0 {
+			continue
+		}
+		promptMissing += int64(d.PromptMissing)
+		completionMissing += int64(d.CompletionMissing)
+		s.Days++
+		if s.FirstDate == "" || d.Date < s.FirstDate {
+			s.FirstDate = d.Date
+		}
+		if s.LastDate == "" || d.Date > s.LastDate {
+			s.LastDate = d.Date
+		}
+		active[d.Date] = true
+		dates = append(dates, d.Date)
+		tokens := d.Prompt + d.Completion
+		dark := d.PromptMissing == d.Calls && d.CompletionMissing == d.Calls
+		if s.PeakDate == "" || tokens > s.PeakTokens || (tokens == s.PeakTokens && d.Date < s.PeakDate) {
+			s.PeakDate, s.PeakTokens, s.PeakTokensMissing = d.Date, tokens, dark
+		}
+	}
+	s.Tokens = s.Prompt + s.Completion
+	s.TokensMissing = s.Calls > 0 && promptMissing == s.Calls && completionMissing == s.Calls
+	sort.Strings(dates)
+	run := 0
+	for i, date := range dates {
+		if i > 0 {
+			prev, _ := time.Parse("2006-01-02", dates[i-1])
+			cur, _ := time.Parse("2006-01-02", date)
+			if cur.Sub(prev) != 24*time.Hour {
+				run = 0
+			}
+		}
+		run++
+		if run > s.LongestStreak {
+			s.LongestStreak = run
+		}
+	}
+	cur := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, now.Location())
+	if !active[cur.Format("2006-01-02")] {
+		cur = cur.AddDate(0, 0, -1)
+	}
+	for active[cur.Format("2006-01-02")] {
+		s.CurrentStreak++
+		cur = cur.AddDate(0, 0, -1)
+	}
+	return map[string]any{
+		"calls": s.Calls, "prompt_tokens": s.Prompt, "completion_tokens": s.Completion,
+		"tokens": s.Tokens, "tokens_missing": s.TokensMissing, "credit": s.Credit,
+		"days": s.Days, "first_date": s.FirstDate, "last_date": s.LastDate,
+		"peak_date": s.PeakDate, "peak_tokens": s.PeakTokens, "peak_tokens_missing": s.PeakTokensMissing,
+		"current_streak": s.CurrentStreak, "longest_streak": s.LongestStreak,
+	}
 }
 
 func TestAdminBrowserPreview(t *testing.T) {
@@ -86,6 +241,9 @@ func TestAdminBrowserPreview(t *testing.T) {
 	var serial atomic.Int32
 	var lostOnce atomic.Bool
 	var inFlight atomic.Int32
+	dailyNow := time.Now()
+	dailySeries := previewDailySeries(dailyNow)
+	dailyLifetime := previewLifetime(dailySeries, dailyNow)
 
 	findRun := func(id string) (previewRun, bool) {
 		for _, run := range runs {
@@ -122,6 +280,20 @@ func TestAdminBrowserPreview(t *testing.T) {
 				`{"ts":%d,"uid":"qoder","account":"Qoder 通道","model":"qoder-glm-5.3-flash","mode":"stream","prompt_tokens":60,"completion_tokens":520,"credit":1.2},`+
 				`{"ts":%d,"uid":"opencode","account":"OpenCode 通道","model":"opencode-OC · FreeModel","mode":"stream","prompt_tokens":30,"completion_tokens":240,"credit":0}`+
 				`],"summary":{"calls":5}}`, r.URL.Query().Get("range"), now-300, now-240, now-180, now-120, now-60)
+		case r.URL.Path == "/internal/v1/usage/daily":
+			// 日度汇总：lifetime 恒按全历史给，窗口只切 days，与 core 端点同构。
+			name := r.URL.Query().Get("window")
+			visible := dailySeries
+			if span := map[string]int{"30d": 30, "90d": 90, "365d": 365}[name]; span > 0 {
+				cutoff := time.Date(dailyNow.Year(), dailyNow.Month(), dailyNow.Day(), 0, 0, 0, 0, dailyNow.Location()).AddDate(0, 0, -(span - 1)).Format("2006-01-02")
+				visible = make([]previewDaily, 0, len(dailySeries))
+				for _, d := range dailySeries {
+					if d.Date >= cutoff {
+						visible = append(visible, d)
+					}
+				}
+			}
+			json.NewEncoder(w).Encode(map[string]any{"window": name, "days": visible, "lifetime": dailyLifetime})
 		case r.URL.Path == "/internal/v1/chat":
 			inFlight.Add(1)
 			defer inFlight.Add(-1)
@@ -335,14 +507,21 @@ func TestAdminBrowserPreview(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	listener, err := net.Listen("tcp", "127.0.0.1:17864")
+	// 默认只绑回环。WB2A_BROWSER_PREVIEW_ADDR 是给「本机没有 Go 工具链、夹具得在容器里跑」
+	// 留的口子：容器里绑回环的端口宿主发布不到，改成 0.0.0.0:<port> 才能从浏览器打开。
+	addr := os.Getenv("WB2A_BROWSER_PREVIEW_ADDR")
+	if addr == "" {
+		addr = "127.0.0.1:17864"
+	}
+	listener, err := net.Listen("tcp", addr)
 	if err != nil {
 		t.Fatal(err)
 	}
 	server := &http.Server{Handler: h, ReadHeaderTimeout: 10 * time.Second}
 	go server.Serve(listener)
 	defer server.Shutdown(context.Background())
-	t.Log("Browser fixture: http://127.0.0.1:17864 · admin key: browser-preview-key-mock-only-12345 (mock only)")
+	_, port, _ := net.SplitHostPort(listener.Addr().String())
+	t.Logf("Browser fixture: http://127.0.0.1:%s · admin key: browser-preview-key-mock-only-12345 (mock only) · bind %s", port, addr)
 	t.Log("Tasks: checkin loses its first accepted response then retries same ID; activity stays running 3s for rapid repeat; seeded partial/unknown/truncated records and 24-item pagination survive reloads.")
 	<-time.After(15 * time.Minute)
 }
