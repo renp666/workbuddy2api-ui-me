@@ -1605,6 +1605,31 @@ test('模型能力 TOP ranks only pool models and tiers them by real local cost'
   assert.equal(get('routes-alias-model').value,'cn:strong','填入表单必须写通道里的真实模型名，不是榜单里的外部 id');
 });
 
+test('模型能力 TOP 面板用静态文字解释「填入表单」做什么',()=>{
+  const html=readFileSync(__dirname+'/web/index.html','utf8');
+  const panel=html.match(/<h2>模型能力 TOP<\/h2>[\s\S]*?<\/article>/)[0];
+  assert.match(panel,/「填入表单」[^<]*灌进[^<]*别名/,'TOP 面板没在文字里说明「填入表单」把什么灌进上方别名表单');
+  assert.match(panel,/点「保存别名」才生效/,'没有交代点完按钮之后还要保存');
+});
+
+test('两处「填入表单」共用同一句提示和同一条悬停说明',async()=>{
+  const {ctx,get}=capabilityFixture({available:true,snapshot_at:'2026-10-05T02:00:00Z',note:'n',rows:capabilityRows});
+  await vm.runInContext("signedIn({csrf:'c',global_enabled:true,zcode_enabled:false,qoder_enabled:false,opencode_enabled:false})",ctx);
+  await vm.runInContext('loadRoutes()',ctx);
+  await flushMicrotasks();
+  const tableButton=get('cap-body').children[0].children[7].children[0];
+  const tierButton=get('cap-tiers').children[0].children[3];
+  assert.equal(tierButton.textContent,'填入表单','三档卡片的按钮和表格里不叫同一个名字');
+  assert.equal(tableButton.title,'填进上方别名表单，仍需起名并保存');
+  assert.equal(tierButton.title,'填进上方别名表单，仍需起名并保存');
+  tableButton.handlers.click();
+  const tableNotice=get('notice').textContent;
+  tierButton.handlers.click();
+  const tierNotice=get('notice').textContent;
+  assert.match(tableNotice,/^已填入 \S+，起个名字后点「保存别名」才生效$/,'表格那侧的提示没交代保存这一步');
+  assert.equal(tierNotice.replace(/已填入 \S+/,''),tableNotice.replace(/已填入 \S+/,''),'两处提示的措辞不一致');
+});
+
 test('模型能力 TOP renders a bounded window of the full board and says so',async()=>{
   const rows=Array.from({length:105},(_,i)=>({heat:i+1,id:'vendor/model-'+i,name:'Model '+i,context:0,free:false,arena:[],tools:false,structured:false,reasoning:false,videoIn:false,imageIn:false}));
   const {ctx,get}=capabilityFixture({available:true,snapshot_at:'2026-10-05T02:00:00Z',note:'源站说明。',rows});

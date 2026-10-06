@@ -1654,8 +1654,8 @@ function capEmpty(text){const node=$('cap-empty');node.textContent=text;node.hid
 function capActionCell(hit){
  const td=document.createElement('td');
  if(!hit){td.textContent='—';return td;}
- const button=document.createElement('button');button.className='secondary';button.textContent='填入表单';
- button.addEventListener('click',()=>{pickRouteModel(hit.channel,hit.model);notice('已填入别名表单，起个名字保存即可');});
+ const button=document.createElement('button');button.className='secondary';button.textContent='填入表单';button.title='填进上方别名表单，仍需起名并保存';
+ button.addEventListener('click',()=>{pickRouteModel(hit.channel,hit.model);notice(`已填入 ${hit.model}，起个名字后点「保存别名」才生效`);});
  td.append(button);return td;
 }
 function capTable(columns,items){
@@ -1723,8 +1723,8 @@ function renderCapTiers(list){
   const small=document.createElement('small');
   small.textContent=`${tier.hit.metric.text} · 倍率 ${tier.hit.cost.text} · ${routeChannelLabel(tier.hit.channel)}${tier.hit.gate?'':' · 当前未放行，需在模型积分开关启用'}`;
   article.append(small);
-  const button=document.createElement('button');button.className='quiet';button.textContent='填入表单';
-  button.addEventListener('click',()=>{pickRouteModel(tier.hit.channel,tier.hit.model);notice(`已填入 ${tier.hit.model}，给它起个别名（例如 my-coder）保存即可`);});
+  const button=document.createElement('button');button.className='quiet';button.textContent='填入表单';button.title='填进上方别名表单，仍需起名并保存';
+  button.addEventListener('click',()=>{pickRouteModel(tier.hit.channel,tier.hit.model);notice(`已填入 ${tier.hit.model}，起个名字后点「保存别名」才生效`);});
   article.append(button);wrap.append(article);
  }
 }
