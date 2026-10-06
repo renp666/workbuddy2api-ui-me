@@ -256,7 +256,7 @@ docker compose up -d
 两条必须知道的代价与约束：
 
 - 旁路以 `network_mode: service:console` 绑定 console 的**容器 ID**。单独重建 console 会让三只旁路永久 `Exited (255)`，`State.Error` 为 `joining network namespace of container: No such container`，此时 `restart: unless-stopped` 也救不回来。带 override 的 `docker compose up -d` 会在同一次调用里连旁路一起重建，因此不要改用更短的 `-f` 链。
-- zcode 的控制进程常驻但数据面 8080 默认不监听，开机后要在 Zcode 页签点一次「启用」`glm-` 流量才通；qoder 与 opencode 起来即可用（实测 qoder `/health` 返回 `{"ok":true}`）。
+- zcode 的「启用」是一次性动作，不是每次开机都要点：启用状态落在挂载卷的 `runtime/zcode/config.yaml`，实测 `docker restart` 旁路容器后约 9 秒数据面 8080 自行恢复 `/v1/models`，从未有人点过「启用」的全新挂载才需要先点一次。qoder 与 opencode 起来即可用（实测 `/health` 分别返回 `{"ok":true}` 与 `401 Local proxy API key required`，后者正是它按设计只认 console 注入的 Bearer）。
 
 清理尺度上别动的两样：`wb2a-gomod`、`wb2a-gomodcache`、`wb2a-go-cache`、`wb2a-gobuildcache` 四个卷是「不联网也能重建」的前提；BuildKit 缓存约 16 GB 中仅约 0.9 GB 可按年龄回收，`--filter until=168h` 与 `--reserved-space` 实测都清不动其余活跃部分，全量 `builder prune -a` 会连离线重建能力一起删掉，除非确认网络可用否则不做。发版脚本内也不要全局导出 `MSYS_NO_PATHCONV=1`，它会反过来破坏 `git archive -o` 的路径写入，上下文一律写仓库内相对路径。
 
