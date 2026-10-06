@@ -8,11 +8,15 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"reflect"
 	"strings"
 	"testing"
+	"time"
 
 	"workbuddy2api/internal/upstream"
+	"workbuddy2api/internal/usagelog"
 )
 
 const textRequest = `{"model":"global:mock","max_tokens":32,"system":"简短回答","messages":[{"role":"user","content":[{"type":"text","text":"你好"}]}]}`
@@ -80,6 +84,69 @@ func TestExistingPathsPassThroughUnchanged(t *testing.T) {
 				t.Fatal("existing response changed")
 			}
 		})
+	}
+}
+
+func TestProtocolEntryMarkedForUsageLog(t *testing.T) {
+	var marked string
+	w := httptest.NewRecorder()
+	New(http.HandlerFunc(func(_ http.ResponseWriter, got *http.Request) {
+		marked = usagelog.APIFrom(got.Context())
+	}), "fixture-api", 8<<20).ServeHTTP(w, request(textRequest))
+	if marked != "messages" {
+		t.Fatalf("Messages 在进程内复用 OpenAI Handler，落账点已看不出协议，必须由适配层标注，得到 %q", marked)
+	}
+	for _, path := range []string{"/v1/chat/completions", "/v1/responses"} {
+		var seen string
+		r := httptest.NewRequest(http.MethodPost, path, strings.NewReader("old raw body"))
+		New(http.HandlerFunc(func(_ http.ResponseWriter, got *http.Request) {
+			seen = usagelog.APIFrom(got.Context())
+		}), "fixture-api", 8<<20).ServeHTTP(httptest.NewRecorder(), r)
+		if seen != "" {
+			t.Fatalf("%s 不该被标成 Messages，得到 %q", path, seen)
+		}
+	}
+}
+
+// TestMessagesAuthFailureRecordsDeniedTrail：/v1/messages 的鉴权在适配层完成
+// （core 的 withAuth 只会看到注入后的正确 key），所以猜 key 打到 Anthropic 入口时
+// 必须由适配层自己留痕，否则统计页只看得见 OpenAI 侧的攻击尝试。
+func TestMessagesAuthFailureRecordsDeniedTrail(t *testing.T) {
+	dir := t.TempDir()
+	l, err := usagelog.Open(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	usagelog.Set(l)
+	t.Cleanup(func() { usagelog.Set(nil) })
+
+	called := 0
+	r := request(textRequest)
+	r.Header.Set("x-api-key", "wrong")
+	r.Header.Set("X-Console-Client", "203.0.113.42")
+	r.Header.Set("User-Agent", "claude-code/1.2")
+	rec := httptest.NewRecorder()
+	New(http.HandlerFunc(func(http.ResponseWriter, *http.Request) { called++ }), "fixture-api", 8<<20).ServeHTTP(rec, r)
+	if rec.Code != 401 || called != 0 {
+		t.Fatalf("错误 key 应 401 且不进下游 Handler：code=%d calls=%d", rec.Code, called)
+	}
+
+	items, err := l.QueryDenied(time.Now().Add(-time.Minute).Unix(), time.Now().Add(time.Minute).Unix())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(items) != 1 {
+		t.Fatalf("Messages 入口的鉴权失败应留一条痕，得到 %d：%+v", len(items), items)
+	}
+	if items[0].Src != "203.0.113.0/24" || items[0].Client != "claude-code/1.2" {
+		t.Errorf("留痕应带脱敏网段与客户端标识：%+v", items[0])
+	}
+	raw, err := os.ReadFile(filepath.Join(dir, "denied-"+time.Now().Format("20060102")+".jsonl"))
+	if err != nil {
+		t.Fatalf("失败留痕应与用量分文件存放：%v", err)
+	}
+	if strings.Contains(string(raw), "203.0.113.42") {
+		t.Fatalf("完整主机地址绝不能落盘：%s", raw)
 	}
 }
 

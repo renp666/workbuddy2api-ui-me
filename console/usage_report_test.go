@@ -254,6 +254,30 @@ func TestUsageReportOpenCodeKeepsPublicModelName(t *testing.T) {
 	}
 }
 
+// TestUsageReportCarriesSourceAttribution：旁路通道不经过 core，「谁在用」只能由
+// console 在捕获时附上。上报体必须带对端地址、User-Agent 和按公开路径判定的
+// 协议名；脱敏（只留网段）由 core 落账前完成，所以这里断言的是原样观测。
+func TestUsageReportCarriesSourceAttribution(t *testing.T) {
+	sink := &usageReportSink{}
+	h := usagePair(t, sink, "zcode", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprint(w, `{"choices":[],"usage":{"prompt_tokens":1,"completion_tokens":2}}`)
+	})
+	r := httptest.NewRequest("POST", "http://console.test/v1/messages", strings.NewReader(`{"model":"glm-5.3-flash","max_tokens":8,"messages":[]}`))
+	r.Header.Set("Authorization", "Bearer client-key")
+	r.Header.Set("User-Agent", "claude-cli/2.0")
+	w := httptest.NewRecorder()
+	h.ServeHTTP(w, r)
+	if w.Code != 200 {
+		t.Fatalf("code=%d body=%s", w.Code, w.Body)
+	}
+	entries := sink.waitFor(t, 1)
+	e := entries[len(entries)-1]
+	if e["src"] != "192.0.2.1" || e["client"] != "claude-cli/2.0" || e["api"] != "messages" {
+		t.Fatalf("上报体来源观测缺失或错误：%v", e)
+	}
+}
+
 func TestUsageReportMissingUsageStaysSilent(t *testing.T) {
 	sink := &usageReportSink{}
 	h := usagePair(t, sink, "zcode", func(w http.ResponseWriter, r *http.Request) {

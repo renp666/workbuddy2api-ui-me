@@ -12,6 +12,8 @@ import (
 	"net/http"
 	"strings"
 	"unicode/utf8"
+
+	"workbuddy2api/internal/usagelog"
 )
 
 type textBlock struct {
@@ -156,6 +158,9 @@ func New(next http.Handler, apiKey string, maxBodyBytes int64) http.Handler {
 		}
 		expected, supplied := sha256.Sum256([]byte(apiKey)), sha256.Sum256([]byte(r.Header.Get("x-api-key")))
 		if apiKey == "" || len(r.Header.Values("x-api-key")) != 1 || subtle.ConstantTimeCompare(expected[:], supplied[:]) != 1 {
+			// 本入口的鉴权在适配层完成，core 的 withAuth 只会看到注入后的正确 key，
+			// 所以猜 key 的尝试必须在这里留痕（补丁 0014 的 Anthropic 侧对偶）。
+			usagelog.RecordDeniedAuth(usagelog.OriginOf(r.Context(), r))
 			writeError(w, 401, "API Key 无效")
 			return
 		}
@@ -211,7 +216,7 @@ func New(next http.Handler, apiKey string, maxBodyBytes int64) http.Handler {
 		}
 		ctx, cancel := context.WithCancel(r.Context())
 		defer cancel()
-		req := r.Clone(ctx)
+		req := r.Clone(usagelog.WithAPI(ctx, "messages"))
 		req.URL.Path, req.URL.RawPath, req.RequestURI = "/v1/chat/completions", "", "/v1/chat/completions"
 		req.Body, req.ContentLength = io.NopCloser(bytes.NewReader(body)), int64(len(body))
 		req.GetBody, req.TransferEncoding, req.Trailer = nil, nil, nil

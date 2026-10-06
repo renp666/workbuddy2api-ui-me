@@ -393,7 +393,11 @@ func (h *server) withAdmin(next http.HandlerFunc) http.HandlerFunc {
 		next(w, r.WithContext(context.WithValue(r.Context(), sessionContextKey{}, session)))
 	}
 }
-func (h *server) loginKey(r *http.Request) string {
+// clientAddress resolves the true peer of a request: the direct connection, or
+// the rightmost X-Forwarded-For entry when that connection came from a trusted
+// proxy. It backs the login rate-limit bucket and the source attribution that
+// console attaches to forwarded public calls.
+func (h *server) clientAddress(r *http.Request) string {
 	ip, _, err := net.SplitHostPort(r.RemoteAddr)
 	if err != nil {
 		ip = r.RemoteAddr
@@ -429,7 +433,7 @@ func (h *server) adminLogin(w http.ResponseWriter, r *http.Request) {
 		adminError(w, 403, "请求来源无效")
 		return
 	}
-	ip := h.loginKey(r)
+	ip := h.clientAddress(r)
 	h.mu.Lock()
 	h.cleanupLocked()
 	lim := h.limits[ip]

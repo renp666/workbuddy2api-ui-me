@@ -197,7 +197,8 @@ func usageRangeBounds(name string, now time.Time) (int64, int64, bool) {
 }
 
 // listUsage 返回时间范围内每次成功调用的用量观测与聚合；未知值保持缺失语义，
-// 由展示层区分「0 消耗」与「未观测」。
+// 由展示层区分「0 消耗」与「未观测」。denied 附带同区间的鉴权失败来源分布，
+// 与调用次数相互独立，不并入 summary。
 func (h *handler) listUsage(w http.ResponseWriter, r *http.Request) {
 	query := r.URL.Query()
 	if len(query) != 1 || len(query["range"]) != 1 {
@@ -219,7 +220,17 @@ func (h *handler) listUsage(w http.ResponseWriter, r *http.Request) {
 		bridgeError(w, 503, "调用统计暂不可用，请稍后重试")
 		return
 	}
-	writeJSON(w, 200, map[string]any{"range": name, "items": items, "summary": usagelog.Summarize(items)})
+	denied, err := h.cfg.Usage.QueryDenied(start, end)
+	if err != nil {
+		bridgeError(w, 503, "调用统计暂不可用，请稍后重试")
+		return
+	}
+	writeJSON(w, 200, map[string]any{
+		"range":   name,
+		"items":   items,
+		"summary": usagelog.Summarize(items),
+		"denied":  usagelog.SummarizeDenied(denied),
+	})
 }
 
 func (h *handler) listTasks(w http.ResponseWriter, r *http.Request) {

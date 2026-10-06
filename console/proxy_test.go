@@ -67,6 +67,9 @@ func TestPublicProxyPreservesBearerBodyAndStripsPrivilegedHeaders(t *testing.T) 
 				t.Errorf("leaked %s", name)
 			}
 		}
+		if got := r.Header.Get("X-Console-Client"); got != "192.0.2.1" {
+			t.Errorf("X-Console-Client=%q, want the console-overwritten peer rather than the forged inbound value", got)
+		}
 		got, _ := io.ReadAll(r.Body)
 		if string(got) != body {
 			t.Errorf("body=%s", got)
@@ -77,7 +80,7 @@ func TestPublicProxyPreservesBearerBodyAndStripsPrivilegedHeaders(t *testing.T) 
 	})
 	r := httptest.NewRequest("POST", "http://console.test/v1/chat/completions?x=1", strings.NewReader(body))
 	r.Header.Set("Authorization", "Bearer client-api-key")
-	for _, name := range []string{"X-Console-Owner", "X-Bridge-Key", "X-Forwarded-For", "X-Forwarded-Host", "X-Forwarded-Proto", "Forwarded", "X-Real-IP", "Cookie", "X-CSRF-Token"} {
+	for _, name := range []string{"X-Console-Owner", "X-Bridge-Key", "X-Forwarded-For", "X-Forwarded-Host", "X-Forwarded-Proto", "Forwarded", "X-Real-IP", "Cookie", "X-CSRF-Token", "X-Console-Client"} {
 		r.Header.Set(name, "attacker")
 	}
 	w := httptest.NewRecorder()

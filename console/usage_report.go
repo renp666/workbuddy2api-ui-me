@@ -14,6 +14,7 @@ import (
 // usageReportEntry 旁路通道（zcode/qoder）单次调用的用量观测，字段与 core
 // 桥接上报端点（POST /internal/v1/usage/reports）的 schema 一一对应。
 // Prompt/Completion 为 -1 表示上游未回报；Credit 仅在显式出现时记录（缺失≠0）。
+// Src 传原始对端地址、Client 传原始 User-Agent，脱敏与白名单由 core 落账前完成。
 type usageReportEntry struct {
 	UID        string   `json:"uid"`
 	Account    string   `json:"account"`
@@ -23,6 +24,9 @@ type usageReportEntry struct {
 	Completion int      `json:"completion_tokens"`
 	Credit     *float64 `json:"credit,omitempty"`
 	HasCredit  bool     `json:"has_credit"`
+	Src        string   `json:"src,omitempty"`
+	Client     string   `json:"client,omitempty"`
+	API        string   `json:"api,omitempty"`
 }
 
 // maxReportTokens 防御上游异常 usage 数值（防 int 溢出）。
@@ -93,8 +97,18 @@ type usageCaptureWriter struct {
 }
 
 // newUsageCapture 以通道占位身份（zcode=GLM 通道 / qoder=Qoder 通道 / opencode=OpenCode 通道）构造捕获器。
-func (h *server) newUsageCapture(w http.ResponseWriter, model, channel string, stream bool) *usageCaptureWriter {
-	e := usageReportEntry{UID: channel, Model: model, Mode: "sync", Prompt: -1, Completion: -1}
+// 旁路不经过 core，所以「谁在用」的来源观测只能在这里附上：与公开代理口同一套
+// 对端判定（含可信反代取 XFF 最右段），协议名按公开路径判定。
+func (h *server) newUsageCapture(w http.ResponseWriter, r *http.Request, model, channel string, stream bool) *usageCaptureWriter {
+	e := usageReportEntry{UID: channel, Model: model, Mode: "sync", Prompt: -1, Completion: -1, Src: h.clientAddress(r), Client: r.Header.Get("User-Agent")}
+	switch r.URL.Path {
+	case "/v1/chat/completions":
+		e.API = "chat"
+	case "/v1/messages":
+		e.API = "messages"
+	case "/v1/responses":
+		e.API = "responses"
+	}
 	if stream {
 		e.Mode = "stream"
 	}

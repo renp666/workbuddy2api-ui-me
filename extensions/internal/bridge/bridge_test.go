@@ -414,15 +414,19 @@ func TestUsageEndpointValidatesAndSummarizes(t *testing.T) {
 	for _, e := range []usagelog.Entry{known, free, dark} {
 		l.Record(e)
 	}
+	// 鉴权失败留痕同范围返回，但绝不并入 items/summary（否则「调用次数」会被攻击流量灌高）。
+	l.RecordDenied(usagelog.Denied{TS: now.Add(-time.Minute).Unix(), Src: "203.0.113.0/24", Client: "curl/8"})
+	l.RecordDenied(usagelog.Denied{TS: now.Add(-time.Minute).Unix()})
 	h := New(context.Background(), Config{Key: testKey, Usage: l})
 	w := bridgeRequest(h, "GET", "/internal/v1/usage?range=today", "", "")
 	if w.Code != 200 {
 		t.Fatalf("status=%d body=%s", w.Code, w.Body)
 	}
 	var got struct {
-		Items   []usagelog.Entry `json:"items"`
-		Summary usagelog.Summary `json:"summary"`
-		Range   string           `json:"range"`
+		Items   []usagelog.Entry     `json:"items"`
+		Summary usagelog.Summary     `json:"summary"`
+		Denied  usagelog.DeniedStats `json:"denied"`
+		Range   string               `json:"range"`
 	}
 	if json.Unmarshal(w.Body.Bytes(), &got) != nil {
 		t.Fatalf("bad json: %s", w.Body.String())
@@ -435,5 +439,11 @@ func TestUsageEndpointValidatesAndSummarizes(t *testing.T) {
 	}
 	if got.Summary.Credit != 1.5 || got.Summary.CreditMissing != 1 || got.Summary.UsageMissing != 1 {
 		t.Fatalf("缺失观测不得并入零值：%+v", got.Summary)
+	}
+	if got.Denied.Calls != 2 || len(got.Denied.Sources) != 2 {
+		t.Fatalf("鉴权失败留痕未随范围返回：%+v", got.Denied)
+	}
+	if got.Denied.Sources[0].Src != "203.0.113.0/24" || got.Denied.Sources[1].Src != "" {
+		t.Fatalf("失败来源排序不符：%+v", got.Denied.Sources)
 	}
 }

@@ -113,7 +113,7 @@ func (h *server) publicRouter(core *httputil.ReverseProxy) http.HandlerFunc {
 				r.TransferEncoding = nil
 				r.Header.Del("Content-Length")
 				// 旁路通道不经过 core，响应在这里捕获 usage 并异步回传 core 落账。
-				capture := h.newUsageCapture(w, envelope.Model, "zcode", envelope.Stream)
+				capture := h.newUsageCapture(w, r, envelope.Model, "zcode", envelope.Stream)
 				zcode.ServeHTTP(capture, r)
 				h.finishUsageCapture(capture)
 				return
@@ -125,7 +125,7 @@ func (h *server) publicRouter(core *httputil.ReverseProxy) http.HandlerFunc {
 				r.TransferEncoding = nil
 				r.Header.Del("Content-Length")
 				// qoder 上报保留公共前缀模型名（剥前缀前的 envelope.Model）便于区分通道。
-				capture := h.newUsageCapture(w, envelope.Model, "qoder", envelope.Stream)
+				capture := h.newUsageCapture(w, r, envelope.Model, "qoder", envelope.Stream)
 				qoder.ServeHTTP(capture, r)
 				h.finishUsageCapture(capture)
 				return
@@ -137,7 +137,7 @@ func (h *server) publicRouter(core *httputil.ReverseProxy) http.HandlerFunc {
 				r.TransferEncoding = nil
 				r.Header.Del("Content-Length")
 				// opencode 上报同样保留公共前缀模型名，便于与 zcode/core 区分通道。
-				capture := h.newUsageCapture(w, envelope.Model, "opencode", envelope.Stream)
+				capture := h.newUsageCapture(w, r, envelope.Model, "opencode", envelope.Stream)
 				opencode.ServeHTTP(capture, r)
 				h.finishUsageCapture(capture)
 				return

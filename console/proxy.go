@@ -62,6 +62,11 @@ func (h *server) proxy(management bool) *httputil.ReverseProxy {
 		Rewrite: func(pr *httputil.ProxyRequest) {
 			pr.SetURL(h.cfg.CoreURL)
 			stripPrivateHeaders(pr.Out.Header)
+			// stripPrivateHeaders already dropped any inbound value, so core may treat
+			// this one as console-attested; core masks it to a netblock on write.
+			if addr := h.clientAddress(pr.In); addr != "" {
+				pr.Out.Header.Set("X-Console-Client", addr)
+			}
 			if management {
 				pr.Out.Header.Set("Authorization", "Bearer "+h.cfg.BridgeKey)
 				pr.Out.Header.Set("X-Console-Owner", sessionFrom(pr.In).owner)

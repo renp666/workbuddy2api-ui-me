@@ -1,12 +1,17 @@
 package usagelog
 
 import (
+	"context"
 	"encoding/json"
 	"math"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	"workbuddy2api/internal/auth"
 )
@@ -71,12 +76,12 @@ func TestRecordAuthWiresNicknameFallbackAndExplicitZeroCredit(t *testing.T) {
 		t.Fatal(err)
 	}
 	Set(nil)
-	RecordAuth(&auth.Auth{UID: "u1", Nickname: "甲"}, "m", "stream", 1, 2, 3, true) // 未接线 no-op
+	RecordAuth(&auth.Auth{UID: "u1", Nickname: "甲"}, "m", "stream", 1, 2, 3, true, Origin{}) // 未接线 no-op
 	Set(l)
-	RecordAuth(&auth.Auth{UID: "u1", Nickname: "甲"}, "cn:m", "stream", 100, 200, 1.5, true)
-	RecordAuth(&auth.Auth{UID: "u2"}, "cn:m", "sync", 10, 20, 0, true)  // 显式 0 是合法免费观测
-	RecordAuth(&auth.Auth{UID: "u3"}, "cn:m", "sync", -1, -1, 9, false) // 无 credit 观测照常落盘，但 credit 保持缺失
-	RecordAuth(nil, "cn:m", "sync", 1, 1, 1, true)
+	RecordAuth(&auth.Auth{UID: "u1", Nickname: "甲"}, "cn:m", "stream", 100, 200, 1.5, true, Origin{Src: "203.0.113.0/24", Client: "claude-cli/1.2.3", API: "messages"})
+	RecordAuth(&auth.Auth{UID: "u2"}, "cn:m", "sync", 10, 20, 0, true, Origin{})                  // 显式 0 是合法免费观测
+	RecordAuth(&auth.Auth{UID: "u3"}, "cn:m", "sync", -1, -1, 9, false, Origin{Client: "curl/8"}) // 无 credit 观测照常落盘，但 credit 保持缺失
+	RecordAuth(nil, "cn:m", "sync", 1, 1, 1, true, Origin{})
 
 	items, err := l.Query(time.Now().Add(-time.Minute).Unix(), time.Now().Add(time.Minute).Unix())
 	if err != nil {
@@ -88,12 +93,39 @@ func TestRecordAuthWiresNicknameFallbackAndExplicitZeroCredit(t *testing.T) {
 	if items[0].Account != "甲" || items[0].UID != "u1" {
 		t.Errorf("昵称应优先：%v", items[0])
 	}
+	if items[0].Src != "203.0.113.0/24" || items[0].Client != "claude-cli/1.2.3" || items[0].API != "messages" {
+		t.Errorf("来源观测应随 Entry 落账：%+v", items[0])
+	}
+	if items[1].Src != "" || items[1].Client != "" || items[1].API != "" {
+		t.Errorf("未提供的来源不得被补成任何值：%+v", items[1])
+	}
 	if items[1].Account != "u2" || items[1].Credit == nil || *items[1].Credit != 0 {
 		t.Errorf("昵称缺省回落 UID，显式 0 credit 必须保留：%v", items[1])
 	}
 	if items[2].Credit != nil {
 		t.Errorf("缺失 credit 不得写成 0：%v", items[2])
 	}
+	if items[2].Src != "" || items[2].Client != "curl/8" {
+		t.Errorf("只给了客户端标识时来源应保持未知：%+v", items[2])
+	}
+	// omitempty 必须真的省键：老行缺字段与新行留空走同一条读取路径。
+	lines := strings.Split(strings.TrimSpace(string(readDayFile(t, dir))), "\n")
+	if strings.Contains(lines[1], `"src"`) || strings.Contains(lines[1], `"api"`) {
+		t.Errorf("空来源仍被写进 JSONL，行体积会无谓膨胀：%s", lines[1])
+	}
+	if !strings.Contains(lines[2], `"client":"curl/8"`) || strings.Contains(lines[2], `"src"`) {
+		t.Errorf("只应落有值的来源键：%s", lines[2])
+	}
+}
+
+func readDayFile(t *testing.T, dir string) []byte {
+	t.Helper()
+	name := filepath.Join(dir, "usage-"+time.Now().Format(dayLayout)+".jsonl")
+	data, err := os.ReadFile(name)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return data
 }
 
 func TestFromResponseDistinguishesMissingFromZero(t *testing.T) {
@@ -132,4 +164,170 @@ func TestSummarizeKeepsMissingApartFromZero(t *testing.T) {
 	if math.IsNaN(s.Credit) || math.IsInf(s.Credit, 0) {
 		t.Fatalf("credit 聚合出现非法值：%v", s.Credit)
 	}
+}
+
+func TestMaskedPrefixKeepsNetblockAndDropsHostPart(t *testing.T) {
+	cases := []struct{ in, want string }{
+		{"203.0.113.42", "203.0.113.0/24"},
+		{"10.0.0.7", "10.0.0.0/24"},
+		{"::ffff:203.0.113.42", "203.0.113.0/24"},
+		{"2001:db8:3333:4444:5555:6666:7777:8888", "2001:db8:3333:4444::/64"},
+		{"fe80::1", "fe80::/64"},
+		{"", ""},
+		{"not-an-ip", ""},
+		{"203.0.113.42:9", ""},
+		{"203.0.113", ""},
+	}
+	for _, c := range cases {
+		if got := MaskedPrefix(c.in); got != c.want {
+			t.Errorf("MaskedPrefix(%q) = %q, 期望 %q", c.in, got, c.want)
+		}
+	}
+}
+
+func TestSanitizeClientTextCapsLengthWithoutSplittingRune(t *testing.T) {
+	if got := SanitizeClientText("  claude-cli/1.2.3 \n"); got != "claude-cli/1.2.3" {
+		t.Fatalf("首尾空白与控制符应被清掉，得到 %q", got)
+	}
+	long := "x" + strings.Repeat("y", maxClientText-1)
+	if got := SanitizeClientText(long); len(got) != maxClientText {
+		t.Fatalf("纯 ASCII 应截到上限，得到 %d", len(got))
+	}
+	multi := strings.Repeat("码", maxClientText)
+	got := SanitizeClientText(multi)
+	if len(got) > maxClientText || !utf8.ValidString(got) {
+		t.Fatalf("按字节截断把多字节字符劈坏了：%d 字节 valid=%v", len(got), utf8.ValidString(got))
+	}
+	if SanitizeClientText(strings.Repeat("a", maxClientText-1)+"码") != strings.Repeat("a", maxClientText-1) {
+		t.Fatalf("放不下完整字符时应丢弃尾部残字节")
+	}
+}
+
+func TestOriginOfMasksInjectedClientAndCapsUserAgent(t *testing.T) {
+	r := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil)
+	r.Header.Set("X-Console-Client", "203.0.113.42")
+	r.Header.Set("User-Agent", "claude-cli/1.2.3 (external, cli)")
+	o := OriginOf(r.Context(), r)
+	if o.Src != "203.0.113.0/24" || o.Client != "claude-cli/1.2.3 (external, cli)" {
+		t.Fatalf("来源应脱敏到网段、客户端原样保留（清洗后），得到 %+v", o)
+	}
+	if o.API != "chat" {
+		t.Fatalf("未标注协议入口时应按公开路径判定，得到 %q", o.API)
+	}
+
+	offList := httptest.NewRequest(http.MethodGet, "/v1/models", nil)
+	if got := OriginOf(offList.Context(), offList); got.API != "" {
+		t.Fatalf("表外路径不得被标成任何协议名：%q", got.API)
+	}
+
+	hostile := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil)
+	hostile.Header.Set("X-Console-Client", "203.0.113.42:9999")
+	hostile.Header.Set("User-Agent", "a\r\nb")
+	h := OriginOf(hostile.Context(), hostile)
+	if h.Src != "" {
+		t.Fatalf("带端口的来源值应视为未知，不得当成地址落账：%q", h.Src)
+	}
+	if h.Client != "a b" {
+		t.Fatalf("控制字符应被压成空格：%q", h.Client)
+	}
+
+	bare := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil)
+	if got := OriginOf(bare.Context(), bare); got.Src != "" || got.Client != "" {
+		t.Fatalf("缺少注入头与 UA 时应双双留空（页面显示「—」），得到 %+v", got)
+	}
+	if got := OriginOf(WithAPI(context.Background(), "messages"), nil); got.API != "messages" || got.Src != "" {
+		t.Fatalf("协议入口应能独立标注且不受请求缺失影响：%+v", got)
+	}
+	// 适配层标注必须压过路径判定：/v1/messages 到落账点时路径已被改写成
+	// /v1/chat/completions，只按路径判会把 Anthropic 入口记成 chat。
+	if got := OriginOf(WithAPI(context.Background(), "messages"), bare); got.API != "messages" {
+		t.Fatalf("已标注的协议入口应压过路径判定：%q", got.API)
+	}
+}
+
+func TestDeniedRecordsStayOutOfUsageQueries(t *testing.T) {
+	dir := t.TempDir()
+	l, err := Open(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now()
+	start, end := now.Add(-time.Minute).Unix(), now.Add(time.Minute).Unix()
+
+	Set(nil)
+	RecordDeniedAuth(Origin{Src: "203.0.113.0/24"}) // 未接线 no-op
+	Set(l)
+	RecordDeniedAuth(Origin{Src: "203.0.113.0/24", Client: "curl/8"})
+	RecordDeniedAuth(Origin{}) // 来源与客户端都不知道，仍要留下这一次尝试
+
+	used, err := l.Query(start, end)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(used) != 0 {
+		t.Fatalf("鉴权失败不得进入用量查询，否则「调用次数」会被猜 key 的流量灌高：%+v", used)
+	}
+	denied, err := l.QueryDenied(start, end)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(denied) != 2 {
+		t.Fatalf("两次失败尝试都应留痕（含来源未知的那次），得到 %d：%+v", len(denied), denied)
+	}
+	if denied[0].Src != "203.0.113.0/24" || denied[0].Client != "curl/8" {
+		t.Errorf("失败留痕应带上来源网段与客户端：%+v", denied[0])
+	}
+	if denied[1].TS == 0 {
+		t.Errorf("留痕必须带时刻，供按天聚合：%+v", denied[1])
+	}
+	if raw := readDeniedFile(t, dir); strings.Contains(string(raw), `"203.0.113.42"`) {
+		t.Fatalf("完整主机地址绝不能落盘：%s", raw)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "denied-"+now.Format(dayLayout)+".jsonl")); err != nil {
+		t.Fatalf("失败留痕应与用量分文件存放：%v", err)
+	}
+}
+
+// TestSummarizeDeniedGroupsSourcesDeterministically：鉴权失败要能被页面直接回答
+// 「有多少次、来自哪些网段」；同次数按网段名升序，避免每次刷新顺序跳动；
+// 来源未知的尝试单独成组，不并进任何网段。
+func TestSummarizeDeniedGroupsSourcesDeterministically(t *testing.T) {
+	if got := SummarizeDenied(nil); got.Calls != 0 || len(got.Sources) != 0 {
+		t.Fatalf("无留痕应给出零值：%+v", got)
+	}
+	items := []Denied{
+		{TS: 1, Src: "10.0.0.0/24"}, {TS: 2, Src: "203.0.113.0/24"}, {TS: 3, Src: "203.0.113.0/24"},
+		{TS: 4}, {TS: 5}, {TS: 6, Src: "192.168.1.0/24"}, {TS: 7, Src: "172.16.0.0/24"}, {TS: 8, Src: "10.10.0.0/24"},
+	}
+	got := SummarizeDenied(items)
+	if got.Calls != 8 {
+		t.Fatalf("失败次数=%d，期望 8", got.Calls)
+	}
+	if len(got.Sources) != maxDeniedSources {
+		t.Fatalf("来源分组应被限流到 %d 组，得到 %d：%+v", maxDeniedSources, len(got.Sources), got.Sources)
+	}
+	if got.Sources[0].Src != "203.0.113.0/24" || got.Sources[0].Calls != 2 {
+		t.Errorf("次数多的来源应排在最前：%+v", got.Sources[0])
+	}
+	if got.Sources[1].Src != "" || got.Sources[1].Calls != 2 {
+		t.Errorf("来源未知同样成组，但在同次数里排在已知网段之后：%+v", got.Sources[1])
+	}
+	for i := 1; i < len(got.Sources); i++ {
+		prev, cur := got.Sources[i-1], got.Sources[i]
+		if prev.Calls < cur.Calls {
+			t.Fatalf("未按次数降序：%+v", got.Sources)
+		}
+		if prev.Calls == cur.Calls && cur.Src != "" && prev.Src > cur.Src {
+			t.Fatalf("同次数需按网段名升序才稳定：%+v", got.Sources)
+		}
+	}
+}
+
+func readDeniedFile(t *testing.T, dir string) []byte {
+	t.Helper()
+	data, err := os.ReadFile(filepath.Join(dir, "denied-"+time.Now().Format(dayLayout)+".jsonl"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	return data
 }

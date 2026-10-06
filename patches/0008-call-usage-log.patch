@@ -4,6 +4,8 @@
 经物化复制进树），接线见 extensions/cmd/server/extension.go 的 wrapCore——未接线时
 RecordAuth 为 no-op，源码模式与桥接模式的请求路径行为不变。失败请求不落账：
 usage/credit 观测只在成功响应上存在，轮转中的中间失败没有可记录的扣费观测。
+来源观测（网段、User-Agent、协议入口）由 usagelog.OriginOf 在同一个调用点取出，
+它只读 console 覆写的 X-Console-Client 与请求头，规则收口在扩展包里，不在这里展开。
 
 diff --git a/internal/server/handler.go b/internal/server/handler.go
 --- a/internal/server/handler.go
@@ -23,7 +25,7 @@ diff --git a/internal/server/handler.go b/internal/server/handler.go
 +			// 调用统计（补丁 0008）：成功流式调用落一条用量观测，供管理台查询；
 +			// 扩展 usagelog 未接线时为 no-op，不影响转发路径。
 +			pt, ct, cr, hasCr := stats.usageSnapshot()
-+			usagelog.RecordAuth(acct, bareModel, "stream", pt, ct, cr, hasCr)
++			usagelog.RecordAuth(acct, bareModel, "stream", pt, ct, cr, hasCr, usagelog.OriginOf(r.Context(), r))
  			rc.Close()
  			return
  		}
@@ -33,7 +35,7 @@ diff --git a/internal/server/handler.go b/internal/server/handler.go
  		}
 +		// 调用统计（补丁 0008）：成功非流式调用落一条用量观测，供管理台查询。
 +		pt, ct, cr, hasCr := usagelog.FromResponse(resp)
-+		usagelog.RecordAuth(acct, bareModel, "sync", pt, ct, cr, hasCr)
++		usagelog.RecordAuth(acct, bareModel, "sync", pt, ct, cr, hasCr, usagelog.OriginOf(r.Context(), r))
  		return
  	}
  	// 末端错误规范化（疑点 5 修正）：不再把上游原始错误文本透传给用户——原始 body 可能

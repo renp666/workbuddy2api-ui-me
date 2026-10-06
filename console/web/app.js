@@ -823,6 +823,8 @@ $('task-detail-close').addEventListener('click',()=>cancelTaskDetail(true));
 document.addEventListener?.('visibilitychange',()=>{if(document.hidden)stopTaskReads();else if(page==='workbuddy'&&workbuddyView==='tasks')pollTaskRun();else if(page==='zcode'&&zcodeStatus&&zcodeStatus.control&&!zcodeStatus.logged_in)loadZcode();else if(page==='qoder'&&qoderStatus&&qoderStatus.control&&!qoderStatus.logged_in)loadQoder();});
 
 const usageModeNames={stream:'流式',sync:'同步'};
+// 协议入口名由 core 白名单把关（chat/messages/responses），页面只负责译名。
+const usageAPINames={chat:'Chat',messages:'Messages',responses:'Responses'};
 // 通道归类：旁路通道用量由 console 以固定占位 uid 上报 core 账本（zcode/qoder/opencode），
 // 其余 uid 都是核心账号池的真实账号。分布表按此口径聚合，明细按当前筛选过滤。
 const usageChannelNames={workbuddy:'WorkBuddy',zcode:'GLM（Zcode）',qoder:'Qoder',opencode:'OpenCode'};
@@ -844,6 +846,13 @@ function renderUsage(data){
  if(summary.usageMissing)notes.push(`${summary.usageMissing} 条记录未回报 token 用量，明细按「—」展示`);
  if(summary.creditMissing)notes.push(`${summary.creditMissing} 条记录未回报积分扣费，未计入合计`);
  $('usage-note').textContent=notes.join('；');$('usage-note').hidden=!notes.length;
+ // 鉴权失败留痕来自 core 的 denied 账本，按当前时间范围统计，与通道筛选无关；零失败不占位。
+ const denied=data.denied||{},deniedCalls=denied.calls||0,deniedEl=$('usage-denied');
+ deniedEl.hidden=!deniedCalls;
+ if(deniedCalls){
+  const sources=(denied.sources||[]).map(entry=>`${entry.src||'未知来源'} ×${entry.calls}`);
+  deniedEl.textContent=`鉴权失败 ${deniedCalls} 次（本范围）${sources.length?'，来源：'+sources.join('、'):''}`;
+ } else deniedEl.textContent='';
  const byChannel=new Map();
  for(const e of all){const c=usageChannelOf(e);if(!byChannel.has(c))byChannel.set(c,[]);byChannel.get(c).push(e);}
  const distBody=$('usage-by-channel-body');distBody.replaceChildren();
@@ -853,7 +862,7 @@ function renderUsage(data){
  const body=$('usage-body');body.replaceChildren();$('usage-empty').hidden=items.length>0;
  for(const e of items){
   const tr=document.createElement('tr');
-  tr.append(cell(formatTaskTime(e.ts*1000)),cell(usageChannelNames[usageChannelOf(e)]),cell(e.account||e.uid||'—'),cell(e.model||'—'),cell(usageModeNames[e.mode]||e.mode||'—'),cell(formatUsageTokens(e.prompt_tokens)),cell(formatUsageTokens(e.completion_tokens)),cell(formatUsageCredit(e.credit)));
+  tr.append(cell(formatTaskTime(e.ts*1000)),cell(usageChannelNames[usageChannelOf(e)]),cell(e.account||e.uid||'—'),cell(e.model||'—'),cell(usageAPINames[e.api]||'—'),cell(usageModeNames[e.mode]||e.mode||'—'),cell(formatUsageTokens(e.prompt_tokens)),cell(formatUsageTokens(e.completion_tokens)),cell(formatUsageCredit(e.credit)),cell(e.src||'—'),cell(e.client||'—'));
   body.append(tr);
  }
 }

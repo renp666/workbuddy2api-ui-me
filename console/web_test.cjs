@@ -1467,6 +1467,51 @@ test('usage page aggregates by channel, filters the detail list and keeps missin
   assert.equal(get('usage-by-channel-body').children.length,4,'distribution must stay full while detail is filtered');
 });
 
+test('调用明细带出协议入口、来源网段与客户端标识，缺失一律破折号',async()=>{
+  const html=readFileSync(__dirname+'/web/index.html','utf8');
+  const before=html.split('<tbody id="usage-body">')[0];
+  const head=before.slice(before.lastIndexOf('<thead>'));
+  assert.ok(head.includes('<th>入口</th>'),'明细表头没有协议入口列：'+head);
+  assert.ok(head.includes('<th>来源</th>')&&head.includes('<th>客户端</th>'),'明细表头没有来源列：'+head);
+  assert.match(html,/调用明细[\s\S]{0,200}网段/,'明细区没交代来源只记到网段（隐私口径要写在页面上）');
+  const items=[
+    {ts:1000,uid:'u1',account:'alice',model:'cn:m',mode:'stream',prompt_tokens:1,completion_tokens:1,credit:1,src:'203.0.113.0/24',client:'claude-cli/1.2.3',api:'messages'},
+    {ts:1001,uid:'zcode',account:'GLM 通道',model:'glm-5',mode:'sync',prompt_tokens:1,completion_tokens:1,credit:1},
+  ];
+  const {ctx,get}=taskFixture(async()=>({ok:true,status:200,json:async()=>({range:'today',items,summary:{}})}));
+  await vm.runInContext('loadUsage()',ctx);
+  const detail=get('usage-body').children;
+  assert.equal(detail.length,2);
+  // 明细按时间倒序：ts1001（无来源观测）在前，ts1000 在后。
+  const blank=detail[0].children.map(td=>td.textContent);
+  const known=detail[1].children.map(td=>td.textContent);
+  assert.deepEqual([blank[4],blank[9],blank[10]],['—','—','—'],'缺失的来源观测不得被补成任何值：'+blank);
+  assert.equal(known[4],'Messages','协议入口列没读出 messages');
+  assert.equal(known[9],'203.0.113.0/24','来源网段列错了');
+  assert.equal(known[10],'claude-cli/1.2.3','客户端标识列错了');
+});
+
+test('鉴权失败留痕在调用统计页成一条来源分布，零失败不打扰、缺失不编造',async()=>{
+  const html=readFileSync(__dirname+'/web/index.html','utf8');
+  const usage=html.match(/data-page="usage"[\s\S]*?<\/section>/)[0];
+  assert.ok(/id="usage-denied"[^>]*hidden/.test(usage),'调用统计页缺少默认隐藏的鉴权失败行');
+  const denied={calls:3,sources:[{src:'203.0.113.0/24',calls:2},{src:'',calls:1}]};
+  const {ctx,get}=taskFixture(async()=>({ok:true,status:200,json:async()=>({range:'today',items:[],summary:{},denied})}));
+  await vm.runInContext('loadUsage()',ctx);
+  assert.equal(get('usage-denied').hidden,false,'有鉴权失败时必须显示');
+  const text=get('usage-denied').textContent;
+  assert.match(text,/鉴权失败 3 次/,'没有给出失败次数：'+text);
+  assert.match(text,/203\.0\.113\.0\/24/,'没有给出来源网段：'+text);
+  assert.match(text,/未知来源/,'空网段必须写成未知来源，不能留空也不能补值：'+text);
+  // 没有失败记录（或后端未上报该字段）时保持隐藏，不显示「鉴权失败 0 次」。
+  const quiet=taskFixture(async()=>({ok:true,status:200,json:async()=>({range:'today',items:[],summary:{},denied:{calls:0,sources:[]}})}));
+  await vm.runInContext('loadUsage()',quiet.ctx);
+  assert.equal(quiet.get('usage-denied').hidden,true,'零失败不得占位');
+  const absent=taskFixture(async()=>({ok:true,status:200,json:async()=>({range:'today',items:[],summary:{}})}));
+  await vm.runInContext('loadUsage()',absent.ctx);
+  assert.equal(absent.get('usage-denied').hidden,true,'后端未带该字段时不得报错或显示零');
+});
+
 test('credit rule parsing matches the server and never invents a zero',()=>{
   const {ctx}=logoutFixture(()=>new Promise(()=>{}));
   assert.equal(vm.runInContext("parseCreditRule('x0.79 credits')",ctx),0.79);

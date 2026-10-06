@@ -1,0 +1,15 @@
+diff --git a/internal/server/handler.go b/internal/server/handler.go
+index 0487383..50fdf37 100644
+--- a/internal/server/handler.go
++++ b/internal/server/handler.go
+@@ -131,6 +131,10 @@ func (h *Handler) withAuth(next http.HandlerFunc) http.HandlerFunc {
+ 		if h.cfg.APIKey != "" {
+ 			authz := r.Header.Get("Authorization")
+ 			if !strings.HasPrefix(authz, "Bearer ") || strings.TrimPrefix(authz, "Bearer ") != h.cfg.APIKey {
++				// 调用统计（补丁 0014）：鉴权失败留一条来源痕迹，供管理台回答
++				// 「谁在猜我们的 key」。只进 denied 账本，不计入调用次数；
++				// usagelog 未接线时是 no-op，401 响应语义与状态码完全不变。
++				usagelog.RecordDeniedAuth(usagelog.OriginOf(r.Context(), r))
+ 				writeOpenAIError(w, http.StatusUnauthorized, "invalid_api_key", "missing or invalid API key")
+ 				return
+ 			}

@@ -6,6 +6,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"workbuddy2api/internal/usagelog"
 )
@@ -70,6 +71,37 @@ func TestUsageReportValidatesAndRecords(t *testing.T) {
 	}
 	if got.Summary.Calls != 2 || got.Summary.Prompt != 120 || got.Summary.Completion != 80 || got.Summary.Credit != credit || got.Summary.CreditMissing != 1 || got.Summary.UsageMissing != 1 {
 		t.Fatalf("汇总缺失语义不符：%+v", got.Summary)
+	}
+}
+
+// TestUsageReportRemasksSourceAndDropsUnknownAPI：旁路上报的 src/client/api 是外部输入，
+// core 落账前必须自己再收敛一次——地址只留网段（主机位不写盘），协议名只认名单内的值。
+func TestUsageReportRemasksSourceAndDropsUnknownAPI(t *testing.T) {
+	dir := t.TempDir()
+	l, err := usagelog.Open(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	h := New(context.Background(), Config{Key: testKey, Usage: l})
+	body := `{"entries":[
+		{"uid":"zcode","model":"glm-4.6","mode":"sync","prompt_tokens":1,"completion_tokens":1,"src":"203.0.113.42","client":"claude-cli/1.2","api":"messages"},
+		{"uid":"zcode","model":"glm-4.6","mode":"sync","prompt_tokens":1,"completion_tokens":1,"src":"2001:db8:1:2:3:4:5:6","client":"x\r\nY: forged","api":"whatever"}
+	]}`
+	if w := bridgeRequest(h, "POST", "/internal/v1/usage/reports", body, ""); w.Code != 202 {
+		t.Fatalf("上报被拒：%d %s", w.Code, w.Body)
+	}
+	items, err := l.Query(time.Now().Add(-time.Minute).Unix(), time.Now().Add(time.Minute).Unix())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(items) != 2 {
+		t.Fatalf("落账条数不符：%+v", items)
+	}
+	if items[0].Src != "203.0.113.0/24" || items[0].Client != "claude-cli/1.2" || items[0].API != "messages" {
+		t.Errorf("已知观测应按 core 口径收敛：%+v", items[0])
+	}
+	if items[1].Src != "2001:db8:1:2::/64" || items[1].Client != "x Y: forged" || items[1].API != "" {
+		t.Errorf("表外协议名必须留空，控制字符不得进字段：%+v", items[1])
 	}
 }
 
