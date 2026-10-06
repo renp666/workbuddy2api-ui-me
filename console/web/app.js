@@ -554,14 +554,16 @@ function renderTrend(items){
  noteEl.hidden=true;
  const NS='http://www.w3.org/2000/svg';
  const mk=(tag,attrs)=>{const el=document.createElementNS(NS,tag);for(const k in attrs)el.setAttribute(k,attrs[k]);return el;};
- const W=620,H=210,padL=36,padR=14,padT=14,padB=30,plotW=W-padL-padR,plotH=H-padT-padB;
  let yMax=1;for(const m of series.values())for(const v of m.values())if(v>yMax)yMax=v;
+ const maxText=String(yMax);
+ // 同一条留位规则：次数标签没有千分位，五位数一样会顶出 viewBox 左边。
+ const W=620,H=210,padL=axisPadL(maxText,36),padR=14,padT=14,padB=30,plotW=W-padL-padR,plotH=H-padT-padB;
  const x=i=>padL+(days.length===1?plotW/2:i*plotW/(days.length-1));
  const y=v=>padT+plotH-(v/yMax)*plotH;
  const svg=mk('svg',{viewBox:`0 0 ${W} ${H}`,class:'trend-svg',role:'img','aria-label':'每日调用次数折线图'});
  svg.append(mk('line',{x1:padL,y1:y(0),x2:padL+plotW,y2:y(0),class:'trend-axis'}));
  svg.append(mk('line',{x1:padL,y1:y(yMax),x2:padL+plotW,y2:y(yMax),class:'trend-grid'}));
- const maxLabel=mk('text',{x:padL-6,y:y(yMax)+4,class:'trend-tick','text-anchor':'end'});maxLabel.textContent=String(yMax);svg.append(maxLabel);
+ const maxLabel=mk('text',{x:padL-6,y:y(yMax)+4,class:'trend-tick','text-anchor':'end'});maxLabel.textContent=maxText;svg.append(maxLabel);
  const zeroLabel=mk('text',{x:padL-6,y:y(0)+4,class:'trend-tick','text-anchor':'end'});zeroLabel.textContent='0';svg.append(zeroLabel);
  for(const i of axisTicks(days.length)){const t=mk('text',{x:x(i),y:padT+plotH+16,class:'trend-tick','text-anchor':'middle'});t.textContent=days[i].slice(5);svg.append(t);}
  for(const [c,m] of series){
@@ -901,6 +903,12 @@ function chartTitle(parent,text){const t=chartEl('title',{});t.textContent=text;
 // 10px 的轴标签会被压到 5px 以下，图形还在但字读不出来。图例留在容器外面，
 // 滑动图形时不会跟着划出可视区。
 function chartScroll(parent,svg){const box=document.createElement('div');box.className='chart-scroll';box.append(svg);parent.append(box);}
+// axisLabelWidth 估算一行 y 轴标签的像素宽度。SVG 默认裁掉 viewBox 之外的内容，
+// 而 y 轴标签是右对齐在 padL-6 上的：无头 Edge 实测「164,749,553」在 10px 字号下
+// 宽 60.46px（数字 5.68、逗号 4.67），超过写死的 padL 就会把开头几位无声裁掉。
+// 这里各留一点余量取 6.2 / 5.2，供 padL 反推留位。
+function axisLabelWidth(label){let w=0;for(const c of String(label))w+=c===','?5.2:6.2;return w;}
+function axisPadL(label,base){return Math.max(base,Math.ceil(axisLabelWidth(label))+12);}
 // axisTicks 给出 x 轴该打标签的下标：均匀取最多 max 个，末位必须落在最后一个数据点上。
 // 最后一个点离上一个候选标签不足一档时顶替掉它，而不是并排追加——并排就是压字。
 function axisTicks(n,max){
@@ -1037,14 +1045,16 @@ function renderUsageTrend(days,share){
  });
  if(stacks.every(s=>!s.tot)){note.textContent='统计窗口内有调用，但上游都没有回报 Token，趋势柱与占比无从画起（次数与积分见下方明细表）。';note.hidden=false;return;}
  if(!canDrawCharts()){note.textContent='趋势图需要浏览器绘制 SVG，当前环境不支持。';note.hidden=false;return;}
- const W=620,H=240,padL=48,padR=14,padT=14,padB=36,plotW=W-padL-padR,plotH=H-padT-padB;
  let yMax=1;for(const s of stacks)if(s.tot>yMax)yMax=s.tot;
+ const maxText=formatUsageInt(yMax);
+ // 绘图区左边按标签自身宽度留位：亿级读数在写死的 padL 下会被 viewBox 裁掉开头。
+ const W=620,H=240,padL=axisPadL(maxText,48),padR=14,padT=14,padB=36,plotW=W-padL-padR,plotH=H-padT-padB;
  const band=plotW/stacks.length,barW=Math.min(20,band*.72);
  const x=i=>padL+band*i+(band-barW)/2;
  const y=v=>padT+plotH-(v/yMax)*plotH;
  const svg=chartEl('svg',{viewBox:`0 0 ${W} ${H}`,class:'trend-svg',role:'img','aria-label':'每日 Token 用量堆叠柱状图（按模型）'});
  svg.append(chartEl('line',{x1:padL,y1:y(0),x2:padL+plotW,y2:y(0),class:'trend-axis'}));
- const maxTick=chartEl('text',{x:padL-6,y:y(yMax)+4,class:'trend-tick','text-anchor':'end'});maxTick.textContent=formatUsageInt(yMax);svg.append(maxTick);
+ const maxTick=chartEl('text',{x:padL-6,y:y(yMax)+4,class:'trend-tick','text-anchor':'end'});maxTick.textContent=maxText;svg.append(maxTick);
  const zeroTick=chartEl('text',{x:padL-6,y:y(0)+4,class:'trend-tick','text-anchor':'end'});zeroTick.textContent='0';svg.append(zeroTick);
  for(const i of axisTicks(stacks.length)){const s=stacks[i];const t=chartEl('text',{x:padL+band*i+band/2,y:padT+plotH+16,class:'trend-tick','text-anchor':'middle'});t.textContent=s.label.slice(5,10);chartTitle(t,s.label);svg.append(t);}
  stacks.forEach((s,i)=>{

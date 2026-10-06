@@ -1768,6 +1768,39 @@ test('窄视口下热力图与趋势图按原始宽度出图，由容器横向�
   assert.ok(fx.get('usage-daily-trend').children.some(c=>c.className==='trend-legend'),'趋势图图例被卷进了滚动容器');
 });
 
+test('y 轴最大值标签按自身宽度留位，亿级读数不会被 viewBox 裁掉',async()=>{
+  // 无头 Edge 在 1440×900 下 getBBox 实测："164,749,553" 在 10px 字号下宽 60.46px，
+  // 而写死的 padL=48 只把标签右端留到 x=42，左边 18.46px 落在 viewBox 外被裁掉。
+  // 字体度量不在这里复算（那归活体截图），这里钉两条：估宽要盖住实测值，
+  // 且渲染确实按估宽留了位；小数字不许跟着把绘图区挤窄。
+  const mk=(date,tokens)=>({date,calls:1,prompt_tokens:tokens,completion_tokens:0,prompt_missing:0,completion_missing:0,denied:0,
+    models:[{model:'mx',prompt_tokens:tokens,completion_tokens:0,calls:1}]});
+  const topLabel=fx=>fx.get('usage-daily-trend').children[0].children[0].children
+    .find(c=>c.tag==='text'&&c.attrs['text-anchor']==='end'&&c.textContent!=='0');
+  const big=dailyFixture({days:[mk(dayAgoISO(1),1200),mk(dayAgoISO(0),164749553)]});
+  await big.load();
+  const tick=topLabel(big);
+  assert.equal(tick.textContent,'164,749,553');
+  const est=vm.runInContext("axisLabelWidth('164,749,553')",big.ctx);
+  assert.ok(est>60.46&&est<90,'估宽要盖住实测的 60.46px 又不出格：'+est);
+  assert.ok(Number(tick.attrs.x)-est>=0,'y 轴标签左边超出 viewBox：x='+tick.attrs.x+' 估宽='+est);
+  const small=dailyFixture({days:[mk(dayAgoISO(1),300),mk(dayAgoISO(0),900)]});
+  await small.load();
+  assert.equal(Number(topLabel(small).attrs.x),42,'四位数以内不该把绘图区跟着挤窄');
+  // 概览页折线用的是无千分位的 String(yMax)，同一处留位逻辑要一起守住。
+  // 峰值那天要有 5 位数次调用，另一天只要 3 次，凑出 days.length>=2 才会画线。
+  const ov=dailyFixture({days:[mk(dayAgoISO(1),1),mk(dayAgoISO(0),1)]});
+  await ov.load();
+  // 在上下文里造数据并调用：顶层 function 是否挂在 sandbox 对象上不作依赖。
+  vm.runInContext("(function(){const a=[];for(let i=0;i<12345;i++)a.push({ts:1700000000,account:'a',model:'mx'});"
+    +"for(let i=0;i<3;i++)a.push({ts:1800000000,account:'a',model:'mx'});renderTrend(a);})()",ov.ctx);
+  const ovTick=ov.get('overview-trend').children.find(c=>c.tag==='svg').children
+    .find(c=>c.tag==='text'&&c.attrs['text-anchor']==='end'&&c.textContent!=='0');
+  assert.equal(ovTick.textContent,'12345');
+  const ovEst=vm.runInContext("axisLabelWidth('12345')",ov.ctx);
+  assert.ok(Number(ovTick.attrs.x)-ovEst>=0,'概览页 y 轴标签被裁：x='+ovTick.attrs.x+' 估宽='+ovEst);
+});
+
 test('没有 SVG 的渲染环境里三张图各自降级成文字，指标条与排名照常可读',async()=>{
   const lifetime={calls:2,days:1,first_date:dayAgoISO(0),tokens:700,tokens_missing:false,peak_date:dayAgoISO(0),peak_tokens:700,peak_tokens_missing:false,current_streak:1,longest_streak:1};
   const days=[{date:dayAgoISO(0),calls:2,prompt_tokens:700,completion_tokens:0,prompt_missing:0,completion_missing:0,denied:0,models:[{model:'m1',prompt_tokens:700,completion_tokens:0,calls:2}]}];
