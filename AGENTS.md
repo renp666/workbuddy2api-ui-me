@@ -228,6 +228,38 @@ bash scripts/release.sh
 
 `WB2A_BUILD_*` 也适用于 `scripts/acceptance.sh`，仅传入构建步骤。不要把此地址设置为宿主 HTTP_PROXY/HTTPS_PROXY，或硬编码为项目默认值；Docker 后台拉基础镜像的代理由 Docker 自身管理。
 
+### 本机发版（不发布镜像时）
+
+本机入口由 `docker-compose.override.yml` 钉住，该文件是**本机专用**、已被 `.gitignore` 排除，生产入口仍然是 `docker compose up -d` 只读 `docker-compose.yml`。override 做两件事：把 core/console 钉到 `workbuddy2api-core:local` 与 `workbuddy2api-console:local` 并加 `pull_policy: never`（`:local` 缺失时 `up -d` 直接失败，不会静默回退到 `docker-compose.yml` 里钉的已发布镜像对），以及用 `include:` 引入 `deploy/compose.{zcode,qoder,opencode}.yml`，让一条命令同时对齐五只服务。
+
+`include` 必须写成 `path:` + `project_directory: data` 的长形式。默认形式以被引入文件所在目录解析相对路径，overlay 里的 `./runtime/zcode` 会变成 `<root>/deploy/runtime/zcode`，实测把凭据和运行时数据挂空并静默新建目录。
+
+override 本体不入库，内容存一份 `deploy/compose.local-entry.example.yml`；本机文件丢失时按字面复制回去：`cp deploy/compose.local-entry.example.yml docker-compose.override.yml`。
+
+每次更新内容后发版：
+
+```bash
+bash scripts/local-release.sh            # 脏工作区默认拒绝
+bash scripts/local-release.sh --allow-dirty
+```
+
+构建上下文是 `git archive HEAD`，未提交的改动不进镜像，所以先提交再发版。标签滚动为 `:local`（在用）+ `:local-prev`（上一个可回退），其余 dangling 由脚本末尾 `docker image prune -f` 清掉。回退：
+
+```bash
+docker tag workbuddy2api-console:local-prev workbuddy2api-console:local
+docker tag workbuddy2api-core:local-prev workbuddy2api-core:local
+docker compose up -d
+```
+
+开机自启不需要宿主脚本：Docker Desktop 注册在 `HKCU\Software\Microsoft\Windows\CurrentVersion\Run`，五只服务都是 `restart: unless-stopped`，实测 `docker desktop stop` + `start` 后五只全部自动恢复，daemon 自己按依赖顺序先起 console 再起旁路。
+
+两条必须知道的代价与约束：
+
+- 旁路以 `network_mode: service:console` 绑定 console 的**容器 ID**。单独重建 console 会让三只旁路永久 `Exited (255)`，`State.Error` 为 `joining network namespace of container: No such container`，此时 `restart: unless-stopped` 也救不回来。带 override 的 `docker compose up -d` 会在同一次调用里连旁路一起重建，因此不要改用更短的 `-f` 链。
+- zcode 的控制进程常驻但数据面 8080 默认不监听，开机后要在 Zcode 页签点一次「启用」`glm-` 流量才通；qoder 与 opencode 起来即可用（实测 qoder `/health` 返回 `{"ok":true}`）。
+
+清理尺度上别动的两样：`wb2a-gomod`、`wb2a-gomodcache`、`wb2a-go-cache`、`wb2a-gobuildcache` 四个卷是「不联网也能重建」的前提；BuildKit 缓存约 16 GB 中仅约 0.9 GB 可按年龄回收，`--filter until=168h` 与 `--reserved-space` 实测都清不动其余活跃部分，全量 `builder prune -a` 会连离线重建能力一起删掉，除非确认网络可用否则不做。发版脚本内也不要全局导出 `MSYS_NO_PATHCONV=1`，它会反过来破坏 `git archive -o` 的路径写入，上下文一律写仓库内相对路径。
+
 ## 交付
 
 README 用中文介绍功能和使用，AGENTS 维护技术事实。版本以 Compose 和 `upstream.lock` 为准，避免在文档重复写死。不得在文档工作中顺便删 `.github/`、用户数据或其他历史文件。

@@ -1,0 +1,35 @@
+# HOST-ONLY entry pin. Not shipped: production stays a bare `docker compose up -d` on
+# docker-compose.yml alone. This file exists so that on this machine a bare up -d always
+# recreates the SAME five services from the SAME newest local build, instead of silently
+# falling back to the published image pair pinned in docker-compose.yml.
+#
+# Why each piece is here:
+#   - pull_policy: never + :local tags: a bare up -d must never be able to resurrect an older
+#     published tag. If :local is missing the command must fail loudly, not pull.
+#   - include: the three channel overlays are merged wholesale (their console env blocks too),
+#     so deploy/compose.*.yml stays the single source of truth for sidecar definitions.
+#   - all five services keep restart: unless-stopped, so Docker Desktop autostarts them; the
+#     sidecars join console's network namespace by container id, which is why a console
+#     recreation has to carry them in the same command (a bare up -d with this file does that).
+#
+# Release: see AGENTS.md "构建与发布" -> 本机发版.
+
+# project_directory: data is required, not decorative. With the default (the included file's own
+# directory) the overlays' ./runtime/zcode style mounts resolve to <root>/deploy/runtime/zcode,
+# which silently creates empty dirs and hides the real credentials and runtime data.
+include:
+  - path: deploy/compose.zcode.yml
+    project_directory: data
+  - path: deploy/compose.qoder.yml
+    project_directory: data
+  - path: deploy/compose.opencode.yml
+    project_directory: data
+
+services:
+  core:
+    image: workbuddy2api-core:local
+    pull_policy: never
+
+  console:
+    image: workbuddy2api-console:local
+    pull_policy: never

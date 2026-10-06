@@ -51,3 +51,6 @@ SPEC.md
 /.mimosa/
 /.impeccable/
 /rp_probe.txt
+
+# Host-only entry pin (this machine only; production stays a bare up -d on docker-compose.yml)
+/docker-compose.override.yml
