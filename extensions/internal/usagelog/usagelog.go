@@ -3,6 +3,8 @@
 // usage/ 子目录；credit 缺失时保持 nil——缺失≠0，不把未观测写成免费。
 // 鉴权失败留痕落在同目录的 denied- 前缀文件里，与用量彻底分开：猜 key 的流量
 // 不得进入「调用次数」。地址只存网段（IPv4 /24、IPv6 /64），主机位不写盘。
+// 每折一天另存一份 daily- 汇总并永久保留，两类明细只留最近 detailKeepDays 个
+// 自然日（Open 时清扫一次）：长跨度的累计与连续天数读汇总，不靠明细活着。
 package usagelog
 
 import (
@@ -72,6 +74,8 @@ type Log struct {
 const dayLayout = "20060102"
 
 // Open 建立以 dir 为根的用量账本；目录权限 0700，dir 通常是数据目录下的 usage/。
+// 打开时先裁一次明细：逐次明细与鉴权失败留痕只留 detailKeepDays 个自然日，日度汇总
+// 永久保留，因此磁盘不会随使用年限线性涨，而「用了多少、有没有人猜 key」永远答得出。
 func Open(dir string) (*Log, error) {
 	if dir == "" {
 		return nil, errors.New("usagelog 目录为空")
@@ -79,7 +83,11 @@ func Open(dir string) (*Log, error) {
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return nil, err
 	}
-	return &Log{dir: dir}, nil
+	l := &Log{dir: dir}
+	if _, err := l.PruneDetails(detailKeepDays, time.Now()); err != nil {
+		log.Print("WARN: [usagelog] prune: ", err)
+	}
+	return l, nil
 }
 
 // global 是 handler 成功路径引用的账本；Open 接线前为 nil（no-op）。
@@ -296,6 +304,380 @@ func Summarize(entries []Entry) Summary {
 		}
 	}
 	return s
+}
+
+// DailyModel 单个模型在一个自然日内的用量观测，缺失口径与 Summary 一致。
+type DailyModel struct {
+	Model             string  `json:"model"`
+	Calls             int     `json:"calls"`
+	Prompt            int64   `json:"prompt_tokens"`
+	Completion        int64   `json:"completion_tokens"`
+	PromptMissing     int     `json:"prompt_missing"`
+	CompletionMissing int     `json:"completion_missing"`
+	Credit            float64 `json:"credit"`
+	CreditMissing     int     `json:"credit_missing"`
+}
+
+// Daily 一个自然日的日度汇总，落 daily-YYYYMMDD.json 永久保留：明细按 detailKeepDays
+// 裁剪后，「这一天花了多少 token、有没有人猜 key」仍然要能回答。SourceBytes/DeniedBytes
+// 记录生成时明细文件的字节数——明细文件只追加，因此数值没变就是不必重算。
+type Daily struct {
+	Date              string       `json:"date"` // 本地自然日，2006-01-02
+	Calls             int          `json:"calls"`
+	Prompt            int64        `json:"prompt_tokens"`
+	Completion        int64        `json:"completion_tokens"`
+	Credit            float64      `json:"credit"`
+	PromptMissing     int          `json:"prompt_missing"`
+	CompletionMissing int          `json:"completion_missing"`
+	CreditMissing     int          `json:"credit_missing"`
+	Denied            int          `json:"denied"`
+	Models            []DailyModel `json:"models"`
+	SourceBytes       int64        `json:"source_bytes"`
+	DeniedBytes       int64        `json:"denied_bytes"`
+}
+
+// LifetimeStats 全历史口径，与页面所选窗口无关。PeakTokensMissing 表示峰值那天
+// 整组都没回报 usage，TokensMissing 表示整本账都没有任何 token 观测；两处读数
+// 都应显示「未观测」，而不是把 0 当消耗。
+type LifetimeStats struct {
+	Calls             int64   `json:"calls"`
+	Prompt            int64   `json:"prompt_tokens"`
+	Completion        int64   `json:"completion_tokens"`
+	Tokens            int64   `json:"tokens"`
+	TokensMissing     bool    `json:"tokens_missing"`
+	Credit            float64 `json:"credit"`
+	Days              int     `json:"days"`
+	FirstDate         string  `json:"first_date,omitempty"`
+	LastDate          string  `json:"last_date,omitempty"`
+	PeakDate          string  `json:"peak_date,omitempty"`
+	PeakTokens        int64   `json:"peak_tokens"`
+	PeakTokensMissing bool    `json:"peak_tokens_missing"`
+	CurrentStreak     int     `json:"current_streak"`
+	LongestStreak     int     `json:"longest_streak"`
+}
+
+const (
+	dailyPrefix  = "daily-"
+	dateLayout   = "2006-01-02"
+	detailSuffix = ".jsonl"
+	// detailKeepDays 是逐次明细与鉴权失败留痕的保留天数；日度汇总不受此限。
+	detailKeepDays = 90
+)
+
+// dayBounds 返回某个自然日本地零点到次日零点。
+func dayBounds(day time.Time) (int64, int64) {
+	start := time.Date(day.Year(), day.Month(), day.Day(), 0, 0, 0, 0, day.Location())
+	return start.Unix(), start.AddDate(0, 0, 1).Unix()
+}
+
+func dayKey(t time.Time) string { return t.Format(dayLayout) }
+
+func startOfDay(t time.Time) time.Time {
+	return time.Date(t.Year(), t.Month(), t.Day(), 0, 0, 0, 0, t.Location())
+}
+
+// fileSize 取文件字节数；文件不存在按 0 计（当天可能只有留痕没有用量）。
+func fileSize(path string) (int64, error) {
+	st, err := os.Stat(path)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return 0, nil
+		}
+		return 0, err
+	}
+	return st.Size(), nil
+}
+
+// AllDaily 返回目录内全部自然日的日度汇总，按日期升序。明细文件存在而汇总缺失
+// 或落后的日子会先重建；只有汇总没有明细的日子（已被裁剪）直接读汇总文件。
+func (l *Log) AllDaily() ([]Daily, error) {
+	l.mu.Lock()
+	entries, err := os.ReadDir(l.dir)
+	l.mu.Unlock()
+	if err != nil {
+		return nil, err
+	}
+	seen := map[string]bool{}
+	for _, e := range entries {
+		name := e.Name()
+		var key string
+		switch {
+		case strings.HasPrefix(name, "usage-"):
+			key = strings.TrimSuffix(strings.TrimPrefix(name, "usage-"), detailSuffix)
+		case strings.HasPrefix(name, "denied-"):
+			key = strings.TrimSuffix(strings.TrimPrefix(name, "denied-"), detailSuffix)
+		case strings.HasPrefix(name, dailyPrefix):
+			key = strings.TrimSuffix(strings.TrimPrefix(name, dailyPrefix), ".json")
+		default:
+			continue
+		}
+		if _, err := time.ParseInLocation(dayLayout, key, time.Local); err != nil {
+			continue
+		}
+		seen[key] = true
+	}
+	days := make([]Daily, 0, len(seen))
+	for key := range seen {
+		t, err := time.ParseInLocation(dayLayout, key, time.Local)
+		if err != nil {
+			continue
+		}
+		d, ok, err := l.rollupDay(t)
+		if err != nil {
+			return nil, err
+		}
+		if ok {
+			days = append(days, d)
+		}
+	}
+	sort.Slice(days, func(i, j int) bool { return days[i].Date < days[j].Date })
+	return days, nil
+}
+
+// rollupDay 保证该自然日的汇总落盘并返回它；既无明细也无汇总时 ok=false。
+// 汇总只在明细字节数变化时重算，页面每次刷新因此不会把整本明细重读一遍。
+func (l *Log) rollupDay(day time.Time) (Daily, bool, error) {
+	key := dayKey(day)
+	dailyPath := filepath.Join(l.dir, dailyPrefix+key+".json")
+	usageSize, err := fileSize(filepath.Join(l.dir, "usage-"+key+detailSuffix))
+	if err != nil {
+		return Daily{}, false, err
+	}
+	deniedSize, err := fileSize(filepath.Join(l.dir, "denied-"+key+detailSuffix))
+	if err != nil {
+		return Daily{}, false, err
+	}
+	stored, err := os.ReadFile(dailyPath)
+	if err != nil && !errors.Is(err, os.ErrNotExist) {
+		return Daily{}, false, err
+	}
+	var cached Daily
+	hasCache := err == nil && json.Unmarshal(stored, &cached) == nil
+	// 明细在世时按字节数比新鲜度（追加会改变它）；明细已被保留窗口裁掉后，
+	// 汇总就是该天唯一凭据，不存在还能变大的东西，因此直接采用。
+	detailsGone := usageSize == 0 && deniedSize == 0
+	if hasCache && (detailsGone || (cached.SourceBytes == usageSize && cached.DeniedBytes == deniedSize)) {
+		return cached, true, nil
+	}
+	if detailsGone {
+		// 没有明细可依据，也不能凭空得出一个日子「零调用」。
+		return Daily{}, false, nil
+	}
+	start, end := dayBounds(day)
+	items, err := l.Query(start, end)
+	if err != nil {
+		return Daily{}, false, err
+	}
+	denied, err := l.QueryDenied(start, end)
+	if err != nil {
+		return Daily{}, false, err
+	}
+	d := buildDaily(day, items, len(denied), usageSize, deniedSize)
+	if err := writeDaily(dailyPath, d); err != nil {
+		return Daily{}, false, err
+	}
+	return d, true, nil
+}
+
+// buildDaily 把一天的观测折成日度汇总。模型排序固定为「调用次数降序、同次数按模型名
+// 升序」，让同一份数据每次画出同一张图。
+func buildDaily(day time.Time, items []Entry, denied int, usageSize, deniedSize int64) Daily {
+	d := Daily{Date: startOfDay(day).Format(dateLayout), Calls: len(items), Denied: denied,
+		SourceBytes: usageSize, DeniedBytes: deniedSize, Models: []DailyModel{}}
+	byModel := map[string]*DailyModel{}
+	for _, e := range items {
+		if e.Prompt >= 0 {
+			d.Prompt += int64(e.Prompt)
+		} else {
+			d.PromptMissing++
+		}
+		if e.Completion >= 0 {
+			d.Completion += int64(e.Completion)
+		} else {
+			d.CompletionMissing++
+		}
+		if e.Credit != nil {
+			d.Credit += *e.Credit
+		} else {
+			d.CreditMissing++
+		}
+		m, ok := byModel[e.Model]
+		if !ok {
+			m = &DailyModel{Model: e.Model}
+			byModel[e.Model] = m
+		}
+		m.Calls++
+		if e.Prompt >= 0 {
+			m.Prompt += int64(e.Prompt)
+		} else {
+			m.PromptMissing++
+		}
+		if e.Completion >= 0 {
+			m.Completion += int64(e.Completion)
+		} else {
+			m.CompletionMissing++
+		}
+		if e.Credit != nil {
+			m.Credit += *e.Credit
+		} else {
+			m.CreditMissing++
+		}
+	}
+	for _, m := range byModel {
+		d.Models = append(d.Models, *m)
+	}
+	sort.Slice(d.Models, func(i, j int) bool {
+		if d.Models[i].Calls != d.Models[j].Calls {
+			return d.Models[i].Calls > d.Models[j].Calls
+		}
+		return d.Models[i].Model < d.Models[j].Model
+	})
+	return d
+}
+
+// writeDaily 先写临时文件再改名，避免并发读到一个被截断的汇总。
+func writeDaily(path string, d Daily) error {
+	b, err := json.Marshal(d)
+	if err != nil {
+		return err
+	}
+	dir := filepath.Dir(path)
+	tmp, err := os.CreateTemp(dir, dailyPrefix+"*.tmp")
+	if err != nil {
+		return err
+	}
+	name := tmp.Name()
+	if _, err := tmp.Write(append(b, '\n')); err != nil {
+		tmp.Close()
+		os.Remove(name)
+		return err
+	}
+	if err := tmp.Chmod(0o600); err != nil {
+		tmp.Close()
+		os.Remove(name)
+		return err
+	}
+	if err := tmp.Close(); err != nil {
+		os.Remove(name)
+		return err
+	}
+	if err := os.Rename(name, path); err != nil {
+		os.Remove(name)
+		return err
+	}
+	return nil
+}
+
+// SummarizeLifetime 由日度序列算出全历史指标。活跃判定只看调用次数：一次调用都没有
+// 的日子不能算「在用」，只有鉴权失败留痕的日子因此不进连续段。
+func SummarizeLifetime(days []Daily, now time.Time) LifetimeStats {
+	s := LifetimeStats{}
+	active := map[string]bool{}
+	var promptMissing, completionMissing int64
+	for _, d := range days {
+		s.Calls += int64(d.Calls)
+		s.Prompt += d.Prompt
+		s.Completion += d.Completion
+		s.Credit += d.Credit
+		if d.Calls == 0 {
+			continue
+		}
+		promptMissing += int64(d.PromptMissing)
+		completionMissing += int64(d.CompletionMissing)
+		s.Days++
+		if s.FirstDate == "" || d.Date < s.FirstDate {
+			s.FirstDate = d.Date
+		}
+		if s.LastDate == "" || d.Date > s.LastDate {
+			s.LastDate = d.Date
+		}
+		active[d.Date] = true
+		tokens := d.Prompt + d.Completion
+		dark := d.PromptMissing == d.Calls && d.CompletionMissing == d.Calls
+		if s.PeakDate == "" || tokens > s.PeakTokens || (tokens == s.PeakTokens && d.Date < s.PeakDate) {
+			s.PeakDate, s.PeakTokens, s.PeakTokensMissing = d.Date, tokens, dark
+		}
+	}
+	s.Tokens = s.Prompt + s.Completion
+	s.TokensMissing = s.Calls > 0 && promptMissing == s.Calls && completionMissing == s.Calls
+
+	// 当前连续：今天有用就接上今天；今天还没有就从昨天往回数，两天都没有才算断。
+	cur := startOfDay(now)
+	if !active[cur.Format(dateLayout)] {
+		cur = cur.AddDate(0, 0, -1)
+	}
+	for active[cur.Format(dateLayout)] {
+		s.CurrentStreak++
+		cur = cur.AddDate(0, 0, -1)
+	}
+
+	dates := make([]string, 0, len(active))
+	for date := range active {
+		dates = append(dates, date)
+	}
+	sort.Strings(dates)
+	for i := 0; i < len(dates); {
+		j := i
+		for j+1 < len(dates) {
+			prev, err := time.ParseInLocation(dateLayout, dates[j], time.Local)
+			if err != nil || prev.AddDate(0, 0, 1).Format(dateLayout) != dates[j+1] {
+				break
+			}
+			j++
+		}
+		if run := j - i + 1; run > s.LongestStreak {
+			s.LongestStreak = run
+		}
+		i = j + 1
+	}
+	return s
+}
+
+// PruneDetails 删除 keepDays 个自然日窗口之外的明细与失败留痕文件，返回被裁掉的天数。
+// 每一天都必须先确认日度汇总已经落住才允许删明细；删不动就留着，绝不留下「明细没了、
+// 汇总也没了」的一天。keepDays 至少为 1，今天永远保留。
+func (l *Log) PruneDetails(keepDays int, now time.Time) (int, error) {
+	if keepDays < 1 {
+		return 0, errors.New("usagelog 保留天数至少为 1")
+	}
+	l.mu.Lock()
+	entries, err := os.ReadDir(l.dir)
+	l.mu.Unlock()
+	if err != nil {
+		return 0, err
+	}
+	cutoff := startOfDay(now).AddDate(0, 0, -(keepDays - 1))
+	done := map[string]bool{}
+	for _, e := range entries {
+		name := e.Name()
+		if !strings.HasSuffix(name, detailSuffix) {
+			continue
+		}
+		var key string
+		switch {
+		case strings.HasPrefix(name, "usage-"):
+			key = strings.TrimSuffix(strings.TrimPrefix(name, "usage-"), detailSuffix)
+		case strings.HasPrefix(name, "denied-"):
+			key = strings.TrimSuffix(strings.TrimPrefix(name, "denied-"), detailSuffix)
+		default:
+			continue
+		}
+		day, err := time.ParseInLocation(dayLayout, key, time.Local)
+		if err != nil || !day.Before(cutoff) {
+			continue
+		}
+		if !done[key] {
+			if _, ok, err := l.rollupDay(day); err != nil || !ok {
+				continue
+			}
+			done[key] = true
+		}
+		if err := os.Remove(filepath.Join(l.dir, name)); err != nil && !errors.Is(err, os.ErrNotExist) {
+			delete(done, key)
+			return len(done), err
+		}
+	}
+	return len(done), nil
 }
 
 // maxClientText 限制客户端自报文本（User-Agent 等）的落盘长度：

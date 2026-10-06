@@ -447,3 +447,118 @@ func TestUsageEndpointValidatesAndSummarizes(t *testing.T) {
 		t.Fatalf("失败来源排序不符：%+v", got.Denied.Sources)
 	}
 }
+
+// writeUsageDayFile 把观测落到指定自然日的明细文件里（Record 只会写「今天」）。
+func writeUsageDayFile(t *testing.T, dir string, day time.Time, entries ...usagelog.Entry) {
+	t.Helper()
+	content := ""
+	for _, e := range entries {
+		b, err := json.Marshal(e)
+		if err != nil {
+			t.Fatal(err)
+		}
+		content += string(b) + "\n"
+	}
+	name := filepath.Join(dir, "usage-"+day.Format("20060102")+".jsonl")
+	if err := os.WriteFile(name, []byte(content), 0o600); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestUsageDailyEndpointServesWindowAndAllTimeLifetime(t *testing.T) {
+	none := New(context.Background(), Config{Key: testKey})
+	for _, tc := range []struct {
+		path string
+		want int
+	}{
+		{"/internal/v1/usage/daily?window=30d", 503},     // 账本未接线
+		{"/internal/v1/usage/daily", 400},                // 缺窗口参数
+		{"/internal/v1/usage/daily?window=30d&x=1", 400}, // 多余参数
+		{"/internal/v1/usage/daily?window=week", 400},    // 未知窗口
+		{"/internal/v1/usage/daily?window=", 400},        // 空窗口
+		{"/internal/v1/usage/daily?window=31d", 400},     // 窗口只认列出的那三档
+	} {
+		w := bridgeRequest(none, "GET", tc.path, "", "")
+		if w.Code != tc.want {
+			t.Fatalf("%s status=%d want=%d body=%s", tc.path, w.Code, tc.want, w.Body)
+		}
+	}
+
+	dir := t.TempDir()
+	l, err := usagelog.Open(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now()
+	noon := func(offset int) time.Time {
+		d := now.AddDate(0, 0, offset)
+		return time.Date(d.Year(), d.Month(), d.Day(), 12, 0, 0, 0, d.Location())
+	}
+	l.Record(usagelog.Entry{TS: noon(0).Unix(), UID: "u1", Account: "甲", Model: "cn:a", Mode: "sync", Prompt: 100, Completion: 20})
+	// 昨天、100 天前、400 天前各一天：后两档落在可选窗口之外，只应出现在全历史口径里。
+	writeUsageDayFile(t, dir, noon(-1), usagelog.Entry{TS: noon(-1).Unix(), UID: "u1", Account: "甲", Model: "cn:b", Mode: "stream", Prompt: 900, Completion: 100})
+	writeUsageDayFile(t, dir, noon(-100), usagelog.Entry{TS: noon(-100).Unix(), UID: "u1", Account: "甲", Model: "cn:a", Mode: "sync", Prompt: 1, Completion: 1})
+	writeUsageDayFile(t, dir, noon(-400), usagelog.Entry{TS: noon(-400).Unix(), UID: "u1", Account: "甲", Model: "cn:a", Mode: "sync", Prompt: -1, Completion: -1})
+	// 鉴权失败也要按天留下数值，明细被 90 天裁剪后仍能回答「那段时间有没有人猜 key」。
+	deniedLine, _ := json.Marshal(usagelog.Denied{TS: noon(-1).Unix(), Src: "203.0.113.0/24"})
+	if err := os.WriteFile(filepath.Join(dir, "denied-"+noon(-1).Format("20060102")+".jsonl"), append(deniedLine, '\n'), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	h := New(context.Background(), Config{Key: testKey, Usage: l})
+	w := bridgeRequest(h, "GET", "/internal/v1/usage/daily?window=30d", "", "")
+	if w.Code != 200 {
+		t.Fatalf("status=%d body=%s", w.Code, w.Body)
+	}
+	var got struct {
+		Window   string           `json:"window"`
+		Days     []usagelog.Daily `json:"days"`
+		Lifetime struct {
+			Calls         int64  `json:"calls"`
+			Tokens        int64  `json:"tokens"`
+			Days          int    `json:"days"`
+			FirstDate     string `json:"first_date"`
+			PeakDate      string `json:"peak_date"`
+			PeakTokens    int64  `json:"peak_tokens"`
+			CurrentStreak int    `json:"current_streak"`
+			LongestStreak int    `json:"longest_streak"`
+		} `json:"lifetime"`
+	}
+	if json.Unmarshal(w.Body.Bytes(), &got) != nil {
+		t.Fatalf("bad json: %s", w.Body.String())
+	}
+	if got.Window != "30d" {
+		t.Fatalf("窗口未回显：%s", got.Window)
+	}
+	if len(got.Days) != 2 || got.Days[0].Date != noon(-1).Format("2006-01-02") || got.Days[1].Date != noon(0).Format("2006-01-02") {
+		t.Fatalf("窗口内日度序列不符（400 天前那天不得进来）：%+v", got.Days)
+	}
+	if got.Days[0].Denied != 1 || got.Days[1].Denied != 0 {
+		t.Fatalf("日度鉴权失败次数不符：%+v", got.Days)
+	}
+	if got.Days[0].Models[0].Model != "cn:b" || got.Days[0].Models[0].Prompt != 900 {
+		t.Fatalf("日度按模型分解不符：%+v", got.Days[0].Models)
+	}
+	lt := got.Lifetime
+	if lt.Calls != 4 || lt.Days != 4 || lt.FirstDate != noon(-400).Format("2006-01-02") {
+		t.Fatalf("全历史口径必须覆盖窗口外的日度汇总：%+v", lt)
+	}
+	if lt.PeakDate != noon(-1).Format("2006-01-02") || lt.PeakTokens != 1000 {
+		t.Fatalf("峰值日读数不符：%+v", lt)
+	}
+	if lt.CurrentStreak != 2 || lt.LongestStreak != 2 {
+		t.Fatalf("连续天数读数不符（今天+昨天=2，孤立日各自一段）：%+v", lt)
+	}
+
+	// 换窗口只改日度序列长度，全历史口径与窗口无关。
+	w = bridgeRequest(h, "GET", "/internal/v1/usage/daily?window=365d", "", "")
+	if err := json.Unmarshal(w.Body.Bytes(), &got); err != nil || w.Code != 200 {
+		t.Fatalf("365d status=%d err=%v", w.Code, err)
+	}
+	if len(got.Days) != 3 || got.Days[0].Date != noon(-100).Format("2006-01-02") {
+		t.Fatalf("365 天窗口应把 100 天前那天纳入序列、400 天前仍在外：%+v", got.Days)
+	}
+	if got.Lifetime.Days != 4 {
+		t.Fatalf("全历史口径不得随窗口缩水：%+v", got.Lifetime)
+	}
+}

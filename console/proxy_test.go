@@ -659,19 +659,27 @@ func TestLogoutFailureStillInvalidatesLocalSession(t *testing.T) {
 	}
 }
 
-// TestUsageManagementMappingPreservesQuery：/admin/usage 映射到 core 的
-// /internal/v1/usage，查询参数原样透传；未登录会话在管理会话层被挡下。
+// TestUsageManagementMappingPreservesQuery：/admin/usage 与 /admin/usage-daily
+// 映射到 core 的对应接口，查询参数原样透传；未登录会话在管理会话层被挡下。
 func TestUsageManagementMappingPreservesQuery(t *testing.T) {
 	h, _ := testConsole(t, func(w http.ResponseWriter, r *http.Request) {
 		if mockInfo(w, r) {
 			return
 		}
-		if r.URL.Path != "/internal/v1/usage" || r.URL.RawQuery != "range=week" {
+		want := map[string]string{
+			"/internal/v1/usage":       "range=week",
+			"/internal/v1/usage/daily": "window=90d",
+		}
+		if q, ok := want[r.URL.Path]; !ok || r.URL.RawQuery != q {
 			t.Errorf("unexpected core request: %s?%s", r.URL.Path, r.URL.RawQuery)
 			w.WriteHeader(404)
 			return
 		}
-		fmt.Fprint(w, `{"range":"week","items":[],"summary":{"calls":0}}`)
+		if r.URL.Path == "/internal/v1/usage" {
+			fmt.Fprint(w, `{"range":"week","items":[],"summary":{"calls":0}}`)
+			return
+		}
+		fmt.Fprint(w, `{"window":"90d","days":[],"lifetime":{"calls":0}}`)
 	})
 	cookie, csrf := login(t, h)
 	w := adminRequest(h, "GET", "/admin/usage?range=week", "", cookie, csrf)
@@ -680,5 +688,12 @@ func TestUsageManagementMappingPreservesQuery(t *testing.T) {
 	}
 	if w := adminRequest(h, "GET", "/admin/usage?range=week", "", nil, ""); w.Code != 401 {
 		t.Fatalf("unauthenticated status=%d", w.Code)
+	}
+	w = adminRequest(h, "GET", "/admin/usage-daily?window=90d", "", cookie, csrf)
+	if w.Code != 200 || !strings.Contains(w.Body.String(), `"window":"90d"`) {
+		t.Fatalf("daily status=%d body=%s", w.Code, w.Body)
+	}
+	if w := adminRequest(h, "GET", "/admin/usage-daily?window=90d", "", nil, ""); w.Code != 401 {
+		t.Fatalf("daily unauthenticated status=%d", w.Code)
 	}
 }

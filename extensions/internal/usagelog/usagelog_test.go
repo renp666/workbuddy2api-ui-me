@@ -3,6 +3,7 @@ package usagelog
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"math"
 	"net/http"
 	"net/http/httptest"
@@ -334,4 +335,262 @@ func readDeniedFile(t *testing.T, dir string) []byte {
 		t.Fatal(err)
 	}
 	return data
+}
+
+// noonOf 把时刻收敛到那个自然日的正午，测试因此不会踩在日界上。
+func noonOf(t time.Time) time.Time {
+	return time.Date(t.Year(), t.Month(), t.Day(), 12, 0, 0, 0, t.Location())
+}
+
+func dateOf(t time.Time) string { return t.Format("2006-01-02") }
+
+// writeRaw 按受控内容覆写某一天的明细文件，绕开 Record 的「写入时刻」选择。
+func writeRaw(t *testing.T, dir, prefix string, day time.Time, lines ...string) {
+	t.Helper()
+	content := ""
+	for _, line := range lines {
+		content += line + "\n"
+	}
+	if err := os.WriteFile(filepath.Join(dir, prefix+day.Format(dayLayout)+".jsonl"), []byte(content), 0o600); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func entryLine(t *testing.T, e Entry) string {
+	t.Helper()
+	b, err := json.Marshal(e)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return string(b)
+}
+
+func TestDailyRollupRebuildsOnlyWhenDetailSizeChanges(t *testing.T) {
+	dir := t.TempDir()
+	l, err := Open(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	day := time.Now().AddDate(0, 0, -3)
+	first := Entry{TS: noonOf(day).Unix(), UID: "u1", Account: "甲", Model: "cn:a", Mode: "sync", Prompt: 10, Completion: 5}
+	line := entryLine(t, first)
+	writeRaw(t, dir, "usage-", day, line)
+
+	days, err := l.AllDaily()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(days) != 1 {
+		t.Fatalf("期望 1 个自然日汇总，得到 %d：%+v", len(days), days)
+	}
+	got := days[0]
+	if got.Date != dateOf(day) || got.Calls != 1 || got.Prompt != 10 || got.Completion != 5 {
+		t.Fatalf("日度汇总读数不符：%+v", got)
+	}
+	if len(got.Models) != 1 || got.Models[0].Model != "cn:a" || got.Models[0].Calls != 1 || got.Models[0].Prompt != 10 {
+		t.Fatalf("按模型分解不符：%+v", got.Models)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "daily-"+day.Format(dayLayout)+".json")); err != nil {
+		t.Fatalf("日度汇总必须落盘：%v", err)
+	}
+
+	// 字节数没变就不许重算：把明细换成等长的坏行，重算会得到 Calls=0，
+	// 而缓存必须保住上一次的真实读数。
+	writeRaw(t, dir, "usage-", day, strings.Repeat("x", len(line)))
+	days, err = l.AllDaily()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(days) != 1 || days[0].Calls != 1 {
+		t.Fatalf("明细未变化时不得重算（等长坏行不该被读进来）：%+v", days)
+	}
+
+	// 字节数变了就必须重算。
+	second := Entry{TS: noonOf(day).Unix() + 60, UID: "u2", Account: "乙", Model: "cn:b", Mode: "stream", Prompt: 7, Completion: 3}
+	writeRaw(t, dir, "usage-", day, line, entryLine(t, second))
+	days, err = l.AllDaily()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if days[0].Calls != 2 || days[0].Prompt != 17 || days[0].Completion != 8 {
+		t.Fatalf("明细追加后必须重算：%+v", days[0])
+	}
+	// 排序口径：调用次数降序，同次数按模型名升序，让同一份数据永远画出同一张图。
+	if days[0].Models[0].Model != "cn:a" || days[0].Models[1].Model != "cn:b" {
+		t.Fatalf("模型排序不符：%+v", days[0].Models)
+	}
+	// 日度文件绝不能被明细查询读到，否则「调用明细」里会冒出汇总行。
+	if items, err := l.Query(noonOf(day).Unix(), noonOf(day).AddDate(0, 0, 1).Unix()); err != nil || len(items) != 2 {
+		t.Fatalf("明细查询被日度文件污染：%d 条 err=%v", len(items), err)
+	}
+}
+
+func TestDailyRollupKeepsMissingApartFromZeroAndCountsDenied(t *testing.T) {
+	dir := t.TempDir()
+	l, err := Open(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	day := time.Now().AddDate(0, 0, -1)
+	zero := 0.0
+	dark := Entry{TS: noonOf(day).Unix(), UID: "u1", Model: "cn:a", Mode: "sync", Prompt: -1, Completion: -1}
+	free := Entry{TS: noonOf(day).Unix() + 1, UID: "u2", Model: "cn:a", Mode: "sync", Prompt: -1, Completion: -1, Credit: &zero}
+	writeRaw(t, dir, "usage-", day, entryLine(t, dark), entryLine(t, free))
+	denied := Denied{TS: noonOf(day).Unix(), Src: "203.0.113.0/24"}
+	bad, _ := json.Marshal(denied)
+	writeRaw(t, dir, "denied-", day, string(bad), "{corrupt")
+
+	days, err := l.AllDaily()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(days) != 1 {
+		t.Fatalf("期望 1 天，得到 %d：%+v", len(days), days)
+	}
+	got := days[0]
+	if got.Calls != 2 || got.Prompt != 0 || got.Completion != 0 {
+		t.Fatalf("未回报的 token 不得凭空产生数值：%+v", got)
+	}
+	if got.PromptMissing != 2 || got.CompletionMissing != 2 {
+		t.Fatalf("输入/输出缺失要各自计数：%+v", got)
+	}
+	if got.Credit != 0 || got.CreditMissing != 1 {
+		t.Fatalf("显式 0 与未观测必须区分（合计 0、缺 1 条）：%+v", got)
+	}
+	if got.Denied != 1 {
+		t.Fatalf("鉴权失败按天留数、坏行跳过，得到 %d：%+v", got.Denied, got)
+	}
+	if len(got.Models) != 1 || got.Models[0].Calls != 2 || got.Models[0].PromptMissing != 2 {
+		t.Fatalf("模型分解必须带上各自的缺失计数：%+v", got.Models)
+	}
+}
+
+func TestSummarizeLifetimeStreaksAndPeak(t *testing.T) {
+	loc := time.Local
+	now := time.Date(2026, 6, 10, 12, 0, 0, 0, loc) // 今天还没有调用
+	mk := func(offsetDays int, calls int, prompt, completion int64) Daily {
+		day := noonOf(now).AddDate(0, 0, offsetDays)
+		return Daily{Date: dateOf(day), Calls: calls, Prompt: prompt, Completion: completion,
+			PromptMissing: 0, CompletionMissing: 0, CreditMissing: 0}
+	}
+	days := []Daily{
+		mk(-11, 1, 5, 5), mk(-10, 1, 5, 5), // 早期一段 2 天连续
+		mk(-9, 1, 900, 100),                               // 峰值日
+		mk(-3, 1, 1, 1), mk(-2, 1, 1, 1), mk(-1, 1, 1, 1), // 昨天收尾的 3 天连续
+	}
+	got := SummarizeLifetime(days, now)
+	if got.Calls != 6 || got.Prompt != 913 || got.Completion != 113 {
+		t.Fatalf("全历史累计不符：%+v", got)
+	}
+	if got.Days != 6 || got.FirstDate != dateOf(noonOf(now).AddDate(0, 0, -11)) || got.LastDate != dateOf(noonOf(now).AddDate(0, 0, -1)) {
+		t.Fatalf("活跃天数与首末日期不符：%+v", got)
+	}
+	if got.CurrentStreak != 3 {
+		t.Fatalf("今天没有调用时，连续天数应停在昨天：得到 %d", got.CurrentStreak)
+	}
+	if got.LongestStreak != 3 {
+		t.Fatalf("最长连续应为 -3..-1 的 3 天：得到 %d", got.LongestStreak)
+	}
+	if got.PeakDate != dateOf(noonOf(now).AddDate(0, 0, -9)) || got.PeakTokens != 1000 {
+		t.Fatalf("峰值日读数不符：%+v", got)
+	}
+
+	// 今天有调用就要把今天算进连续段。
+	today := mk(0, 2, 3, 4)
+	got = SummarizeLifetime(append(append([]Daily{}, days...), today), now)
+	if got.CurrentStreak != 4 {
+		t.Fatalf("今天的调用应接上昨天那段：%+v", got)
+	}
+	// 今天和昨天都没有 → 连续段断了。
+	got = SummarizeLifetime([]Daily{mk(-3, 1, 1, 1), mk(-2, 1, 1, 1)}, now)
+	if got.CurrentStreak != 0 || got.LongestStreak != 2 {
+		t.Fatalf("断档后当前连续必须归零、最长保留：%+v", got)
+	}
+	// 峰值取更大那天；并列时取更早那天，保证同一份数据永远指出同一个峰值日。
+	if g := SummarizeLifetime([]Daily{mk(-2, 1, 10, 10), mk(-1, 1, 20, 10)}, now); g.PeakDate != dateOf(noonOf(now).AddDate(0, 0, -1)) || g.PeakTokens != 30 {
+		t.Fatalf("峰值应取 token 更大的那天：%+v", g)
+	}
+	if g := SummarizeLifetime([]Daily{mk(-2, 1, 20, 0), mk(-1, 1, 10, 10)}, now); g.PeakDate != dateOf(noonOf(now).AddDate(0, 0, -2)) {
+		t.Fatalf("并列峰值日应取更早那天：%+v", g)
+	}
+	// 有调用但整组未观测：数值是 0，读数必须是「未观测」而不是「0 消耗」。
+	dark := mk(-1, 3, 0, 0)
+	dark.PromptMissing, dark.CompletionMissing = 3, 3
+	if g := SummarizeLifetime([]Daily{dark}, now); g.PeakTokens != 0 || !g.PeakTokensMissing {
+		t.Fatalf("整组未观测的峰值日不得读成 0 token：%+v", g)
+	}
+	if g := SummarizeLifetime([]Daily{dark}, now); g.Tokens != 0 || !g.TokensMissing {
+		t.Fatalf("全历史一条 token 观测都没有时累计读数也必须区分未观测：%+v", g)
+	}
+	// 只要有任何一条回报，累计就不再是「未观测」，哪怕另一天整组缺失。
+	if g := SummarizeLifetime([]Daily{dark, mk(-2, 1, 7, 7)}, now); g.Tokens != 14 || g.TokensMissing {
+		t.Fatalf("部分回报的累计不得被读成未观测：%+v", g)
+	}
+	if g := SummarizeLifetime([]Daily{mk(-1, 1, 0, 0)}, now); g.Tokens != 0 || g.TokensMissing {
+		t.Fatalf("回报了 0 就是观测到 0，不是未观测：%+v", g)
+	}
+	// 空账本不得编出任何日期或天数。
+	if g := SummarizeLifetime(nil, now); g.Days != 0 || g.CurrentStreak != 0 || g.LongestStreak != 0 || g.PeakDate != "" || g.FirstDate != "" {
+		t.Fatalf("空账本读数必须全零：%+v", g)
+	}
+}
+
+func TestPruneDetailsDropsOldFilesOnlyAfterRollupIsSafe(t *testing.T) {
+	dir := t.TempDir()
+	l, err := Open(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now()
+	old := noonOf(now).AddDate(0, 0, -90)
+	kept := noonOf(now).AddDate(0, 0, -89)
+	today := noonOf(now)
+	for _, day := range []time.Time{old, kept, today} {
+		e := Entry{TS: day.Unix(), UID: "u1", Account: "甲", Model: "cn:a", Mode: "sync", Prompt: 10, Completion: 5}
+		writeRaw(t, dir, "usage-", day, entryLine(t, e))
+		d, _ := json.Marshal(Denied{TS: day.Unix(), Src: "203.0.113.0/24"})
+		writeRaw(t, dir, "denied-", day, string(d))
+	}
+	removed, err := l.PruneDetails(90, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if removed != 1 {
+		t.Fatalf("只应裁掉 -90 那一天，得到 %d", removed)
+	}
+	for _, day := range []time.Time{kept, today} {
+		if _, err := os.Stat(filepath.Join(dir, "usage-"+day.Format(dayLayout)+".jsonl")); err != nil {
+			t.Fatalf("保留窗口内（-%d 天）的明细不得被删：%v", int(noonOf(now).Sub(day).Hours()/24), err)
+		}
+	}
+	for _, prefix := range []string{"usage-", "denied-"} {
+		path := filepath.Join(dir, prefix+old.Format(dayLayout)+".jsonl")
+		if _, err := os.Stat(path); !errors.Is(err, os.ErrNotExist) {
+			t.Fatalf("%s 旧明细应已删除，stat=%v", prefix, err)
+		}
+	}
+	// 裁掉明细后，日度汇总必须还在，并且带着被裁那天用量与失败次数。
+	days, err := l.AllDaily()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(days) != 3 {
+		t.Fatalf("三个自然日的日度汇总都应存在：%+v", days)
+	}
+	if days[0].Date != dateOf(old) || days[0].Calls != 1 || days[0].Prompt != 10 || days[0].Denied != 1 {
+		t.Fatalf("被裁明细那天的日度读数必须原样保留：%+v", days[0])
+	}
+	// 再裁一次不得重复计数，也不得动日度文件。
+	again, err := l.PruneDetails(90, now)
+	if err != nil || again != 0 {
+		t.Fatalf("裁剪必须幂等，得到 %d err=%v", again, err)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "daily-"+old.Format(dayLayout)+".json")); err != nil {
+		t.Fatalf("日度汇总永久保留：%v", err)
+	}
+	// 全历史口径不依赖明细文件。
+	stats := SummarizeLifetime(days, now)
+	if stats.Calls != 3 || stats.Prompt != 30 {
+		t.Fatalf("明细裁掉后累计读数不得缩水：%+v", stats)
+	}
 }

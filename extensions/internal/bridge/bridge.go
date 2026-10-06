@@ -75,6 +75,7 @@ func New(ctx context.Context, cfg Config) http.Handler {
 	h.mux.HandleFunc("DELETE /internal/v1/owners/{owner}/flows", h.withOwner(h.cancelOwner))
 	h.mux.HandleFunc("GET /internal/v1/tasks", h.listTasks)
 	h.mux.HandleFunc("GET /internal/v1/usage", h.listUsage)
+	h.mux.HandleFunc("GET /internal/v1/usage/daily", h.listUsageDaily)
 	h.mux.HandleFunc("POST /internal/v1/usage/reports", h.reportUsage)
 	h.mux.HandleFunc("GET /internal/v1/pin", h.listPins)
 	h.mux.HandleFunc("POST /internal/v1/pin", h.pinAccount)
@@ -230,6 +231,50 @@ func (h *handler) listUsage(w http.ResponseWriter, r *http.Request) {
 		"items":   items,
 		"summary": usagelog.Summarize(items),
 		"denied":  usagelog.SummarizeDenied(denied),
+	})
+}
+
+// usageDailyWindows 是日度聚合接口认得的窗口档（自然天数）。窗口只影响日度序列
+// 的长度，全历史口径始终按全部日度汇总算，因此明细被裁剪后指标条读数不变。
+var usageDailyWindows = map[string]int{"30d": 30, "90d": 90, "365d": 365}
+
+// listUsageDaily 返回窗口内的按天用量序列与全历史指标（累计/峰值/连续天数）。
+// 数据来自日度汇总文件，不再逐条读明细；denied 计入按天次数，来源分布仍只在
+// listUsage 里给出——失败留痕不是调用次数。
+func (h *handler) listUsageDaily(w http.ResponseWriter, r *http.Request) {
+	query := r.URL.Query()
+	if len(query) != 1 || len(query["window"]) != 1 {
+		bridgeError(w, 400, "统计窗口参数无效")
+		return
+	}
+	name := query.Get("window")
+	span, ok := usageDailyWindows[name]
+	if !ok {
+		bridgeError(w, 400, "统计窗口参数无效")
+		return
+	}
+	if h.cfg.Usage == nil {
+		bridgeError(w, 503, "调用统计暂不可用，请稍后重试")
+		return
+	}
+	all, err := h.cfg.Usage.AllDaily()
+	if err != nil {
+		bridgeError(w, 503, "调用统计暂不可用，请稍后重试")
+		return
+	}
+	now := time.Now()
+	day := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, now.Location())
+	cutoff := day.AddDate(0, 0, -(span - 1)).Format("2006-01-02")
+	days := []usagelog.Daily{}
+	for _, d := range all {
+		if d.Date >= cutoff {
+			days = append(days, d)
+		}
+	}
+	writeJSON(w, 200, map[string]any{
+		"window":   name,
+		"days":     days,
+		"lifetime": usagelog.SummarizeLifetime(all, now),
 	})
 }
 
