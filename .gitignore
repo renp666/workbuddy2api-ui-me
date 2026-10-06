@@ -50,6 +50,7 @@ SPEC.md
 # Local tool artifacts
 /.mimosa/
 /.impeccable/
+/spark-output/
 /rp_probe.txt
 
 # Host-only entry pin (this machine only; production stays a bare up -d on docker-compose.yml)
