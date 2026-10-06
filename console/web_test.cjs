@@ -97,8 +97,9 @@ function taskFixture(fetch, cryptoImpl={randomUUID:()=> '11111111-2222-4333-8444
   }
   const get=id=>{if(!elements.has(id))elements.set(id,element());return elements.get(id);};
   const protocolButtons=['access-openai','access-anthropic','chat-openai','chat-anthropic'].map(id=>{const button=get(id);button.dataset.protocol=id.split('-')[1];return button;});
+  const railButtons=[['refresh','overview'],['zcode-refresh','zcode'],['qoder-refresh','qoder'],['opencode-refresh','opencode'],['usage-refresh','usage'],['routes-refresh','routes']].map(([id,view])=>{const button=get(id);button.dataset.refreshFor=view;return button;});
   const opened=[];
-  const ctx=vm.createContext({document:{getElementById:get,querySelectorAll:selector=>selector==='[data-protocol]'?protocolButtons:[],createElement:element,hidden:false,handlers:{},addEventListener(name,fn){this.handlers[name]=fn;}},
+  const ctx=vm.createContext({document:{getElementById:get,querySelectorAll:selector=>selector==='[data-protocol]'?protocolButtons:selector==='[data-refresh-for]'?railButtons:[],createElement:element,hidden:false,handlers:{},addEventListener(name,fn){this.handlers[name]=fn;}},
     location:{origin:'http://console.test'},AbortController,TextDecoder,TextEncoder,Option:function(text,value){return {textContent:text,value};},
     setInterval(){},clearTimeout(){},setTimeout(){},fetch,crypto:cryptoImpl,navigator:{clipboard:{writeText:async()=>{}}},window:{scrollTo(){},open(url){const w={closed:false,location:{href:url||''},close(){this.closed=true;}};opened.push(w);return w;}}});
   vm.runInContext(readFileSync(__dirname+'/web/app.js','utf8'),ctx);
@@ -738,7 +739,7 @@ test('zcode tab reports an unreachable channel without hiding the panel',async()
   await vm.runInContext('loadZcode()',ctx);
   assert.equal(get('zcode-content').hidden,false);
   assert.equal(get('zcode-status-badge').textContent,'不可达');
-  assert.equal(get('zcode-status-badge').className,'badge warn');
+  assert.equal(get('zcode-status-badge').className,'badge bad');
 });
 
 function controlFixture(statuses) {
@@ -927,7 +928,7 @@ test('qoder tab reports an unreachable channel without hiding the panel',async()
   await vm.runInContext('loadQoder()',ctx);
   assert.equal(get('qoder-content').hidden,false);
   assert.equal(get('qoder-status-badge').textContent,'不可达');
-  assert.equal(get('qoder-status-badge').className,'badge warn');
+  assert.equal(get('qoder-status-badge').className,'badge bad');
 });
 
 test('access model select merges qoder models and routes qoder go-chat to the qoder tab',async()=>{
@@ -1117,7 +1118,7 @@ test('opencode tab reports an unreachable channel and hides data tabs without he
   await vm.runInContext('loadOpenCode()',ctx);
   assert.equal(get('opencode-content').hidden,false);
   assert.equal(get('opencode-status-badge').textContent,'不可达');
-  assert.equal(get('opencode-status-badge').className,'badge warn');
+  assert.equal(get('opencode-status-badge').className,'badge bad');
   assert.match(get('opencode-status-text').textContent,/OW Bridge 当前不可达/);
   assert.equal(get('opencode-health-wrap').hidden,true,'health table showed without a health payload');
   assert.equal(get('opencode-view-models').hidden,true,'models tab offered while unreachable');
@@ -1158,7 +1159,7 @@ test('opencode model table keeps probed-but-unavailable models with capability, 
   assert.deepEqual(available.children[1].children[0].children.map(tag=>tag.textContent),['工具','推理'],'capability badges');
   assert.equal(available.children[1].children[1].textContent,'上下文 200000');
   assert.equal(available.children[2].children[0].textContent,'可用');
-  assert.equal(available.children[2].children[0].className,'badge');
+  assert.equal(available.children[2].children[0].className,'badge ok');
   assert.equal(available.children[3].textContent,'7.9 秒');
   assert.equal(available.children[3].children[0].textContent,'探测');
   assert.equal(available.children[5].textContent,'—');
@@ -1200,7 +1201,7 @@ test('channels without probe data fall back to an explicit 未探测 state inste
   assert.equal(rows.length,2);
   assert.equal(rows[0].children[0].textContent,'glm-5.2');
   assert.equal(rows[0].children[2].children[0].textContent,'未探测');
-  assert.equal(rows[0].children[2].children[0].className,'badge warn');
+  assert.equal(rows[0].children[2].children[0].className,'badge unknown');
   assert.equal(rows[0].children[3].textContent,'—');
 });
 
@@ -1212,7 +1213,7 @@ test('core model table renders the catalog with the shared layout and an explici
   assert.equal(rows.length,2,'core model rows missing');
   assert.equal(rows[0].children[0].textContent,'cn:workbuddy');
   assert.equal(rows[0].children[2].children[0].textContent,'未探测');
-  assert.equal(rows[0].children[2].children[0].className,'badge warn');
+  assert.equal(rows[0].children[2].children[0].className,'badge unknown');
   assert.equal(rows[1].children[1].children[0].children[0].textContent,'推理','reasoning effort hint lost');
   assert.equal(get('core-models-empty').hidden,true);
 });
@@ -1921,14 +1922,14 @@ test('Agent 接入 tab renders auto preview, alias table, channel sources and a 
   await vm.runInContext('loadRoutes()',ctx);
   assert.equal(get('routes-content').hidden,false,'editor hidden while routing is on');
   assert.equal(get('routes-auto-badge').textContent,'自动优选');
-  assert.equal(get('routes-auto-badge').className,'badge');
+  assert.equal(get('routes-auto-badge').className,'badge ok');
   assert.match(get('routes-auto-text').textContent,/现在自动挑中的是 opencode-OC · Free（OpenCode 通道）/);
   assert.equal(get('routes-default-fallback').textContent,'cn:auto');
   const rows=get('routes-alias-body').children;
   assert.equal(rows.length,1,'alias row missing');
   assert.deepEqual(rows[0].children.slice(0,6).map(td=>td.textContent),['my-fast','OpenCode 通道','OC · Free','opencode-OC · Free','','日常']);
   assert.equal(rows[0].children[4].children[0].textContent,'启用','alias state badge');
-  assert.equal(rows[0].children[4].children[0].className,'badge');
+  assert.equal(rows[0].children[4].children[0].className,'badge ok');
   // Only enabled channels are offered; the disabled qoder channel must not be selectable.
   assert.deepEqual(get('routes-alias-channel').children.map(option=>option.value),['core','opencode']);
   const channelTitles=get('routes-channels').children.map(article=>article.children[0].textContent);
@@ -2327,4 +2328,75 @@ test('changing page starts the new view at its own top', () => {
   const scrolls=vm.runInContext(
     "let n=0;window.scrollTo=()=>{n++};showPage('usage');n",ctx);
   assert.equal(scrolls,1,'a deliberate page change must reset the scroll once');
+});
+
+test('页面级刷新按钮吸顶，落在网关状态左侧且只有当前页那一个可见', () => {
+  const html=readFileSync(__dirname+'/web/index.html','utf8');
+  const rail=html.match(/<header class="topbar">[\s\S]*?<\/header>/)[0];
+  const ids=['refresh','zcode-refresh','qoder-refresh','opencode-refresh','usage-refresh','routes-refresh'];
+  const stateAt=rail.indexOf('id="service-state"');
+  assert.ok(stateAt>0,'顶栏里找不到网关状态，无从判断左右');
+  for(const id of ids){
+    assert.equal(html.split(`id="${id}"`).length-1,1,`#${id} 在页面里出现了不止一次，搬顶栏时没删掉原处那个`);
+    assert.ok(rail.includes(`id="${id}"`),`#${id} 没搬进顶栏`);
+    assert.ok(rail.indexOf(`id="${id}"`)<stateAt,`#${id} 排到了网关状态的右侧`);
+  }
+  // WorkBuddy 的「刷新任务」只管自动任务子页，抬到顶栏会让人以为它能刷账号，必须留在原位。
+  assert.ok(!rail.includes('id="task-refresh"'),'刷新任务被误抬进顶栏');
+
+  const {ctx,get}=taskFixture(async()=>({ok:true,status:200,json:async()=>({}),headers:{get:()=>null}}));
+  const visible=()=>ids.filter(id=>get(id).hidden===false);
+  for(const [view,id] of [['overview','refresh'],['zcode','zcode-refresh'],['qoder','qoder-refresh'],['opencode','opencode-refresh'],['usage','usage-refresh'],['routes','routes-refresh']]){
+    vm.runInContext(`showPage('${view}')`,ctx);
+    assert.deepEqual(visible(),[id],`切到 ${view} 页时顶栏可见的刷新按钮不是唯一那一个`);
+  }
+  vm.runInContext("showPage('workbuddy')",ctx);
+  assert.deepEqual(visible(),[],'WorkBuddy 与 API 接入页没有页面级刷新，顶栏不该留一个可点的空按钮');
+});
+
+test('状态徽章分五档：可用、打折、不可达、未启用、未探测各占一档且互不相同', () => {
+  const css=readFileSync(__dirname+'/web/style.css','utf8');
+  // 档位名写错不会报错，只会静默退回 .badge 的浅紫胶囊，所以先钉样式真的定义了这五档。
+  for(const tone of ['ok','warn','bad','idle','unknown'])
+    assert.ok(css.includes(`.badge.${tone}{`),`style.css 缺 .badge.${tone}，该档位会画成默认紫`);
+
+  const {ctx,get}=taskFixture(async()=>({ok:true,status:200,json:async()=>({}),headers:{get:()=>null}}));
+  const pair=expr=>vm.runInContext(`(()=>{const s=${expr};return [s.label,s.tone].join('|')})()`,ctx);
+
+  assert.equal(pair('modelProbeState(null)'),'未探测|unknown','没有探测数据不能画成告警，也不能画成可用');
+  assert.equal(pair('modelProbeState({ok:true})'),'可用|ok');
+  assert.equal(pair('modelProbeState({ok:true,chatOnly:true})'),'仅对话|warn');
+  assert.equal(pair('modelProbeState({ok:false,category:"access"})'),'地区限制|bad');
+  assert.equal(pair('modelProbeState({ok:false})'),'不可用|bad');
+  // order 是排序档位（可用→仅对话→未探测→不可用），与配色各自独立。
+  assert.equal(vm.runInContext('[null,{ok:true},{ok:true,chatOnly:true},{ok:false}].map(r=>modelProbeState(r).order).join("-")',ctx),'2-0-1-3');
+
+  // 三个不同的负面事实必须落在三个不同的档位上，肉眼扫色就能分开。
+  assert.equal(pair("overviewChannelStatus('zcode')"),'未加载|unknown');
+  vm.runInContext("zcodeStatus={enabled:false}",ctx);
+  assert.equal(pair("overviewChannelStatus('zcode')"),'未启用|idle');
+  vm.runInContext("zcodeStatus={enabled:true,reachable:false}",ctx);
+  assert.equal(pair("overviewChannelStatus('zcode')"),'不可达|bad');
+  vm.runInContext("zcodeStatus={enabled:true,reachable:true}",ctx);
+  assert.equal(pair("overviewChannelStatus('zcode')"),'在线|ok');
+
+  vm.runInContext("lastStatus=null",ctx);
+  assert.equal(pair("overviewChannelStatus('workbuddy')"),'未知|unknown');
+  vm.runInContext("lastStatus={total:0}",ctx);
+  assert.equal(pair("overviewChannelStatus('workbuddy')"),'等待账号|idle');
+  vm.runInContext("lastStatus={total:2}",ctx);
+  assert.equal(pair("overviewChannelStatus('workbuddy')"),'运行中|ok');
+
+  // 概览卡片说清旁路卡在哪一步：没凭据是要人去办的（告警），没启动是状态本身（中性）。
+  vm.runInContext("zcodeStatus={enabled:true,reachable:true,control:true,logged_in:false,proxy_running:false}",ctx);
+  assert.equal(pair("cardStatus('zcode')"),'未登录|warn');
+  vm.runInContext("zcodeStatus={enabled:true,reachable:true,control:true,logged_in:true,proxy_running:false}",ctx);
+  assert.equal(pair("cardStatus('zcode')"),'未启用|idle');
+
+  vm.runInContext("renderAccounts({total:3,healthy:1,cooling:1,disabled:1,accounts:["
+    +"{uid:'u1',nickname:'甲',credits:0,credits_known:true},"
+    +"{uid:'u2',nickname:'乙',cooling:true,credits:0,credits_known:true},"
+    +"{uid:'u3',nickname:'丙',disabled:true,credits:0,credits_known:true}]})",ctx);
+  assert.deepEqual(get('accounts-body').children.map(tr=>[tr.children[1].children[0].textContent,tr.children[1].children[0].className].join('|')),
+    ['可用|badge ok','冷却中|badge warn','已禁用|badge idle'],'账号池三态没各占一档');
 });

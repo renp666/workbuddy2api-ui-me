@@ -113,20 +113,41 @@ code{font-family:var(--font-mono);font-size:.92em}
 .sidebar-bottom .quiet:hover{background:var(--sidebar-hi)}
 .status-dot{width:7px;height:7px;border-radius:50%;background:#3ddc97;flex:none}
 
-/* ---------- 顶栏 ---------- */
+/* ---------- 顶栏：吸顶控制轨 ---------- */
+/* 顶栏与侧栏同属一套机架色（--sidebar 族 #0f1120），内容区留在白底上：读数要安静，控件轨要显眼。
+   暗底上通道色做文字都够不到正文 4.5:1（实测靛蓝 3.13、青 4.00、紫罗兰 2.97、玫红 3.64），
+   所以这条轨上只用实测达标的信号色，四条通道配色一律留在浅色内容区里表达。 */
 .workspace{margin-left:224px;width:calc(100% - 224px)}
-.topbar{height:64px;padding:0 32px;border-bottom:1px solid var(--line);display:flex;align-items:center;justify-content:space-between;background:var(--surface);position:sticky;top:0;z-index:20}
-.breadcrumb{font-size:12px;color:var(--muted)}
+.topbar{min-height:64px;padding:0 32px;border-bottom:1px solid #1d2038;display:flex;align-items:center;justify-content:space-between;gap:14px;background:var(--sidebar);position:sticky;top:0;z-index:20}
+.breadcrumb{font-size:12px;color:var(--sidebar-muted)}
 .breadcrumb span{margin-left:12px}
-.breadcrumb span:last-child{color:var(--ink);font-weight:600}
+.breadcrumb span:last-child{color:#fff;font-weight:600}
+.topbar-actions{display:flex;align-items:center;gap:10px;flex-wrap:wrap;justify-content:flex-end}
+/* 边框取 #6b74a8：对机架底实测 4.18:1，过控件边界的 3:1，又明显暗于轨上的文字
+   （#d3d6ee 13.04:1），边框不会把注意力从读数上抢走；更暗的 #454d78 只有 2.31:1，看不出那是个按钮。 */
+.rail-btn{background:transparent;border:1px solid #6b74a8;color:var(--sidebar-ink);font-size:12px;padding:8px 14px;transition:background .14s ease,border-color .14s ease,color .14s ease}
+.rail-btn:hover:not(:disabled){background:var(--sidebar-hi);border-color:var(--focus-dark);color:#fff}
 .badge{display:inline-flex;align-items:center;gap:4px;border-radius:999px;padding:4px 11px;background:var(--accent-soft);color:var(--accent-strong);font-size:11px;font-weight:600;white-space:nowrap}
+/* 五档语义：可用 / 冷却 / 不可达 / 未启用 / 未探测是五个不同事实。此前它们共用
+   紫与琥珀两档，「不可达」和「未启用」长得一样，读状态只能靠肉眼扫文字。
+   未探测一律不给绿色，也不给零。 */
 .badge.warn{background:var(--warn-bg);color:var(--warn-ink)}
+.badge.ok{background:var(--ok-bg);color:var(--ok-ink)}
+.badge.bad{background:var(--danger-soft);color:var(--danger)}
+.badge.idle{background:var(--group-band);color:#4a4f66}
+.badge.unknown{background:var(--bg-soft);color:var(--muted);border:1px dashed var(--line);padding:3px 10px}
+/* 机架压在暗底上，浅色 wash 会糊成一片，所以同样五档各配一套深底亮字：
+   实测 ok 8.56 / warn 8.78 / bad 8.22 / idle 6.10，全部 ≥4.5。
+   没带档位的徽章退回 .badge 的浅紫胶囊——状态未确认时也不给绿色。 */
+.badge.rail-state.ok{background:#123a2e;color:#7fe9bd}
+.badge.rail-state.warn{background:#3a2a0c;color:#f2c879}
+.badge.rail-state.bad{background:#3a1015;color:#ff9aa2}
+.badge.rail-state.idle{background:var(--sidebar-hi);color:#a6accf}
 
 /* ---------- 页面骨架 ---------- */
 .page{max-width:1360px;margin:auto;padding:26px 32px 34px}
 .page-heading{display:grid;gap:3px;margin:0 auto 22px}
 .page-heading p.muted{font-size:13px;margin:0;max-width:76ch}
-.page-heading>.secondary{justify-self:end}
 
 /* ---------- 统计条 ---------- */
 .metrics{display:grid;grid-template-columns:repeat(auto-fit,minmax(190px,1fr));border:1px solid var(--line);border-radius:var(--radius-lg);background:var(--surface);overflow:hidden;margin-bottom:26px}
@@ -140,6 +161,8 @@ code{font-family:var(--font-mono);font-size:.92em}
 .channel-cards{display:grid;grid-template-columns:repeat(auto-fit,minmax(240px,1fr));gap:12px;margin-bottom:26px}
 .channel-card{background:var(--surface);border:1px solid var(--line);border-radius:var(--radius-lg);padding:16px 18px;display:flex;flex-direction:column;gap:12px}
 .channel-card.warn{border-color:#e6c48f;background:#fffcf6}
+/* 不可达比「要处理」更确定，所以给红而不是继续用琥珀；未启用/未加载是中性事实，卡片保持平静。 */
+.channel-card.bad{border-color:#e2a9ae;background:#fffafa}
 .channel-card-head{display:flex;align-items:center;justify-content:space-between;gap:10px}
 .channel-card-name{font-size:13px;font-weight:650;color:var(--ink)}
 .channel-card-stats{display:grid;grid-template-columns:repeat(2,1fr);gap:8px 14px}
@@ -346,11 +369,12 @@ textarea{width:100%;resize:vertical;min-height:64px;max-height:180px;display:blo
  .sidebar-bottom .quiet{margin:0;flex-basis:auto;padding:8px}
  .sidebar .brand{font-size:16px}
  .workspace{margin:0;width:100%}
- .topbar{height:56px;padding:0 16px;position:static}
+ .topbar{min-height:56px;padding:8px 16px}
  .page{padding:22px 16px 28px}
  .page-heading{align-items:flex-start;flex-wrap:wrap}
  h1{font-size:21px}
- .page-heading>.secondary{padding:9px;font-size:11px}
+ .topbar-actions{gap:8px}
+ .rail-btn{padding:7px 12px;font-size:11px}
  .metrics{grid-template-columns:repeat(2,1fr)}
  .metrics strong{font-size:20px}
  .task-grid{grid-template-columns:1fr}

@@ -17,10 +17,10 @@
   <nav aria-label="主要导航"><button data-view="overview" class="nav active"><span aria-hidden="true">◫</span> <span>运行概览</span></button><button data-view="workbuddy" class="nav"><span aria-hidden="true">◉</span> <span>WorkBuddy 通道</span></button><button data-view="zcode" class="nav" id="nav-zcode"><span aria-hidden="true">◈</span> <span>Zcode</span></button><button data-view="qoder" class="nav" id="nav-qoder"><span aria-hidden="true">⬡</span> <span>Qoder</span></button><button data-view="opencode" class="nav" id="nav-opencode"><span aria-hidden="true">▣</span> <span>OpenCode</span></button><button data-view="usage" class="nav"><span aria-hidden="true">≣</span> <span>调用统计</span></button><button data-view="routes" class="nav"><span aria-hidden="true">⇄</span> <span>Agent 接入</span></button><button data-view="access" class="nav"><span aria-hidden="true">⌘</span> <span>API 接入</span></button></nav>
   <div class="sidebar-bottom"><span class="status-dot"></span> 自托管网关<button id="logout" class="quiet">退出登录</button></div>
  </aside>
- <main class="workspace"><header class="topbar"><span class="breadcrumb">控制台 <span>/</span> <span id="breadcrumb-name">运行概览</span></span><span class="badge" id="service-state">正在连接</span></header>
+ <main class="workspace"><header class="topbar"><span class="breadcrumb">控制台 <span>/</span> <span id="breadcrumb-name">运行概览</span></span><div class="topbar-actions"><button id="refresh" class="rail-btn" data-refresh-for="overview">↻ 刷新状态</button><button id="zcode-refresh" class="rail-btn" data-refresh-for="zcode" hidden>↻ 刷新状态</button><button id="qoder-refresh" class="rail-btn" data-refresh-for="qoder" hidden>↻ 刷新状态</button><button id="opencode-refresh" class="rail-btn" data-refresh-for="opencode" hidden>↻ 刷新状态</button><button id="usage-refresh" class="rail-btn" data-refresh-for="usage" hidden>↻ 刷新统计</button><button id="routes-refresh" class="rail-btn" data-refresh-for="routes" hidden>↻ 刷新别名</button><span class="badge rail-state idle" id="service-state">正在连接</span></div></header>
   <div id="notice" class="notice" hidden></div>
   <p id="announce" class="sr-only" role="status" aria-live="polite"></p>
-  <section class="page" data-page="overview"><div class="page-heading"><div><h1>运行概览</h1><p class="muted">四个通道的可达性、所选范围的用量与按天趋势。</p></div><button id="refresh" class="secondary">↻ 刷新状态</button></div>
+  <section class="page" data-page="overview"><div class="page-heading"><div><h1>运行概览</h1><p class="muted">四个通道的可达性、所选范围的用量与按天趋势。</p></div></div>
    <div class="channel-cards" id="overview-cards"></div>
    <div class="section-title"><h2>通道总览</h2><span class="muted small">每个通道一行；旁路通道未启用时如实标注</span></div>
    <div class="panel table-wrap"><table><thead><tr><th>通道</th><th>状态</th><th>模型数</th><th>调用次数</th><th>输入 tokens</th><th>输出 tokens</th><th>积分</th></tr></thead><tbody id="overview-channels-body"></tbody></table></div>
@@ -59,7 +59,7 @@
     <form id="chat-form"><label class="sr-only" for="prompt">你的问题</label><textarea id="prompt" rows="2" placeholder="输入一个问题…（回车发送，Shift+回车换行）" required></textarea><div class="composer-footer"><span id="usage" class="muted small" role="status" aria-live="polite">用量将在上游返回后显示</span><button id="stop-chat" class="secondary" type="button" hidden>停止生成</button><button id="send-chat" class="primary" type="submit">发送 ↑</button></div></form></div>
    </div>
   </section>
-  <section class="page" data-page="zcode" hidden><div class="page-heading"><div><h1>Zcode 通道</h1><p class="muted">可选的智谱 GLM 编码套餐旁路。账号、额度与登录由 zcode-proxy 自持，本控制台只负责查看与测试。</p></div><button id="zcode-refresh" class="secondary">↻ 刷新状态</button></div>
+  <section class="page" data-page="zcode" hidden><div class="page-heading"><div><h1>Zcode 通道</h1><p class="muted">可选的智谱 GLM 编码套餐旁路。账号、额度与登录由 zcode-proxy 自持，本控制台只负责查看与测试。</p></div></div>
    <p id="zcode-disabled" class="empty" hidden>GLM 通道未启用。在部署目录用 <code>deploy/compose.zcode.yml</code> overlay 启动后，这里会显示通道状态、模型列表与对话测试。</p>
    <div id="zcode-content" hidden>
     <div class="zcode-tabs" role="tablist" aria-label="Zcode 子页"><button id="zcode-view-status" class="zcode-tab active" role="tab" type="button">◫ 通道状态</button><button id="zcode-view-login" class="zcode-tab" role="tab" type="button" hidden>⇆ GLM 登录</button><button id="zcode-view-models" class="zcode-tab" role="tab" type="button" hidden>☰ GLM 模型</button><button id="zcode-view-chat" class="zcode-tab" role="tab" type="button" hidden>↗ 对话测试</button></div>
@@ -88,7 +88,7 @@
     </div>
    </div>
   </section>
-  <section class="page" data-page="qoder" hidden><div class="page-heading"><div><h1>Qoder 通道</h1><p class="muted">可选的 Qoder CN 旁路。在页签内登录 Qoder 账号后，对话消费直达 Qoder；也可用 Personal Access Token 环境变量无人值守接入。</p></div><button id="qoder-refresh" class="secondary">↻ 刷新状态</button></div>
+  <section class="page" data-page="qoder" hidden><div class="page-heading"><div><h1>Qoder 通道</h1><p class="muted">可选的 Qoder CN 旁路。在页签内登录 Qoder 账号后，对话消费直达 Qoder；也可用 Personal Access Token 环境变量无人值守接入。</p></div></div>
    <p id="qoder-disabled" class="empty" hidden>Qoder 通道未启用。在部署目录用 <code>deploy/compose.qoder.yml</code> overlay 启动后，这里会显示通道状态、账号登录、模型列表与对话测试。</p>
    <div id="qoder-content" hidden>
     <div class="qoder-tabs" role="tablist" aria-label="Qoder 子页"><button id="qoder-view-status" class="qoder-tab active" role="tab" type="button">◫ 通道状态</button><button id="qoder-view-login" class="qoder-tab" role="tab" type="button" hidden>⇆ Qoder 登录</button><button id="qoder-view-models" class="qoder-tab" role="tab" type="button" hidden>☰ Qoder 模型</button><button id="qoder-view-chat" class="qoder-tab" role="tab" type="button" hidden>↗ 对话测试</button></div>
@@ -115,7 +115,7 @@
     </div>
    </div>
   </section>
-  <section class="page" data-page="opencode" hidden><div class="page-heading"><div><h1>OpenCode 通道</h1><p class="muted">可选的 OpenCode 免费模型旁路（OW Bridge sidecar）。模型目录与运行状态由容器自持，本控制台只负责查看与测试。</p></div><button id="opencode-refresh" class="secondary">↻ 刷新状态</button></div>
+  <section class="page" data-page="opencode" hidden><div class="page-heading"><div><h1>OpenCode 通道</h1><p class="muted">可选的 OpenCode 免费模型旁路（OW Bridge sidecar）。模型目录与运行状态由容器自持，本控制台只负责查看与测试。</p></div></div>
    <p id="opencode-disabled" class="empty" hidden>OpenCode 通道未启用。在部署目录用 <code>deploy/compose.opencode.yml</code> overlay 启动后，这里会显示通道状态、模型列表与对话测试。</p>
    <div id="opencode-content" hidden>
     <div class="opencode-tabs" role="tablist" aria-label="OpenCode 子页"><button id="opencode-view-status" class="opencode-tab active" role="tab" type="button">◫ 通道状态</button><button id="opencode-view-models" class="opencode-tab" role="tab" type="button" hidden>☰ OpenCode 模型</button><button id="opencode-view-chat" class="opencode-tab" role="tab" type="button" hidden>↗ 对话测试</button></div>
@@ -135,7 +135,7 @@
     </div>
    </div>
   </section>
-  <section class="page" data-page="usage" hidden><div class="page-heading"><div><h1>调用统计</h1><p class="muted">四个通道的成功调用汇入同一账本：WorkBuddy 核心账号池与 GLM（Zcode）、Qoder、OpenCode 旁路通道。上方指标与图表读按天汇总（永久保留，与窗口无关的「全历史」口径），下方明细表读逐次记录并可按通道筛选。积分只累计上游明确回报的扣费，未观测不记为零；逐次明细保留最近 90 天，更早的日子只剩日度汇总。</p></div><button id="usage-refresh" class="secondary">↻ 刷新统计</button></div>
+  <section class="page" data-page="usage" hidden><div class="page-heading"><div><h1>调用统计</h1><p class="muted">四个通道的成功调用汇入同一账本：WorkBuddy 核心账号池与 GLM（Zcode）、Qoder、OpenCode 旁路通道。上方指标与图表读按天汇总（永久保留，与窗口无关的「全历史」口径），下方明细表读逐次记录并可按通道筛选。积分只累计上游明确回报的扣费，未观测不记为零；逐次明细保留最近 90 天，更早的日子只剩日度汇总。</p></div></div>
    <div class="section-title"><h2>全历史指标</h2><span class="muted small" id="usage-life-line">正在读取日度汇总…</span></div>
    <div class="metrics"><article><span>累计 Token</span><strong id="usage-life-tokens">—</strong><small>全部历史输入 + 输出（只累计已观测）</small></article><article><span>单日峰值 Token</span><strong id="usage-life-peak">—</strong><small id="usage-life-peak-note">Token 最多的那一天</small></article><article><span>当前连续天数</span><strong id="usage-life-streak">—</strong><small>今天或昨天有调用即视为延续</small></article><article><span>最长连续天数</span><strong id="usage-life-longest">—</strong><small>历史最长的一段在用天数</small></article></div>
    <div class="section-title"><h2>Token 活动热力图</h2><span class="muted small">一格一个自然日（Asia/Shanghai），颜色越深表示当天 Token 越多；分档刻度按近一年实际分布计算，斜纹格代表那天有调用但上游没有回报 Token</span></div>
@@ -152,7 +152,7 @@
    <div class="section-title"><h2>调用明细</h2><span class="muted small">最近调用在最上方；来源只记录到 IP 网段，不保存完整地址</span></div>
    <div class="panel table-wrap"><table><thead><tr><th>时间</th><th>通道</th><th>账号</th><th>模型</th><th>入口</th><th>方式</th><th>输入 tokens</th><th>输出 tokens</th><th>积分</th><th>来源</th><th>客户端</th></tr></thead><tbody id="usage-body"></tbody></table><p id="usage-empty" class="empty">所选范围内还没有调用记录。</p><p id="usage-note" class="muted small" hidden></p></div>
   </section>
-  <section class="page" data-page="routes" hidden><div class="page-heading"><div><h1>模型别名</h1><p class="muted">你可以给任意通道里的真实模型起一个自己好记的名字（下面叫它「别名」）。之后所有 Agent 都只填这个名字；哪天想换模型，改这里一处就够了，不用挨个去改客户端。</p></div><button id="routes-refresh" class="secondary">↻ 刷新</button></div>
+  <section class="page" data-page="routes" hidden><div class="page-heading"><div><h1>模型别名</h1><p class="muted">你可以给任意通道里的真实模型起一个自己好记的名字（下面叫它「别名」）。之后所有 Agent 都只填这个名字；哪天想换模型，改这里一处就够了，不用挨个去改客户端。</p></div></div>
    <p id="routes-disabled" class="empty" hidden>这个功能还没打开。部署时给控制台挂载一个可写目录，并设置 <code>WB2A_ROUTE_FILE</code>，这里就会出现别名表和可用的模型清单。</p>
    <div id="routes-content" hidden>
     <article class="panel"><div class="section-title"><h2>让网关自己挑一个（gateway-auto）</h2><span class="badge" id="routes-auto-badge">未知</span></div><p id="routes-auto-text" class="muted small" role="status" aria-live="polite">正在读取路由状态…</p>

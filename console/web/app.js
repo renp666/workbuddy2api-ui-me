@@ -79,6 +79,8 @@ function showPage(value) {
  page = value;
  document.querySelectorAll('[data-page]').forEach(el => el.hidden = el.dataset.page !== page);
  document.querySelectorAll('.nav').forEach(el => el.classList.toggle('active', el.dataset.view === page));
+ // 刷新按钮吸在顶栏，一次只留当前页那一个：留着别页的按钮会把人带去刷错的通道。
+ document.querySelectorAll('[data-refresh-for]').forEach(el => el.hidden = el.dataset.refreshFor !== page);
  // Every caller is a deliberate navigation (nav button, channel card, 前往测试).
  // Without this the new page opens at the previous page's scroll depth, so a
  // short page like API 接入 can land mid-form with its heading above the fold.
@@ -156,14 +158,16 @@ const modelFailureLabels={timeout:'探测超时',access:'地区限制',error:'�
 const modelProbeSources={probe:'探测',request:'真实请求'};
 // 公共模型名带通道前缀（opencode-OC · X / glm-X / opencode/x）与 realm 前缀（cn:/global:），去掉后作为跨源对齐键。
 function modelKey(id){return String(id||'').replace(/^opencode-OC · /,'').replace(/^OC · /,'').replace(/^opencode\//,'').replace(/^(?:cn|global):/,'').replace(/^glm-/,'').replace(/^qoder-/,'').toLowerCase().replace(/[^a-z0-9\u4e00-\u9fa5]+/g,'');}
-function badgeCell(text,warn){const td=document.createElement('td');const tag=document.createElement('span');tag.className='badge'+(warn?' warn':'');tag.textContent=text;td.append(tag);return td;}
+function badgeCell(text,tone){const td=document.createElement('td');const tag=document.createElement('span');tag.className='badge'+(tone?' '+tone:'');tag.textContent=text;td.append(tag);return td;}
 function chipsCell(labels,small){const td=document.createElement('td');if(labels.length){const row=document.createElement('span');row.className='badge-row';for(const label of labels){const tag=document.createElement('span');tag.className='badge';tag.textContent=label;row.append(tag);}td.append(row);}else td.textContent='—';if(small){const note=document.createElement('small');note.textContent=small;td.append(note);}return td;}
+// 五档语义：ok=探测确认能调，warn=能调但打了折（仅对话），bad=探测确认调不通，
+// unknown=根本没有探测数据。未探测不给告警色也不给绿色，它和「调不通」是两件事。
 // order 是排序档位：可用最优，其次仅对话，再次未探测（没有探测数据），最后才是真不可用。
 function modelProbeState(result){
- if(!result)return{label:'未探测',warn:true,order:2};
- if(result.ok===true)return result.chatOnly?{label:'仅对话',warn:true,order:1}:{label:'可用',warn:false,order:0};
+ if(!result)return{label:'未探测',tone:'unknown',order:2};
+ if(result.ok===true)return result.chatOnly?{label:'仅对话',tone:'warn',order:1}:{label:'可用',tone:'ok',order:0};
  const category=typeof result.category==='string'?result.category:'';
- return{label:modelFailureLabels[category]||category||'不可用',warn:true,order:3};
+ return{label:modelFailureLabels[category]||category||'不可用',tone:'bad',order:3};
 }
 function formatProbeDuration(ms){const value=Number(ms);return Number.isFinite(value)&&value>=0?`${(value/1000).toFixed(1)} 秒`:'—';}
 // speedText 输出 tokens/秒：只认探测结论里真实回传的 tokensPerSec（上游 usage 的 completion_tokens 除以生成耗时），
@@ -328,7 +332,7 @@ function renderModelTable(channel,list,health){
  const cols=channel==='opencode'?8:10;
  const appendRow=row=>{
   const tr=document.createElement('tr');
-  tr.append(cell(row.label),chipsCell(row.caps,[row.limit,row.variants].filter(Boolean).join(' · ')),badgeCell(row.state.label,row.state.warn),cell(row.duration,row.source),cell(row.speed),cell(row.note),modelHeatCell(row.key),globalHeatCell(row.key));
+  tr.append(cell(row.label),chipsCell(row.caps,[row.limit,row.variants].filter(Boolean).join(' · ')),badgeCell(row.state.label,row.state.tone),cell(row.duration,row.source),cell(row.speed),cell(row.note),modelHeatCell(row.key),globalHeatCell(row.key));
   // opencode 免费通道不采集倍率、不加开关列；其余通道追加「积分消耗」与「操作」两列。
   if(row.switchable){ tr.append(creditCell(row),switchOpCell(row)); }
   body.append(tr);
@@ -370,7 +374,7 @@ function switchOpCell(row){
  const td=document.createElement('td');
  const enabled=modelSwitchEffective(row);
  const badge=document.createElement('span');
- badge.className='badge'+(enabled?'':' warn');
+ badge.className='badge'+(enabled?' ok':' idle');
  badge.textContent=enabled?'已启用':'已停用';
  const btn=document.createElement('button');
  btn.className='secondary model-switch-btn';
@@ -439,13 +443,13 @@ async function restoreProbe(){
 // 不在登录时额外打旁路状态接口（保持登录轻量与既有懒加载约定）。
 function overviewChannelStatus(channel){
  if(channel==='workbuddy'){
-  if(!lastStatus)return{label:'未知',warn:true};
-  return lastStatus.total?{label:'运行中',warn:false}:{label:'等待账号',warn:true};
+  if(!lastStatus)return{label:'未知',tone:'unknown'};
+  return lastStatus.total?{label:'运行中',tone:'ok'}:{label:'等待账号',tone:'idle'};
  }
  const st=channel==='zcode'?zcodeStatus:channel==='qoder'?qoderStatus:opencodeStatus;
- if(!st)return{label:'未加载',warn:true};
- if(!st.enabled)return{label:'未启用',warn:true};
- return st.reachable?{label:'在线',warn:false}:{label:'不可达',warn:true};
+ if(!st)return{label:'未加载',tone:'unknown'};
+ if(!st.enabled)return{label:'未启用',tone:'idle'};
+ return st.reachable?{label:'在线',tone:'ok'}:{label:'不可达',tone:'bad'};
 }
 function overviewChannelModelCount(channel){
  if(channel==='workbuddy')return modelList.length;
@@ -465,7 +469,7 @@ function renderOverview(){
   const count=overviewChannelModelCount(c);
   const credit=s.calls?s.creditMissing===s.calls?'—':String(s.credit):'—';
   const tr=document.createElement('tr');
-  const td=document.createElement('td');const tag=document.createElement('span');tag.className='badge'+(status.warn?' warn':'');tag.textContent=status.label;td.append(tag);
+  const td=document.createElement('td');const tag=document.createElement('span');tag.className='badge'+(status.tone?' '+status.tone:'');tag.textContent=status.label;td.append(tag);
   tr.append(cell(usageChannelNames[c]),td,cell(count===null?'—':String(count)),cell(String(s.calls)),cell(formatUsageGroup(s.prompt,s.promptMissing,s.calls)),cell(formatUsageGroup(s.completion,s.completionMissing,s.calls)),cell(credit));
   body.append(tr);
  }
@@ -509,8 +513,8 @@ function cardStatus(c){
  if(c==='workbuddy')return base;
  const st=c==='zcode'?zcodeStatus:c==='qoder'?qoderStatus:opencodeStatus;
  if(!st||!st.enabled||!st.control)return base;
- if(!st.logged_in)return{label:'未登录',warn:true};
- if(c==='zcode'&&!st.proxy_running)return{label:'未启用',warn:true};
+ if(!st.logged_in)return{label:'未登录',tone:'warn'};
+ if(c==='zcode'&&!st.proxy_running)return{label:'未启用',tone:'idle'};
  return base;
 }
 function renderCards(){
@@ -519,10 +523,11 @@ function renderCards(){
   const enabled=c==='workbuddy'||(c==='zcode'&&zcodeEnabled)||(c==='qoder'&&qoderEnabled)||(c==='opencode'&&opencodeEnabled);
   if(!enabled)continue;
   const status=cardStatus(c);
-  const card=document.createElement('article');card.className='channel-card'+(status.warn?' warn':'');
+  // 卡片只在「需要处理」时抬起来：告警和不可达给边框底色，未启用/未加载是中性事实，保持平静。
+  const card=document.createElement('article');card.className='channel-card'+(status.tone==='bad'?' bad':status.tone==='warn'?' warn':'');
   const head=document.createElement('div');head.className='channel-card-head';
   const name=document.createElement('span');name.className='channel-card-name';name.textContent=usageChannelNames[c];
-  const badge=document.createElement('span');badge.className='badge'+(status.warn?' warn':'');badge.textContent=status.label;
+  const badge=document.createElement('span');badge.className='badge'+(status.tone?' '+status.tone:'');badge.textContent=status.label;
   head.append(name,badge);card.append(head);
   const stats=document.createElement('div');stats.className='channel-card-stats';
   for(const [k,v] of cardStats(c)){const d=document.createElement('div');const s=document.createElement('span');s.textContent=k;const strong=document.createElement('strong');strong.textContent=v;d.append(s,strong);stats.append(d);}
@@ -591,11 +596,14 @@ $('overview-usage-range').addEventListener('change',event=>{overviewUsageRange=e
 function renderAccounts(data) {
  lastStatus = data;
  accounts = data.accounts || [];
- $('service-state').textContent = data.total ? '网关运行中' : '运行中 · 等待添加账号';
+ const stateEl = $('service-state');
+ stateEl.textContent = data.total ? '网关运行中' : '运行中 · 等待添加账号';
+ stateEl.className = 'badge rail-state ' + (data.total ? 'ok' : 'idle');
  $('accounts-body').replaceChildren(); $('accounts-empty').hidden = accounts.length > 0;
  for (const a of accounts) {
   const tr=document.createElement('tr');const state=a.disabled?'已禁用':a.cooling?'冷却中':'可用';
-  const status=cell('');const badge=document.createElement('span');badge.className='badge'+(state==='可用'?'':' warn');badge.textContent=state;status.append(badge);
+  const accountTone={'可用':'ok','冷却中':'warn','已禁用':'idle'}[state];
+  const status=cell('');const badge=document.createElement('span');badge.className='badge '+accountTone;badge.textContent=state;status.append(badge);
   const limits=(a.rate_limited_models||[]).map(m => `${m.model} 至 ${new Date(m.until).toLocaleString()}`).join('；');
   tr.append(cell(a.nickname||a.uid,`${a.realm === 'global'?'国际版':'国内版'} · ${a.uid}`),status,cell(a.credits_known ? String(a.credits) : a.credits>0 ? `${a.credits}（历史）` : '待确认'),cell(`${a.success_count||0} / ${a.err_total||0}`),cell(String(a.in_flight)),cell(limits||a.disabled_reason||a.reason||'—', a.cool_remaining_sec ? `约 ${Math.ceil(a.cool_remaining_sec/60)} 分钟后恢复` : ''), pinOpCell(a));
   $('accounts-body').append(tr);
@@ -725,6 +733,8 @@ const taskNames={checkin:'签到',travel:'猫猫旅行',activity:'活跃上报',
 const runStatuses={running:'运行中',success:'成功',partial_failure:'部分失败',failed:'失败',skipped:'已跳过',interrupted:'已中断（结果未确认）',unknown:'结果未确认'};
 function formatTaskReward(value){return value===null||value===undefined?'未确认':String(value);}
 function formatTaskAvailability(task){return task.enabled===false?'已禁用':task.next_at?'已启用':'暂不可用 / 未知';}
+// 与 formatTaskAvailability 同一分支顺序，改一个必须改另一个：档色说的是同一个事实。
+function taskAvailabilityTone(task){return task.enabled===false?'idle':task.next_at?'ok':'unknown';}
 function formatRunStatus(status){return runStatuses[status]||'结果未确认';}
 function formatTaskTime(value){if(!value)return '未知';const date=new Date(value);return Number.isNaN(date.getTime())?'未知':date.toLocaleString('zh-CN',{timeZone:'Asia/Shanghai',hour12:false});}
 function createTaskRequestID(){
@@ -771,7 +781,7 @@ function renderTasks(){
  const list=$('task-list');list.replaceChildren();const active=taskState.active_run;
  for(const task of taskState.items||[]){
   const card=document.createElement('article');card.className='panel task-card';
-  const heading=document.createElement('div');heading.className='task-card-heading';const title=document.createElement('h3');title.textContent=taskNames[task.id]||task.id;const badge=document.createElement('span');badge.className='badge'+(task.enabled===false?' warn':'');badge.textContent=formatTaskAvailability(task);heading.append(title,badge);
+  const heading=document.createElement('div');heading.className='task-card-heading';const title=document.createElement('h3');title.textContent=taskNames[task.id]||task.id;const badge=document.createElement('span');badge.className='badge '+taskAvailabilityTone(task);badge.textContent=formatTaskAvailability(task);heading.append(title,badge);
   const hours=document.createElement('p');hours.className='muted small';hours.textContent=`配置时间：${(task.hours||[]).map(hour=>String(hour).padStart(2,'0')+':00').join('、')||'未知'} · ${task.timezone==='Asia/Shanghai'?'北京时间':task.timezone||'时区未知'}`;
   const next=document.createElement('p');next.className='small';next.textContent=task.enabled===false?'下次执行：已禁用':`下次执行：${task.next_at?formatTaskTime(task.next_at):'暂不可用 / 未知'}`;
   const latest=(taskState.latest_runs||[]).find(run=>run.task_id===task.id);const summary=document.createElement('p');summary.className='muted small';summary.textContent=active?.task_id===task.id?`当前：${formatRunStatus(active.status)}`:latest?`最近：${formatRunStatus(latest.status)} · ${formatTaskTime(latest.started_at)}`:'最近：暂无记录';
@@ -1156,17 +1166,17 @@ function renderZcode(status){
  const badge=$('zcode-status-badge');
  if(!control){
   badge.textContent=status.reachable?'在线':'不可达';
-  badge.className='badge'+(status.reachable?'':' warn');
+  badge.className='badge '+(status.reachable?'ok':'bad');
   $('zcode-status-text').textContent=status.reachable?`zcode-proxy 可达 · ${status.model_count} 个 GLM 模型`:'zcode-proxy 当前不可达，请确认容器已启动；若容器在运行，通常是 console 刚被重启、旁路网络失联，重启旁路容器即可恢复。';
  } else if(!loggedIn){
   badge.textContent='未登录';badge.className='badge warn';
   $('zcode-status-text').textContent='尚未保存 GLM 凭据，切换到「GLM 登录」完成登录后即可启用通道。';
  } else if(running){
   badge.textContent=status.reachable?'在线':'运行中 · 探测失败';
-  badge.className='badge'+(status.reachable?'':' warn');
+  badge.className='badge '+(status.reachable?'ok':'bad');
   $('zcode-status-text').textContent=status.reachable?`zcode-proxy 可达 · ${status.model_count} 个 GLM 模型`:'代理已启动，但模型探测失败，可能是上游凭据或额度异常。';
  } else {
-  badge.textContent='已登录 · 未启用';badge.className='badge warn';
+  badge.textContent='已登录 · 未启用';badge.className='badge idle';
   $('zcode-status-text').textContent='凭据已保存，点击「启用通道」开始服务。';
  }
  $('zcode-login-badge').textContent='未登录';
@@ -1326,7 +1336,7 @@ function renderQoder(status){
   statusText='尚未保存 Qoder 凭据，切换到「Qoder 登录」完成设备授权后即可使用通道。';
  }else{
   badge.textContent=status.reachable?'在线':'不可达';
-  badge.className='badge'+(status.reachable?'':' warn');
+  badge.className='badge '+(status.reachable?'ok':'bad');
   let extra='';
   if(status.control===false)extra=' · 登录控制端不可达';
   else if(control)extra=' · Qoder 账号已登录';
@@ -1488,7 +1498,7 @@ function renderOpenCode(status){
  if(!enabled)return;
  const badge=$('opencode-status-badge');
  badge.textContent=status.reachable?'在线':'不可达';
- badge.className='badge'+(status.reachable?'':' warn');
+ badge.className='badge '+(status.reachable?'ok':'bad');
  let statusText=status.reachable?`OW Bridge 可达 · ${status.model_count} 个免费模型`:'OW Bridge 当前不可达，请确认容器已启动（首次启动需下载 opencode 运行时，可能耗时数分钟）；若容器在运行，通常是 console 刚被重启、旁路网络失联，重启旁路容器即可恢复。';
  const health=status.health;
  if(health){
@@ -1745,9 +1755,9 @@ function renderRoutes(state){
  if(!enabled)return;
  const preview=state.auto_preview||{};
  const badge=$('routes-auto-badge');
- if(preview.routed_model&&!preview.fallback){badge.textContent='自动优选';badge.className='badge';}
+ if(preview.routed_model&&!preview.fallback){badge.textContent='自动优选';badge.className='badge ok';}
  else if(preview.routed_model){badge.textContent='用兜底模型';badge.className='badge warn';}
- else {badge.textContent='未知';badge.className='badge warn';}
+ else {badge.textContent='未知';badge.className='badge unknown';}
  $('routes-auto-text').textContent=preview.routed_model?`现在自动挑中的是 ${preview.routed_model}（${routeChannelLabel(preview.channel)}）· ${preview.reason||''}`:'暂时看不出 auto 会挑哪个模型。';
  $('routes-default-fallback').textContent=state.default_auto_fallback||'cn:auto';
  $('routes-auto-fallback').value=state.auto_fallback||'';
@@ -1767,7 +1777,7 @@ function renderRouteAliases(aliases){
  $('routes-alias-empty').hidden=aliases.length>0;
  for(const entry of aliases){
   const tr=document.createElement('tr');
-  tr.append(cell(entry.alias),cell(routeChannelLabel(entry.channel)),cell(entry.model),cell(entry.public_model),badgeCell(entry.enabled?'启用':'停用',!entry.enabled),cell(entry.note||'—'));
+  tr.append(cell(entry.alias),cell(routeChannelLabel(entry.channel)),cell(entry.model),cell(entry.public_model),badgeCell(entry.enabled?'启用':'停用',entry.enabled?'ok':'idle'),cell(entry.note||'—'));
   const actions=document.createElement('td');
   const edit=document.createElement('button');edit.className='secondary';edit.textContent='编辑';edit.addEventListener('click',()=>startRouteEdit(entry));
   const toggle=document.createElement('button');toggle.className='secondary';toggle.textContent=entry.enabled?'停用':'启用';toggle.addEventListener('click',()=>saveRouteAliases(currentRouteAliases().map(item=>item.alias===entry.alias?{...item,enabled:!entry.enabled}:item)));
@@ -1943,7 +1953,7 @@ function renderCapabilities(){
  if(!capState){$('cap-stamp').textContent='正在读取外部榜单…';$('cap-note').hidden=true;$('cap-tiers').replaceChildren();capEmpty('正在读取外部榜单…');capTable([],[]);return;}
  if(!capState.available){
   $('cap-stamp').textContent='外部榜单未取到';
-  $('cap-note').hidden=true;$('cap-tiers').replaceChildren();capEmpty('外部榜单当前拿不到：源站不可达或未返回数据。别名功能本身不受影响，稍后可点「↻ 刷新」重试。');capTable([],[]);return;
+  $('cap-note').hidden=true;$('cap-tiers').replaceChildren();capEmpty('外部榜单当前拿不到：源站不可达或未返回数据。别名功能本身不受影响，稍后可点顶栏的「↻ 刷新别名」重试。');capTable([],[]);return;
  }
  $('cap-stamp').textContent=`快照 ${formatProbeTime(capState.snapshot_at)} · ${capRowsList().length} 个模型`;
  const note=$('cap-note');note.textContent=capState.note||'';note.hidden=!note.textContent;
@@ -2003,8 +2013,8 @@ function capPoolColumns(){
   {label:label,cell:item=>cell(item.metric.text,capDim==='design'?'类目 '+capCategory:'')},
   {label:'其它指数',cell:item=>cell(capScoreText(item.row),capBestArena(item.row))},
   {label:'上下文',cell:item=>cell(capContextText(item.row))},
-  {label:'倍率',cell:item=>badgeCell(item.cost.text,!item.cost.known)},
-  {label:'放行',cell:item=>badgeCell(item.gate?'已放行':'未放行',!item.gate)},
+  {label:'倍率',cell:item=>badgeCell(item.cost.text,item.cost.known?'':'unknown')},
+  {label:'放行',cell:item=>badgeCell(item.gate?'已放行':'未放行',item.gate?'ok':'warn')},
   {label:'操作',cell:item=>capActionCell(item)},
  ];
 }
@@ -2018,7 +2028,7 @@ function capAllColumns(){
  return[
   {label:'热度',cell:item=>cell('#'+item.row.heat)},
   {label:'模型',cell:item=>cell(item.row.name||item.row.id,String(item.row.id))},
-  {label:'池内',cell:item=>badgeCell(item.pool?routeChannelLabel(item.pool.channel):'池外',!item.pool)},
+  {label:'池内',cell:item=>badgeCell(item.pool?routeChannelLabel(item.pool.channel):'池外',item.pool?'':'idle')},
   {label:'综合',cell:item=>cell(capNumber(item.row.intelligence))},
   {label:'编程',cell:item=>cell(capNumber(item.row.coding))},
   {label:'智能体',cell:item=>cell(capNumber(item.row.agentic))},
