@@ -26,6 +26,11 @@ const openRouterCatalogURL = "https://openrouter.ai/api/v1/models?sort=most-popu
 // catalogCacheTTL 以「天」为尺度：目录与榜外名次是天级变化，分钟级刷新只白耗外呼。
 const catalogCacheTTL = 24 * time.Hour
 
+// catalogColdRetryBackoff 是「一次都没取到过」时的重试间隔，与 TTL 分开计：取 15 秒
+// 比实测一次全量抓取（约 3 秒）大一档，够挡住连续渲染反复敲外网，又不让人工重试等成
+// 一个看不见的时长。
+const catalogColdRetryBackoff = 15 * time.Second
+
 // catalogFetchTimeout 比内网通道宽得多：实测该公网源链路吞吐在 3 KB/s～155 KB/s 之间
 // 摆动，快照约 1 MB，8 秒会在最差情况下只收到局部正文导致解析失败、整列静默变「—」。
 const catalogFetchTimeout = 30 * time.Second
@@ -147,25 +152,39 @@ func hasToken(list []string, want string) bool {
 // 缓存单位从「只存标识串」放大成「存整份正文」，上限仍是 fetchUpstream 的 4 MiB
 // 正文闸，实测约 1 MB；换来的性质是热度列与能力榜不可能取到不同批次的数据。
 type catalogCache struct {
-	mu        sync.Mutex
-	fetchedAt time.Time
-	list      []json.RawMessage
-	haveData  bool
+	mu          sync.Mutex
+	fetchedAt   time.Time
+	attemptedAt time.Time
+	list        []json.RawMessage
+	haveData    bool
 }
 
 // raw 返回快照条目与采集时间；过期时重新抓取，失败沿用上一份。
-func (c *catalogCache) raw(h *server, ctx context.Context) ([]json.RawMessage, time.Time, bool) {
+// fetch 是注入的抓取入口，测试用它造出成功、失败、调用方中途断开三种上游形态。
+func (c *catalogCache) raw(ctx context.Context, fetch func(context.Context) ([]json.RawMessage, bool)) ([]json.RawMessage, time.Time, bool) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	if time.Since(c.fetchedAt) < catalogCacheTTL {
+	// 两个窗口分开：拿到过快照按天复用，一次都没拿到过只退避数十秒。用同一个 24 小时
+	// 闸门会把首屏那一次失败放大成整天，页面的重试按钮只能反复读出缓存里的 false。
+	if c.haveData {
+		if time.Since(c.fetchedAt) < catalogCacheTTL {
+			return c.list, c.fetchedAt, c.haveData
+		}
+	} else if time.Since(c.attemptedAt) < catalogColdRetryBackoff {
 		return c.list, c.fetchedAt, c.haveData
 	}
-	list, ok := h.fetchOpenRouterCatalog(ctx)
-	c.fetchedAt = time.Now()
-	if ok {
-		c.list = list
-		c.haveData = true
+	list, ok := fetch(ctx)
+	if !ok {
+		// 调用方断开（r.Context 已取消）不证明源站有问题：那次请求没跑完就结束了，
+		// 不占用退避窗口。内层抓取超时取消的是派生 context，调用方的仍活着，按失败退避。
+		if ctx.Err() == nil {
+			c.attemptedAt = time.Now()
+		}
+		return c.list, c.fetchedAt, c.haveData
 	}
+	c.list = list
+	c.haveData = true
+	c.fetchedAt = time.Now()
 	return c.list, c.fetchedAt, c.haveData
 }
 
@@ -188,7 +207,7 @@ func (h *server) fetchOpenRouterCatalog(ctx context.Context) ([]json.RawMessage,
 // adminCapabilities 下发整份能力榜单与快照时间。从未取到过数据时如实返回
 // available:false，页面据此显示「拿不到」而不是一张空表假装成数据。
 func (h *server) adminCapabilities(w http.ResponseWriter, r *http.Request) {
-	list, fetchedAt, haveData := h.catalog.raw(h, r.Context())
+	list, fetchedAt, haveData := h.catalog.raw(r.Context(), h.fetchOpenRouterCatalog)
 	if !haveData {
 		writeJSON(w, 200, map[string]any{"available": false, "rows": []capabilityRow{}})
 		return

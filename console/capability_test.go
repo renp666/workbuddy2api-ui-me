@@ -1,8 +1,10 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"testing"
+	"time"
 )
 
 // TestCapabilityRowsFromListParsesRealShapes 锁定真实响应形态（2026-10-05 实测抓取自
@@ -179,4 +181,82 @@ func derefFloat(v *float64) float64 {
 		return -1
 	}
 	return *v
+}
+
+func catalogSnapshotList() []json.RawMessage {
+	return []json.RawMessage{json.RawMessage(`{"id":"a/b","canonical_slug":"a/b","name":"AB"}`)}
+}
+
+// TestCatalogCacheColdFailureRetriesAfterBackoff 钉住「一次都没取到过」的出口：
+// 24 小时 TTL 只能套在已经拿到的快照上，否则首屏那一次失败会把面板钉死一整天，
+// 页面写的「稍后可点「↻ 刷新」重试」刷的只是缓存里那条 false。
+// 同时要求失败有一次短退避，不能让每次渲染都去敲外网。
+func TestCatalogCacheColdFailureRetriesAfterBackoff(t *testing.T) {
+	cache := &catalogCache{}
+	calls := 0
+	failing := func(context.Context) ([]json.RawMessage, bool) {
+		calls++
+		return nil, false
+	}
+	ctx := context.Background()
+	if _, _, have := cache.raw(ctx, failing); have {
+		t.Fatalf("首次抓取失败却报告有数据")
+	}
+	if _, _, _ = cache.raw(ctx, failing); calls != 1 {
+		t.Fatalf("冷失败退避窗口内又抓了一次外网，calls=%d", calls)
+	}
+	cache.attemptedAt = time.Now().Add(-catalogColdRetryBackoff)
+	list, _, have := cache.raw(ctx, func(context.Context) ([]json.RawMessage, bool) {
+		calls++
+		return catalogSnapshotList(), true
+	})
+	if calls != 2 {
+		t.Fatalf("退避过后没有真的重试，calls=%d", calls)
+	}
+	if !have || len(list) != 1 {
+		t.Fatalf("退避后重试成功却没拿到快照: have=%v list=%v", have, list)
+	}
+}
+
+// TestCatalogCacheSuccessReusedWithinTTL 保住另一半语义：取到之后按 24 小时复用，
+// 目录与名次是天级变化，分钟级重复抓取只是白耗外呼。
+func TestCatalogCacheSuccessReusedWithinTTL(t *testing.T) {
+	cache := &catalogCache{}
+	calls := 0
+	fetch := func(context.Context) ([]json.RawMessage, bool) {
+		calls++
+		return catalogSnapshotList(), true
+	}
+	ctx := context.Background()
+	_, first, have := cache.raw(ctx, fetch)
+	if !have || first.IsZero() {
+		t.Fatalf("首次抓取应拿到快照与采集时间: have=%v at=%v", have, first)
+	}
+	if _, _, _ = cache.raw(ctx, fetch); calls != 1 {
+		t.Fatalf("TTL 窗口内重复抓取了外网，calls=%d", calls)
+	}
+}
+
+// TestCatalogCacheAbortedRequestKeepsRetrySlot 区分两种失败：调用方中途断开时
+// 那次请求根本没证明源站有问题，不该占用退避窗口；内层抓取超时不取消调用方
+// context，仍按上游失败退避。
+func TestCatalogCacheAbortedRequestKeepsRetrySlot(t *testing.T) {
+	cache := &catalogCache{}
+	calls := 0
+	interrupted := func(context.Context) ([]json.RawMessage, bool) {
+		calls++
+		return nil, false
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	aborted := func(context.Context) ([]json.RawMessage, bool) {
+		calls++
+		cancel()
+		return nil, false
+	}
+	if _, _, _ = cache.raw(ctx, aborted); calls != 1 {
+		t.Fatalf("aborted fetch should attempt once, calls=%d", calls)
+	}
+	if _, _, _ = cache.raw(context.Background(), interrupted); calls != 2 {
+		t.Fatalf("被断开的那次占用了退避窗口，下一次没有重试，calls=%d", calls)
+	}
 }

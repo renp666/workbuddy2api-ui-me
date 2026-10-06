@@ -41,7 +41,7 @@ func heatRanksFromList(list []json.RawMessage) []heatEntry {
 // 每项带 id 与 canonical_slug 两个对齐键。从未取到过数据时如实返回空列表，
 // 页面据此把所有「全球热度」单元格留「—」。
 func (h *server) adminHeatRanks(w http.ResponseWriter, r *http.Request) {
-	list, _, haveData := h.catalog.raw(h, r.Context())
+	list, _, haveData := h.catalog.raw(r.Context(), h.fetchOpenRouterCatalog)
 	if !haveData {
 		writeJSON(w, 200, map[string]any{"available": false, "ranks": []heatEntry{}})
 		return
