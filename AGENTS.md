@@ -55,6 +55,7 @@ console（独立 Go 服务，内嵌 HTML/CSS/JavaScript）
 | `deploy/` | Dockerfile、core 镜像启动入口、配置、可选 zcode-proxy / qoder-proxy / opencode-proxy overlay 和隔离验收工具。 |
 | `scripts/overlay.py` | 源码物化、补丁标识和上游更新。 |
 | `scripts/check.sh`、`scripts/acceptance.sh` | 本地检查和真实容器隔离验收。 |
+| `scripts/local-release.sh`、`scripts/channel-probe.sh` | 本机发版（不发布镜像，见「本机发版」）和只读通道诊断（网关活体 + 四通道端口与合并模型数）。 |
 | `scripts/release.sh`、`scripts/release.py` | 时间戳镜像发布入口与实现。 |
 | `docs/superpowers/plans/`、`docs/superpowers/specs/` | 任务书、交接班记录与设计文档；进行中的安全回溯工作以此为准。 |
 | `docs/superpowers/verification/` | 验证记录、界面截图；模拟素材不代表真实上游结果。 |
@@ -251,14 +252,15 @@ docker tag workbuddy2api-core:local-prev workbuddy2api-core:local
 docker compose up -d
 ```
 
-开机自启不需要宿主脚本：Docker Desktop 注册在 `HKCU\Software\Microsoft\Windows\CurrentVersion\Run`，五只服务都是 `restart: unless-stopped`，实测 `docker desktop stop` + `start` 后五只全部自动恢复，daemon 自己按依赖顺序先起 console 再起旁路。
+开机自启不需要宿主脚本：Docker Desktop 注册在 `HKCU\Software\Microsoft\Windows\CurrentVersion\Run`，五只服务都是 `restart: unless-stopped`，实测 `docker desktop stop` + `start` 与整机重启后五只全部自动恢复（2026-10-06 冷启动读数：五只 Up、镜像仍是 `:local` 而非已发布对、healthz/livez 200、`bash scripts/channel-probe.sh` 一次读全四通道），daemon 自己按依赖顺序先起 console 再起旁路。
 
-两条必须知道的代价与约束：
+必须知道的代价与约束：
 
 - 旁路以 `network_mode: service:console` 绑定 console 的**容器 ID**。单独重建 console 会让三只旁路永久 `Exited (255)`，`State.Error` 为 `joining network namespace of container: No such container`，此时 `restart: unless-stopped` 也救不回来。带 override 的 `docker compose up -d` 会在同一次调用里连旁路一起重建，因此不要改用更短的 `-f` 链。
-- zcode 的「启用」是一次性动作，不是每次开机都要点：启用状态落在挂载卷的 `runtime/zcode/config.yaml`，实测 `docker restart` 旁路容器后约 9 秒数据面 8080 自行恢复 `/v1/models`，从未有人点过「启用」的全新挂载才需要先点一次。qoder 与 opencode 起来即可用（实测 `/health` 分别返回 `{"ok":true}` 与 `401 Local proxy API key required`，后者正是它按设计只认 console 注入的 Bearer）。
+- zcode 的「启用」是一次性动作，不是每次开机都要点：启用状态落在挂载卷的 `runtime/zcode/config.yaml`。实测冷启动（真重启电脑）后无人点击，`scripts/channel-probe.sh` 直接读到 8080 服务 `glm-` 模型；单独 `docker restart` 旁路容器后约 9 秒同样自行恢复。只有从未启用过的全新挂载才需要先点一次。
+- 旁路都在 console 的网络命名空间里，宿主回环看不见它们，探针必须 `--network container:<console>` 进去，并且**发回环 Host**：qoder-proxy 拒绝非回环 Host，用 `Host: probe` 这类自造值会拿到一条看着像故障的 `403 unexpected Host header`。opencode 的 `/health` 裸探恒返回 `401 Local proxy API key required`（按设计只认 console 注入的 Bearer），它自己的 `/v1/models` 条目数会浮动——同一天实测合并列表 6 → 冷启动后 2，而 bridge 侧 `/health` 报 `phase=ready`，console 只透传不补齐。
 
-清理尺度上别动的两样：`wb2a-gomod`、`wb2a-gomodcache`、`wb2a-go-cache`、`wb2a-gobuildcache` 四个卷是「不联网也能重建」的前提；BuildKit 缓存约 16 GB 中仅约 0.9 GB 可按年龄回收，`--filter until=168h` 与 `--reserved-space` 实测都清不动其余活跃部分，全量 `builder prune -a` 会连离线重建能力一起删掉，除非确认网络可用否则不做。发版脚本内也不要全局导出 `MSYS_NO_PATHCONV=1`，它会反过来破坏 `git archive -o` 的路径写入，上下文一律写仓库内相对路径。
+清理尺度上别动的几样：`wb2a-gomod`、`wb2a-gomodcache`、`wb2a-go-cache`、`wb2a-gobuildcache` 四个卷是「不联网也能重建」的前提；**凡被入库 Compose 按名字钉住的镜像都不进清理范围**（`docker-compose.yml` 钉的已发布对就是本机生产入口的离线保底，删了它等于让 tracked 文件指向本机不存在的镜像，而这一步从 `git status` 上看不出来）；BuildKit 缓存约 16 GB 中仅约 0.9 GB 可按年龄回收，`--filter until=168h` 与 `--reserved-space` 实测都清不动其余活跃部分，全量 `builder prune -a` 会连离线重建能力一起删掉，除非确认网络可用否则不做。发版脚本内也不要全局导出 `MSYS_NO_PATHCONV=1`，它会反过来破坏 `git archive -o` 的路径写入，上下文一律写仓库内相对路径。被删掉的代际要在 `docs/superpowers/verification/` 留下 image ID 再删。
 
 ## 交付
 
