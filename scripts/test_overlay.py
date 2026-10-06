@@ -1066,6 +1066,28 @@ class IndexedModeTests(unittest.TestCase):
 
 
 class AcceptanceScriptTests(unittest.TestCase):
+    def test_invalid_config_phase_and_container_paths_survive_a_windows_host(self):
+        script = (Path(__file__).parent / "acceptance.sh").read_text(encoding="utf-8")
+        # Docker Desktop materializes a missing bind source as a directory, so only the
+        # precondition may claim "nothing exists"; after the refusals the claim is "no file".
+        self.assertIn('test ! -e "$missing_config"\nfor invalid_config in', script)
+        self.assertIn('test ! -f "$missing_config"\ncompose_for "$fresh_project"', script)
+        self.assertNotIn('test ! -e "$missing_config"\ncompose_for', script)
+        # Git Bash rewrites POSIX paths handed to native docker.exe; the exclusion must stay
+        # limited to container prefixes so host paths still convert, and MSYS-only.
+        self.assertIn("MSYS2_ARG_CONV_EXCL='/app;/bin;/usr;/run;/etc'", script)
+        self.assertIn('if [[ -n "${MSYSTEM:-}" ]]; then', script)
+        # An embedded dst=/… is rewritten even with that exclusion list, so the one command that
+        # carries no host path gets the switch instead.
+        self.assertIn(
+            'MSYS_NO_PATHCONV=1 docker run --rm --network none \\\n'
+            '  --mount "type=volume,src=${legacy_project}_auths,dst=/auths"',
+            script,
+        )
+        # A parent that exports PWD in Windows form makes bash's logical pwd echo that form
+        # back, which then trips the "repo root must be absolute" guard at the repo root itself.
+        self.assertIn('repo_root="${1:-$(cd "$(dirname "$0")/.." && pwd -P)}"', script)
+
     def test_build_proxy_args_are_empty_by_default_and_use_only_explicit_environment(self):
         acceptance = Path(__file__).parent / "acceptance.sh"
         script = acceptance.read_text(encoding="utf-8")

@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-repo_root="${1:-$(cd "$(dirname "$0")/.." && pwd)}"
+repo_root="${1:-$(cd "$(dirname "$0")/.." && pwd -P)}"
 case "$repo_root" in
   /*) ;;
   *) echo "repo root must be absolute" >&2; exit 2 ;;
@@ -9,6 +9,13 @@ esac
 for path in upstream.lock docker-compose.yml docker-compose.build.yaml LICENSE scripts/overlay.py deploy/core.Dockerfile deploy/console.Dockerfile deploy/compose.acceptance.yml deploy/compose.config.yml deploy/default-config.json deploy/acceptance-config.json deploy/acceptance.env deploy/mock_upstream.py; do
   test -e "$repo_root/$path" || { echo "missing $repo_root/$path" >&2; exit 2; }
 done
+
+# Git Bash rewrites POSIX-shaped arguments handed to native docker.exe, which would turn the
+# container-side paths below into host paths. Excluding only container prefixes keeps host paths
+# converting, and the whole block is skipped on platforms without an MSYS runtime.
+if [[ -n "${MSYSTEM:-}" ]]; then
+  export MSYS2_ARG_CONV_EXCL='/app;/bin;/usr;/run;/etc'
+fi
 
 suffix="$(date +%s)-$$"
 fresh_project="wb2api-task4-$suffix"
@@ -247,7 +254,9 @@ for invalid_config in "$missing_config" "$repo_root/deploy" "$repo_root/README.m
     exit 1
   fi
 done
-test ! -e "$missing_config"
+# Docker Desktop materializes a missing bind source as a directory even with
+# create_host_path: false, so what must not survive the refusals is the config file.
+test ! -f "$missing_config"
 compose_for "$fresh_project" "$fresh_port" up -d --wait --no-build
 [[ "$(compose_for "$fresh_project" "$fresh_port" port console 7863)" == "127.0.0.1:$fresh_port" ]]
 wait_live "http://127.0.0.1:$fresh_port/livez"
@@ -301,7 +310,9 @@ remove_project_volumes "$fresh_project"
 
 export WB2A_ACCEPTANCE_CONFIG_FILE="$repo_root/deploy/acceptance-config.json"
 create_volumes "$legacy_project"
-docker run --rm --network none \
+# Git Bash rewrites an embedded dst=/… even with MSYS2_ARG_CONV_EXCL, while this command carries
+# no host path that needs converting, so the switch is scoped to it instead of the whole script.
+MSYS_NO_PATHCONV=1 docker run --rm --network none \
   --mount "type=volume,src=${legacy_project}_auths,dst=/auths" \
   --mount "type=volume,src=${legacy_project}_data,dst=/data" \
   alpine:3.20 sh -eu -c '
