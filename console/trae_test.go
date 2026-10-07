@@ -72,7 +72,10 @@ func TestAdminTraeLoginStartRewritesCallback(t *testing.T) {
 		mu.Lock()
 		gotAuth = r.Header.Get("Authorization")
 		mu.Unlock()
-		fmt.Fprint(w, `{"login_url":"https://www.trae.cn/authorization?client_id=x&auth_callback_url=http%3A%2F%2F127.0.0.1%3A18080%2Fauthorize","pending_id":"p1","callback_url":"http://127.0.0.1:18080/authorize"}`)
+		// 用 %s 而非 Fprint 的裸串：URL 编码里的 %2F 会被 go vet 的 printf 检查
+		// 判成疑似格式化指令，导致镜像内 `go test ./...` 构建失败。
+		const loginJSON = `{"login_url":"https://www.trae.cn/authorization?client_id=x&auth_callback_url=http%3A%2F%2F127.0.0.1%3A18080%2Fauthorize","pending_id":"p1","callback_url":"http://127.0.0.1:18080/authorize"}`
+		fmt.Fprintf(w, "%s", loginJSON)
 	})
 	cookie, csrf := login(t, h)
 	w := adminRequest(h, "POST", "/admin/trae/login", "", cookie, csrf)
