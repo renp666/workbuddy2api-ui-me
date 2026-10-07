@@ -6,7 +6,8 @@
 # requests whose model starts with "trae-" to the sidecar; everything else stays on core. The
 # console Trae tab drives the sidecar's /admin/api/* control endpoints (account import, web login,
 # refresh, schedule, usage) through the console admin session; the TRAE OAuth callback lands on
-# console's public /admin/trae/authorize, which proxies to the sidecar's /authorize without CSRF.
+# console's public /authorize (trae.cn's SSR requires the literal 127.0.0.1 host and the /authorize
+# path), which proxies to the sidecar's /authorize without CSRF.
 services:
   trae-proxy:
     build:

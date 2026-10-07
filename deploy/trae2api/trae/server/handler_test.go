@@ -229,17 +229,23 @@ func TestModelsEndpoint(t *testing.T) {
 		t.Errorf("object=%v", resp["object"])
 	}
 	data := resp["data"].([]any)
-	if len(data) != 32 {
-		t.Errorf("models count=%d want 32", len(data))
+	if len(data) != 33 {
+		t.Errorf("models count=%d want 33", len(data))
 	}
-	found := false
+	foundGlm, foundNo22 := false, false
 	for _, m := range data {
-		if m.(map[string]any)["id"] == "glm-5.2" {
-			found = true
+		switch m.(map[string]any)["id"] {
+		case "glm-5.2":
+			foundGlm = true
+		case "no22":
+			foundNo22 = true
 		}
 	}
-	if !found {
+	if !foundGlm {
 		t.Error("glm-5.2 missing")
+	}
+	if !foundNo22 {
+		t.Error("no22 missing")
 	}
 }
 
