@@ -7,6 +7,7 @@ import (
 	"errors"
 	"io"
 	"log"
+	"net"
 	"net/http"
 	"net/http/httputil"
 	"net/url"
@@ -320,30 +321,34 @@ func traeCtlMessage(out map[string]any, fallback string) string {
 	return fallback
 }
 
-// traeCallbackBase 决定 TRAE 登录回调落点：优先显式公开 origin，否则按当前请求的
-// scheme+Host 推断，保证本地明文部署也能把回调导回 console。
+// traeDefaultCallbackPort 在请求 Host 不带端口时的兜底回调端口，与 console 默认
+// 监听端口一致。
+const traeDefaultCallbackPort = "7863"
+
+// traeCallbackBase 决定 TRAE 登录回调落点。TRAE 授权页在服务端（SSR）校验
+// auth_callback_url 的形状：主机必须是字面量 127.0.0.1、路径必须是 /authorize，
+// 端口任意。实测（2026-10-07，www.trae.cn）：host=localhost、path=/admin/trae/authorize、
+// 或整个参数缺失，都会让该页返回空 SSR 数据并渲染「登录失败 网络错误，请刷新页面重试。」，
+// 因此这里固定 127.0.0.1，端口沿用调用方访问 console 时实际使用的端口。
 func (h *server) traeCallbackBase(r *http.Request) string {
-	if h.cfg.PublicOrigin != "" {
-		return h.cfg.PublicOrigin
+	port := traeDefaultCallbackPort
+	if _, hostPort, err := net.SplitHostPort(r.Host); err == nil && hostPort != "" {
+		port = hostPort
 	}
-	scheme := "http"
-	if r.TLS != nil {
-		scheme = "https"
-	}
-	return scheme + "://" + r.Host
+	return "http://127.0.0.1:" + port
 }
 
 // rewriteTraeCallback 把 sidecar 返回的 login_url 里的 auth_callback_url 查询参数
-// 改写为 console 公开地址下的 /admin/trae/authorize。sidecar 的 adminLoginStart 只
-// 接受 callback_port 并硬编码拼出 127.0.0.1:<port>/authorize，而该端口在 overlay 下
-// 已被 TRAE_CALLBACK_LISTEN=0 关闭，故由 console 侧重写查询参数完成回调导流。
+// 改写为 console 根路径 /authorize。sidecar 的 adminLoginStart 只接受 callback_port
+// 并硬编码拼出 127.0.0.1:<port>/authorize，而该端口在 overlay 下已被
+// TRAE_CALLBACK_LISTEN=0 关闭，故由 console 侧重写查询参数完成回调导流。
 func (h *server) rewriteTraeCallback(loginURL string, r *http.Request) string {
 	u, err := url.Parse(loginURL)
 	if err != nil {
 		return loginURL
 	}
 	q := u.Query()
-	q.Set("auth_callback_url", h.traeCallbackBase(r)+"/admin/trae/authorize")
+	q.Set("auth_callback_url", h.traeCallbackBase(r)+"/authorize")
 	u.RawQuery = q.Encode()
 	return u.String()
 }
@@ -402,7 +407,7 @@ func (h *server) adminTraeLoginStart(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, code, out)
 		return
 	}
-	callbackURL := h.traeCallbackBase(r) + "/admin/trae/authorize"
+	callbackURL := h.traeCallbackBase(r) + "/authorize"
 	if loginURL, ok := out["login_url"].(string); ok && loginURL != "" {
 		out["login_url"] = h.rewriteTraeCallback(loginURL, r)
 	}

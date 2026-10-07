@@ -289,6 +289,10 @@ func NewServer(cfg Config) (http.Handler, error) {
 	// Trae OAuth 浏览器 302 的公开落点：TRAE 域跳转不带 console Cookie，
 	// 故无 withAdmin（与 sidecar /authorize 语义一致），只转发回调 query。
 	h.mux.HandleFunc("GET /admin/trae/authorize", h.adminTraeAuthorize)
+	// TRAE 授权页对 auth_callback_url 的形状有硬约束：主机必须是字面量 127.0.0.1、
+	// 路径必须是 /authorize（端口任意），否则 SSR 返回空数据并显示登录失败。所以
+	// 实际回调落在 console 根路径上，与 /admin/trae/authorize 共用同一处理器。
+	h.mux.HandleFunc("GET /authorize", h.adminTraeAuthorize)
 	h.mux.HandleFunc("GET /admin/ccr", h.withAdmin(h.adminCCRStatus))
 	h.mux.HandleFunc("POST /admin/ccr/gateway", h.withAdmin(h.adminCCRGateway))
 	h.mux.HandleFunc("GET /admin/ccr/link", h.withAdmin(h.adminCCRLink))
