@@ -1,0 +1,545 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>autoclaw2api Console</title>
+<style>
+:root{--bg:#0f1115;--card:#181b22;--bd:#2a2f3a;--fg:#e6e9ef;--mut:#8b93a7;--acc:#4f8cff;--ok:#3dd68c;--bad:#ff6b6b;--warn:#ffb020}
+*{box-sizing:border-box}
+body{margin:0;font:14px/1.5 ui-sans-serif,system-ui,-apple-system,"Segoe UI",sans-serif;background:var(--bg);color:var(--fg)}
+header{display:flex;align-items:center;justify-content:space-between;padding:14px 20px;border-bottom:1px solid var(--bd);background:var(--card);position:sticky;top:0;z-index:9}
+header h1{margin:0;font-size:16px;font-weight:600}
+nav{display:flex;gap:8px}
+nav button{background:transparent;border:1px solid var(--bd);color:var(--mut);padding:6px 14px;border-radius:8px;cursor:pointer}
+nav button.on{background:var(--acc);border-color:var(--acc);color:#fff}
+main{max-width:1100px;margin:0 auto;padding:20px}
+.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));gap:12px;margin-bottom:16px}
+.stat{background:var(--card);border:1px solid var(--bd);border-radius:10px;padding:14px}
+.stat .k{color:var(--mut);font-size:12px}
+.stat .v{font-size:22px;font-weight:600;margin-top:4px}
+.card{background:var(--card);border:1px solid var(--bd);border-radius:10px;padding:16px;margin-bottom:16px}
+.card h2{margin:0 0 12px;font-size:14px;font-weight:600;color:var(--mut);text-transform:uppercase;letter-spacing:.04em}
+table{width:100%;border-collapse:collapse;font-size:13px}
+th,td{text-align:left;padding:8px 10px;border-bottom:1px solid var(--bd)}
+th{color:var(--mut);font-weight:500}
+.tag{display:inline-block;padding:1px 8px;border-radius:99px;font-size:12px}
+.tag.ok{background:rgba(61,214,140,.15);color:var(--ok)}
+.tag.bad{background:rgba(255,107,107,.15);color:var(--bad)}
+.tag.warn{background:rgba(255,176,32,.15);color:var(--warn)}
+.tag.mut{background:rgba(139,147,167,.15);color:var(--mut)}
+.row{display:flex;gap:10px;flex-wrap:wrap;align-items:center}
+.btn{background:var(--acc);border:0;color:#fff;padding:8px 16px;border-radius:8px;cursor:pointer;font-size:13px}
+.btn:disabled{opacity:.5;cursor:not-allowed}
+.btn.ghost{background:transparent;border:1px solid var(--bd);color:var(--fg)}
+select,input{background:#12151c;border:1px solid var(--bd);color:var(--fg);padding:8px 10px;border-radius:8px;font-size:13px}
+input[type=text]{min-width:220px}
+#log{background:#0c0e12;border:1px solid var(--bd);border-radius:8px;padding:12px;max-height:280px;overflow:auto;font:12px/1.5 ui-monospace,Menlo,monospace;white-space:pre-wrap;color:#b8c0d0}
+.hint{color:var(--mut);font-size:12px;margin-top:8px}
+.hide{display:none !important}
+.modal{display:flex}
+</style>
+</head>
+<body>
+<header>
+  <h1>autoclaw2api · Console</h1>
+  <nav>
+    <button id="tab-status" class="on" onclick="show('status')">状态</button>
+    <button id="tab-models" onclick="show('models')">模型</button>
+    <button id="tab-check" onclick="show('check')">签到</button>
+  </nav>
+</header>
+<main>
+  <!-- 状态 -->
+  <section id="panel-status">
+    <div class="grid">
+      <div class="stat"><div class="k">健康账号</div><div class="v" id="s-healthy">–</div></div>
+      <div class="stat"><div class="k">总账号</div><div class="v" id="s-total">–</div></div>
+      <div class="stat"><div class="k">冷却中</div><div class="v" id="s-cooling">–</div></div>
+      <div class="stat"><div class="k">已禁用</div><div class="v" id="s-disabled">–</div></div>
+      <div class="stat"><div class="k">模式</div><div class="v" id="s-mode" style="font-size:16px">–</div></div>
+      <div class="stat"><div class="k">上游健康</div><div class="v" id="s-healthz" style="font-size:16px">–</div></div>
+    </div>
+    <div class="card">
+      <div class="row" style="justify-content:space-between;margin-bottom:8px">
+        <button class="btn" id="ck-all-cn" onclick="checkinRegion('cn')">一键签到国内</button>
+        <button class="btn" id="ck-all-global" onclick="checkinRegion('global')">一键签到海外</button>
+        <button class="btn ghost" id="credits-btn" onclick="refreshCredits()">刷新额度</button>
+        <button class="btn ghost" onclick="loadStatus()">刷新状态</button>
+        <button class="btn ghost" onclick="openLoginModal()">＋ 添加账号</button>
+        <span class="hint" id="ck-flash" style="margin:0"></span>
+      </div>
+      <table>
+        <thead><tr><th>UID</th><th>区域</th><th>积分</th><th>状态</th><th>冷却原因</th><th>成功</th><th>错误</th><th>签到</th></tr></thead>
+        <tbody id="acct-body"><tr><td colspan="8" class="hint">加载中…</td></tr></tbody>
+      </table>
+      <div class="hint">自动刷新：5s。积分为账号级共享池（按模型计价，单次上限 50）。<a href="#" onclick="showCreditDetail();return false" style="color:var(--acc)">查看额度明细</a></div>
+      <div id="credit-detail" class="hide" style="margin-top:12px"></div>
+    </div>
+  </section>
+
+  <!-- 模型 -->
+  <section id="panel-models" class="hide">
+    <div class="card">
+      <div class="row" style="justify-content:space-between;margin-bottom:8px">
+        <h2 style="margin:0">Model List</h2>
+        <button class="btn ghost" onclick="loadModels()">刷新</button>
+      </div>
+      <table>
+        <thead><tr><th>model id</th><th>区域</th><th>通道</th><th>context</th></tr></thead>
+        <tbody id="model-body"><tr><td colspan="4" class="hint">加载中…</td></tr></tbody>
+      </table>
+      <div class="hint">global/* 与 zai_*/tdpsk_* 走桌面端本地 model-proxy；openclaw* 走 CN 沙箱 relay。</div>
+    </div>
+  </section>
+
+  <!-- 签到 -->
+  <section id="panel-check" class="hide">
+    <div class="card">
+      <div class="row" style="justify-content:space-between;margin-bottom:8px">
+        <h2 style="margin:0">每日签到 · task_id=daily_signin</h2>
+        <div class="row">
+          <select id="ck-region">
+            <option value="all">全部区域</option>
+            <option value="cn">仅国内</option>
+            <option value="global">仅国际</option>
+          </select>
+          <label><input type="checkbox" id="ck-dry"> dry-run</label>
+        </div>
+      </div>
+      <div class="row">
+        <button class="btn ghost" id="ck-status-btn" onclick="loadTasks()">查任务列表</button>
+        <button class="btn" id="ck-btn" onclick="doCheckin()">立即签到</button>
+      </div>
+      <div id="ck-result" style="margin-top:12px"></div>
+      <div class="hint">服务端幂等：already_completed=true 表示今日已签。建议 crontab 每天跑一次 check.py。</div>
+    </div>
+    <div class="card">
+      <h2>任务列表</h2>
+      <div id="task-result" class="hint">尚未查询</div>
+    </div>
+  </section>
+</main>
+<!-- 登录弹窗 -->
+<div id="login-modal" class="modal hide" style="position:fixed;inset:0;background:rgba(0,0,0,.6);z-index:99;align-items:center;justify-content:center">
+  <div style="background:var(--card);border:1px solid var(--bd);border-radius:12px;width:min(460px,92vw);padding:20px">
+    <div class="row" style="justify-content:space-between;margin-bottom:14px">
+      <h2 style="margin:0;font-size:15px">添加账号</h2>
+      <button class="btn ghost" style="padding:4px 12px" onclick="closeLoginModal()">✕</button>
+    </div>
+    <div class="row" style="margin-bottom:14px">
+      <button class="btn ghost" id="lt-cn" onclick="loginTab('cn')">国内短信</button>
+      <button class="btn ghost" id="lt-global" onclick="loginTab('global')">海外 OAuth</button>
+    </div>
+    <div id="lp-cn" class="hide">
+      <div class="row" style="margin-bottom:10px">
+        <input type="text" id="cn-phone" placeholder="手机号" style="flex:1">
+        <button class="btn ghost" id="cn-send" onclick="cnSendCode()">发送验证码</button>
+      </div>
+      <div class="row" style="margin-bottom:10px">
+        <input type="text" id="cn-code" placeholder="验证码" style="flex:1">
+        <button class="btn" id="cn-login" onclick="cnLogin()">登录</button>
+      </div>
+    </div>
+    <div id="lp-global" class="hide">
+      <div class="hint" style="margin:0 0 8px">方式一（推荐）：桌面端已登录时，直接导入其会话。</div>
+      <button class="btn" style="margin-bottom:14px" id="gd-import" onclick="importDesktop()">从桌面端导入</button>
+      <div class="hint" style="margin:0 0 8px">方式二：粘贴 Google 登录后的回调 URL（含 code/state）。</div>
+      <div class="row">
+        <input type="text" id="oauth-url" placeholder="http://localhost:18432/auth/callback-google?code=…" style="flex:1">
+        <button class="btn ghost" id="gd-oauth" onclick="oauthPaste()">导入</button>
+      </div>
+    </div>
+    <div id="login-result" class="hint" style="margin-top:12px"></div>
+  </div>
+</div>
+<script>
+const $=id=>document.getElementById(id);
+let apiKey=localStorage.getItem('ac2a_key')||'';
+let timer=null;
+
+function show(name){
+  for(const p of ['status','models','check']){
+    $('panel-'+p).classList.toggle('hide', p!==name);
+    $('tab-'+p).classList.toggle('on', p===name);
+  }
+  if(name==='status') loadStatus();
+  if(name==='models') loadModels();
+  if(timer){clearInterval(timer);timer=null;}
+  if(name==='status') timer=setInterval(loadStatus,5000);
+}
+
+function authHeaders(extra={}){
+  const h=Object.assign({'Content-Type':'application/json'},extra);
+  if(apiKey) h['Authorization']='Bearer '+apiKey;
+  return h;
+}
+
+async function api(path,opts={}){
+  const r=await fetch(path,Object.assign({},opts,{headers:authHeaders(opts.headers||{})}));
+  if(r.status===401){
+    const k=prompt('API Key:');
+    if(k){apiKey=k;localStorage.setItem('ac2a_key',k);return api(path,opts);}
+    throw new Error('401');
+  }
+  const t=await r.text();
+  try{return JSON.parse(t);}catch(e){return {raw:t,status:r.status};}
+}
+
+function tag(ok,txt){return `<span class="tag ${ok?'ok':'bad'}">${txt}</span>`;}
+
+async function loadStatus(){
+  try{
+    const s=await api('/status');
+    const accts=s.accounts||[];
+    const healthy=accts.filter(a=>!a.cooling&&!a.disabled).length;
+    $('s-healthy').textContent=healthy;
+    $('s-total').textContent=accts.length;
+    $('s-cooling').textContent=accts.filter(a=>a.cooling).length;
+    $('s-disabled').textContent=accts.filter(a=>a.disabled).length;
+    $('s-mode').textContent=s.mode||'–';
+    $('acct-body').innerHTML=accts.map(a=>`<tr>
+      <td>${(a.uid||'').slice(0,16)}</td>
+      <td>${a.region||''}</td>
+      <td>${a.points??'–'}</td>
+      <td>${a.disabled?tag(0,'disabled'):a.cooling?tag(0,'cooling '+a.cool_kind):tag(1,'healthy')}</td>
+      <td>${a.reason||a.cool_remaining_sec||''}</td>
+      <td>${a.success_count??0}</td>
+      <td>${a.err_count??0}</td>
+      <td><button class="btn ghost" style="padding:4px 10px;font-size:12px" data-uid="${a.uid}" data-region="${a.region||''}" onclick="checkinOne('${a.uid}','${a.region||''}',this)">签到</button></td>
+      </tr>`).join('')||'<tr><td colspan="8" class="hint">无账号</td></tr>';
+  }catch(e){$('acct-body').innerHTML=`<tr><td colspan="8" class="hint">${e}</td></tr>`;}
+  try{
+    const h=await fetch('/healthz').then(r=>r.json());
+    $('s-healthz').textContent=h.healthy>0?`OK (${h.healthy}/${h.total})`:'NONE';
+    $('s-healthz').style.color=h.healthy>0?'var(--ok)':'var(--bad)';
+  }catch(e){$('s-healthz').textContent='ERR';}
+}
+
+let modelIds=[];
+function modelRegion(id){
+  if(id.startsWith('global/')) return 'global';
+  return 'cn';
+}
+async function loadModels(){
+  try{
+    const d=await api('/v1/models');
+    const list=(d.data||[]).map(m=>m.id);
+    modelIds=list;
+    const sep=(label)=>`<tr><td colspan="4" style="background:#12151c;color:var(--acc);font-weight:600;padding:6px 10px;letter-spacing:.05em">— ${label} —</td></tr>`;
+    let html='';
+    let seen={cn:false,global:false};
+    for(const id of list){
+      const r=modelRegion(id);
+      if(!seen[r]){html+=sep(r==='cn'?'国内版 CN':'国际版 GLOBAL');seen[r]=true;}
+      const path=id.startsWith('openclaw')?'sandbox relay':
+                 id.startsWith('global/')||id.startsWith('zai_')||id.startsWith('zaicoding_')||id.startsWith('tdpsk_')?
+                 'local model-proxy':'sandbox / proxy';
+      html+=`<tr><td><code>${id}</code></td><td>${r}</td><td>${path}</td><td>${'–'}</td></tr>`;
+    }
+    $('model-body').innerHTML=html||'<tr><td colspan="4" class="hint">无模型</td></tr>';
+  }catch(e){$('model-body').innerHTML=`<tr><td colspan="4" class="hint">${e}</td></tr>`;}
+}
+
+async function checkinRegion(region){
+  const btn=$(region==='cn'?'ck-all-cn':'ck-all-global');
+  const flash=$('ck-flash');
+  btn.disabled=true; flash.textContent='签到中…';
+  try{
+    const r=await api('/api/checkin',{method:'POST',body:JSON.stringify({region,dry_run:false})});
+    flash.textContent=fmtCheckin(r);
+  }catch(e){flash.textContent=String(e);}
+  btn.disabled=false;
+  loadStatus();
+}
+
+async function checkinOne(uid, region, btn){
+  if(btn) btn.disabled=true;
+  const flash=$('ck-flash');
+  flash.textContent=`签到 ${(uid||'').slice(0,12)}…`;
+  try{
+    const r=await api('/api/checkin',{method:'POST',body:JSON.stringify({region:region||'all',uid,dry_run:false})});
+    flash.textContent=fmtCheckin(r);
+  }catch(e){flash.textContent=String(e);}
+  if(btn) btn.disabled=false;
+  loadStatus();
+}
+
+function fmtCheckin(r){
+  const rows=r.results||[];
+  if(r.error) return 'ERR: '+r.error;
+  return rows.map(x=>{
+    if(!x.ok) return `${(x.uid||'').slice(0,10)}: ${x.error||'fail'}`;
+    if(x.msg==='dry-run') return `${(x.uid||'').slice(0,10)}: dry-run`;
+    if(x.already_completed) return `${(x.uid||'').slice(0,10)}: 已签`;
+    return `${(x.uid||'').slice(0,10)}: +${x.reward_points}`;
+  }).join(' | ');
+}
+
+async function checkinRegion(region){
+  const btn=$(region==='cn'?'ck-all-cn':'ck-all-global');
+  const flash=$('ck-flash');
+  btn.disabled=true; flash.textContent='签到中…';
+  try{
+    const r=await api('/api/checkin',{method:'POST',body:JSON.stringify({region,dry_run:false})});
+    flash.textContent=fmtCheckin(r);
+  }catch(e){flash.textContent=String(e);}
+  btn.disabled=false;
+  loadStatus();
+}
+
+async function checkinOne(uid, region, btn){
+  if(btn) btn.disabled=true;
+  const flash=$('ck-flash');
+  flash.textContent=`签到 ${(uid||'').slice(0,12)}…`;
+  try{
+    const r=await api('/api/checkin',{method:'POST',body:JSON.stringify({region:region||'all',uid,dry_run:false})});
+    flash.textContent=fmtCheckin(r);
+  }catch(e){flash.textContent=String(e);}
+  if(btn) btn.disabled=false;
+  loadStatus();
+}
+
+function fmtCheckin(r){
+  const rows=r.results||[];
+  if(r.error) return 'ERR: '+r.error;
+  return rows.map(x=>{
+    if(!x.ok) return `${(x.uid||'').slice(0,10)}: ${x.error||'fail'}`;
+    if(x.msg==='dry-run') return `${(x.uid||'').slice(0,10)}: dry-run`;
+    if(x.already_completed) return `${(x.uid||'').slice(0,10)}: 已签`;
+    return `${(x.uid||'').slice(0,10)}: +${x.reward_points}`;
+  }).join(' | ');
+}
+
+async function checkinRegion(region){
+  const btn=$(region==='cn'?'ck-all-cn':'ck-all-global');
+  const flash=$('ck-flash');
+  btn.disabled=true; flash.textContent='签到中…';
+  try{
+    const r=await api('/api/checkin',{method:'POST',body:JSON.stringify({region,dry_run:false})});
+    flash.textContent=fmtCheckin(r);
+  }catch(e){flash.textContent=String(e);}
+  btn.disabled=false;
+  loadStatus();
+}
+
+async function checkinOne(uid, region, btn){
+  if(btn) btn.disabled=true;
+  const flash=$('ck-flash');
+  flash.textContent=`签到 ${(uid||'').slice(0,12)}…`;
+  try{
+    const r=await api('/api/checkin',{method:'POST',body:JSON.stringify({region:region||'all',uid,dry_run:false})});
+    flash.textContent=fmtCheckin(r);
+  }catch(e){flash.textContent=String(e);}
+  if(btn) btn.disabled=false;
+  loadStatus();
+}
+
+function fmtCheckin(r){
+  const rows=r.results||[];
+  if(r.error) return 'ERR: '+r.error;
+  return rows.map(x=>{
+    if(!x.ok) return `${(x.uid||'').slice(0,10)}: ${x.error||'fail'}`;
+    if(x.msg==='dry-run') return `${(x.uid||'').slice(0,10)}: dry-run`;
+    if(x.already_completed) return `${(x.uid||'').slice(0,10)}: 已签`;
+    return `${(x.uid||'').slice(0,10)}: +${x.reward_points}`;
+  }).join(' | ');
+}
+
+async function checkinRegion(region){
+  const btn=$(region==='cn'?'ck-all-cn':'ck-all-global');
+  const flash=$('ck-flash');
+  btn.disabled=true; flash.textContent='签到中…';
+  try{
+    const r=await api('/api/checkin',{method:'POST',body:JSON.stringify({region,dry_run:false})});
+    flash.textContent=fmtCheckin(r);
+  }catch(e){flash.textContent=String(e);}
+  btn.disabled=false;
+  loadStatus();
+}
+
+async function checkinOne(uid, region, btn){
+  if(btn) btn.disabled=true;
+  const flash=$('ck-flash');
+  flash.textContent=`签到 ${(uid||'').slice(0,12)}…`;
+  try{
+    const r=await api('/api/checkin',{method:'POST',body:JSON.stringify({region:region||'all',uid,dry_run:false})});
+    flash.textContent=fmtCheckin(r);
+  }catch(e){flash.textContent=String(e);}
+  if(btn) btn.disabled=false;
+  loadStatus();
+}
+
+function fmtCheckin(r){
+  const rows=r.results||[];
+  if(r.error) return 'ERR: '+r.error;
+  return rows.map(x=>{
+    if(!x.ok) return `${(x.uid||'').slice(0,10)}: ${x.error||'fail'}`;
+    if(x.msg==='dry-run') return `${(x.uid||'').slice(0,10)}: dry-run`;
+    if(x.already_completed) return `${(x.uid||'').slice(0,10)}: 已签`;
+    return `${(x.uid||'').slice(0,10)}: +${x.reward_points}`;
+  }).join(' | ');
+}
+
+async function checkinRegion(region){
+  const btn=$(region==='cn'?'ck-all-cn':'ck-all-global');
+  const flash=$('ck-flash');
+  btn.disabled=true; flash.textContent='签到中…';
+  try{
+    const r=await api('/api/checkin',{method:'POST',body:JSON.stringify({region,dry_run:false})});
+    flash.textContent=fmtCheckin(r);
+  }catch(e){flash.textContent=String(e);}
+  btn.disabled=false;
+  loadStatus();
+}
+
+async function checkinOne(uid, region, btn){
+  if(btn) btn.disabled=true;
+  const flash=$('ck-flash');
+  flash.textContent=`签到 ${(uid||'').slice(0,12)}…`;
+  try{
+    const r=await api('/api/checkin',{method:'POST',body:JSON.stringify({region:region||'all',uid,dry_run:false})});
+    flash.textContent=fmtCheckin(r);
+  }catch(e){flash.textContent=String(e);}
+  if(btn) btn.disabled=false;
+  loadStatus();
+}
+
+function fmtCheckin(r){
+  const rows=r.results||[];
+  if(r.error) return 'ERR: '+r.error;
+  return rows.map(x=>{
+    if(!x.ok) return `${(x.uid||'').slice(0,10)}: ${x.error||'fail'}`;
+    if(x.msg==='dry-run') return `${(x.uid||'').slice(0,10)}: dry-run`;
+    if(x.already_completed) return `${(x.uid||'').slice(0,10)}: 已签`;
+    return `${(x.uid||'').slice(0,10)}: +${x.reward_points}`;
+  }).join(' | ');
+}
+
+async function refreshCredits(){
+  const btn=$('credits-btn'),flash=$('ck-flash');
+  btn.disabled=true; flash.textContent='额度刷新中…';
+  try{
+    const r=await api('/api/credits/refresh',{method:'POST',body:'{}'});
+    const rows=r.accounts||[];
+    if(r.error&&!rows.length){flash.textContent='ERR: '+r.error;}
+    else{
+      flash.textContent=rows.map(x=>
+        `${x.region}:${(x.uid||'').slice(0,8)}=${x.points}${x.error?'(ERR '+String(x.error).slice(0,30)+')':''}`
+      ).join(' | ');
+    }
+  }catch(e){flash.textContent=String(e);}
+  btn.disabled=false;
+  loadStatus();
+}
+
+async function showCreditDetail(){
+  const panel=$('credit-detail');
+  if(!panel.classList.contains('hide')){panel.classList.add('hide');return;}
+  panel.classList.remove('hide');
+  panel.innerHTML='<span class="hint">加载中…</span>';
+  let html='';
+  for(const region of ['cn','global']){
+    try{
+      const r=await api('/api/credits/detail',{method:'POST',body:JSON.stringify({region})});
+      if(r.expiring&&r.expiring.points>0){
+        html+=`<div class="tag warn" style="display:block;padding:6px 10px;margin-bottom:8px">⚠ ${region.toUpperCase()}：${r.expiring.text||`${r.expiring.points} 积分将在 ${r.expiring.days} 天内过期`}</div>`;
+      }
+      if(r.error){html+=`<div class="hint">${region}: ${r.error}</div>`;continue;}
+      html+=`<div style="font-weight:600;margin:10px 0 4px">${region==='cn'?'国内':'国际'} · uid=${(r.uid||'').slice(0,12)}</div>`;
+      html+='<table><thead><tr><th>时间</th><th>模型</th><th>实际</th><th>扣分</th><th>上限</th><th>tokens</th></tr></thead><tbody>';
+      for(const e of (r.entries||[]).slice(0,10)){
+        html+=`<tr><td>${(e.time||'').slice(5,19)}</td><td><code>${e.model||''}</code></td><td>${e.actual_model||''}</td>
+          <td style="color:${e.amount<0?'var(--bad)':'var(--ok)'}">${e.amount}</td><td>${e.cap||''}</td>
+          <td style="font-size:11px;color:var(--mut)">${(e.token_usage||'').slice(0,50)}</td></tr>`;
+      }
+      html+='</tbody></table>';
+      if(!(r.entries||[]).length) html+='<div class="hint">无流水</div>';
+    }catch(e){html+=`<div class="hint">${region}: ${e}</div>`;}
+  }
+  panel.innerHTML=html;
+}
+
+async function doCheckin(){
+  const region=$('ck-region').value;
+  const dry=$('ck-dry').checked;
+  $('ck-btn').disabled=true;
+  $('ck-result').innerHTML='<span class="hint">执行中…</span>';
+  try{
+    const r=await api('/api/checkin',{method:'POST',body:JSON.stringify({region,dry_run:dry})});
+    const rows=(r.results||[]);
+    if(!rows.length){$('ck-result').textContent=JSON.stringify(r);return;}
+    $('ck-result').innerHTML='<table><thead><tr><th>uid</th><th>region</th><th>结果</th><th>积分</th></tr></thead><tbody>'+
+      rows.map(x=>`<tr><td>${(x.uid||'').slice(0,16)}</td><td>${x.region}</td>
+        <td>${!x.ok?tag(0,x.error||'fail'):x.msg==='dry-run'?`<span class="tag mut">dry-run</span>`:
+          x.already_completed?`<span class="tag warn">已签到</span>`:tag(1,'签到成功')}</td>
+        <td>${x.reward_points||0}</td></tr>`).join('')+'</tbody></table>';
+  }catch(e){$('ck-result').innerHTML=`<span class="tag bad">${e}</span>`;}
+  $('ck-btn').disabled=false;
+}
+
+async function loadTasks(){
+  const region=$('ck-region').value;
+  $('task-result').textContent='查询中…';
+  try{
+    const r=await api('/api/tasks?region='+encodeURIComponent(region));
+    $('task-result').innerHTML='<pre style="margin:0;font:12px/1.5 ui-monospace;white-space:pre-wrap">'+
+      JSON.stringify(r,null,2).replace(/</g,'&lt;')+'</pre>';
+  }catch(e){$('task-result').textContent=String(e);}
+}
+
+function openLoginModal(){$('login-modal').classList.remove('hide');loginTab('cn');$('login-result').textContent='';}
+function closeLoginModal(){$('login-modal').classList.add('hide');loadStatus();}
+function loginTab(t){
+  $('lp-cn').classList.toggle('hide',t!=='cn');
+  $('lp-global').classList.toggle('hide',t!=='global');
+  $('lt-cn').classList.toggle('on',t==='cn');
+  $('lt-global').classList.toggle('on',t==='global');
+}
+async function cnSendCode(){
+  const phone=$('cn-phone').value.trim();
+  if(!phone){$('login-result').textContent='请输入手机号';return;}
+  $('cn-send').disabled=true;
+  try{
+    const r=await api('/api/login/cn/sendcode',{method:'POST',body:JSON.stringify({phone})});
+    $('login-result').textContent=r.error?('ERR: '+r.error):(r.msg||'已发送');
+  }catch(e){$('login-result').textContent=String(e);}
+  $('cn-send').disabled=false;
+}
+async function cnLogin(){
+  const phone=$('cn-phone').value.trim(),code=$('cn-code').value.trim();
+  if(!phone||!code){$('login-result').textContent='手机号与验证码必填';return;}
+  $('cn-login').disabled=true;
+  try{
+    const r=await api('/api/login/cn',{method:'POST',body:JSON.stringify({phone,code})});
+    $('login-result').textContent=r.error?('ERR: '+r.error):`登录成功 uid=${r.uid} ${r.name||''}`;
+    if(!r.error) setTimeout(closeLoginModal,800);
+  }catch(e){$('login-result').textContent=String(e);}
+  $('cn-login').disabled=false;
+}
+async function importDesktop(){
+  $('gd-import').disabled=true;
+  try{
+    const r=await api('/api/login/global/import-desktop',{method:'POST',body:'{}'});
+    $('login-result').textContent=r.error?('ERR: '+r.error):`导入成功 uid=${r.uid} (exp=${r.exp})`;
+    if(!r.error) setTimeout(closeLoginModal,800);
+  }catch(e){$('login-result').textContent=String(e);}
+  $('gd-import').disabled=false;
+}
+async function oauthPaste(){
+  const u=$('oauth-url').value.trim();
+  if(!u){$('login-result').textContent='请粘贴回调 URL';return;}
+  $('gd-oauth').disabled=true;
+  try{
+    const r=await api('/api/login/global/oauth',{method:'POST',body:JSON.stringify({callback_url:u})});
+    $('login-result').textContent=r.error?('ERR: '+r.error):`导入成功 uid=${r.uid}`;
+    if(!r.error) setTimeout(closeLoginModal,800);
+  }catch(e){$('login-result').textContent=String(e);}
+  $('gd-oauth').disabled=false;
+}
+
+loadStatus();loadModels();
+timer=setInterval(loadStatus,5000);
+</script>
+</body>
+</html>

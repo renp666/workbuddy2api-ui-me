@@ -493,6 +493,15 @@ func TestAdminBrowserPreview(t *testing.T) {
 		}
 	}))
 	defer opencodeTS.Close()
+	ccrTS := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprint(w, `{"ok":true,"value":{"endpoint":"http://127.0.0.1:3456","state":"running","pid":4242,"lastStartedAt":"2026-10-07T01:22:25.643Z"}}`)
+	}))
+	defer ccrTS.Close()
+	ccrTokenFile := filepath.Join(t.TempDir(), "service.json")
+	if err := os.WriteFile(ccrTokenFile, []byte(`{"url":"`+ccrTS.URL+`/?ccr_web_token=mock-preview-token-1234567890"}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
 	cfg := testConfig(ts.URL)
 	cfg.AdminKey = "browser-preview-key-mock-only-12345"
 	cfg.APIKey = "preview-api-key-mock-only"
@@ -502,6 +511,8 @@ func TestAdminBrowserPreview(t *testing.T) {
 	cfg.QoderKey = strings.Repeat("q", 32)
 	cfg.OpenCodeURL, _ = url.Parse(opencodeTS.URL)
 	cfg.OpenCodeKey = strings.Repeat("o", 32)
+	cfg.CCRURL, _ = url.Parse(ccrTS.URL)
+	cfg.CCRTokenFile = ccrTokenFile
 	cfg.RouteFile = filepath.Join(t.TempDir(), "routes.json")
 	h, err := NewServer(cfg)
 	if err != nil {

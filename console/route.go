@@ -26,11 +26,13 @@ const (
 	channelGLM      routeChannel = "glm"
 	channelQoder    routeChannel = "qoder"
 	channelOpenCode routeChannel = "opencode"
+	channelAutoClaw routeChannel = "autoclaw"
+	channelTrae     routeChannel = "trae"
 )
 
 // routeChannelOrder 是页面展示与目录抓取的固定通道顺序：core 在前，
 // 让「回退核心通道」的默认目标在界面上排在最前面。
-var routeChannelOrder = []routeChannel{channelCore, channelGLM, channelQoder, channelOpenCode}
+var routeChannelOrder = []routeChannel{channelCore, channelGLM, channelQoder, channelOpenCode, channelAutoClaw, channelTrae}
 
 // autoModelName 是 console 自建的虚拟模型名：不在任何上游目录里，由 console
 // 在请求时按探测结论挑一条最优链路。名字带 gateway- 前缀，是为了和各通道可能
@@ -75,14 +77,18 @@ const defaultAutoFallback = "cn:auto"
 // prefix 把通道名映射为「该通道公共模型名相对其原生模型名多出来的前缀」。
 // core 的 cn:/global: 命名空间和 glm 的 glm- 前缀都由上游自己下发，属于原生
 // 模型名的一部分，这里不能再补一次，否则会拼出 glm-glm-5.3 这种双前缀。
-// 只有 qoder 与 opencode 的上游目录是裸名字，需要补公共前缀——这三条判断
-// 与 publicRouter 的分流前缀完全一致，这是别名能复用既有分流的前提。
+// 只有 qoder、opencode 与 autoclaw 的上游目录是裸名字，需要补公共前缀——这几条
+// 判断与 publicRouter 的分流前缀完全一致，这是别名能复用既有分流的前提。
 func (c routeChannel) prefix() string {
 	switch c {
 	case channelQoder:
 		return qoderModelPrefix
 	case channelOpenCode:
 		return opencodeModelPrefix
+	case channelAutoClaw:
+		return autoclawModelPrefix
+	case channelTrae:
+		return traeModelPrefix
 	}
 	return ""
 }
@@ -117,6 +123,10 @@ func (c routeChannel) realm(model string) string {
 		return "qoder"
 	case channelOpenCode:
 		return "opencode"
+	case channelAutoClaw:
+		return "autoclaw"
+	case channelTrae:
+		return "trae"
 	}
 	if strings.HasPrefix(model, "global:") {
 		return "global"
@@ -170,9 +180,9 @@ const maxRouteEntries = 200
 // 200 条约 60 KiB，通用管理端点 8 KiB 的上限装不下，这里单独放宽并仍保持有界。
 const routeBodyLimit = 256 << 10
 
-// reservedAliasPrefixes 是别名不得占用的前缀：三个旁路通道的公共前缀加上 core 的
+// reservedAliasPrefixes 是别名不得占用的前缀：各旁路通道的公共前缀加上 core 的
 // 两个命名空间。别名解析发生在前缀分流之前，占用这些前缀会静默遮蔽同名真实模型。
-var reservedAliasPrefixes = []string{zcodeModelPrefix, qoderModelPrefix, opencodeModelPrefix, "cn:", "global:"}
+var reservedAliasPrefixes = []string{zcodeModelPrefix, qoderModelPrefix, opencodeModelPrefix, autoclawModelPrefix, traeModelPrefix, "cn:", "global:"}
 
 // validateRouteEntries 校验整份配置，返回第一条可读的错误文案直接给页面用。
 // 校验失败一律拒绝写入，不做「尽力而为的部分生效」。
@@ -199,9 +209,9 @@ func validateRouteEntries(models []routeEntry) error {
 			}
 		}
 		switch entry.Channel {
-		case channelCore, channelGLM, channelQoder, channelOpenCode:
+		case channelCore, channelGLM, channelQoder, channelOpenCode, channelAutoClaw, channelTrae:
 		default:
-			return fmt.Errorf("别名 %q 的通道必须是 core、glm、qoder 或 opencode", alias)
+			return fmt.Errorf("别名 %q 的通道必须是 core、glm、qoder、opencode、autoclaw 或 trae", alias)
 		}
 		model := strings.TrimSpace(entry.Model)
 		if !validRouteName(model, 128, routeModelChars) {
@@ -623,7 +633,7 @@ func (h *server) collectProbeCandidates(ctx context.Context) (map[routeChannel][
 			}
 		}
 	}
-	for _, channel := range []routeChannel{channelCore, channelGLM, channelQoder} {
+	for _, channel := range []routeChannel{channelCore, channelGLM, channelQoder, channelAutoClaw, channelTrae} {
 		results := h.probe.channelResults(channel)
 		if len(results) == 0 {
 			continue
@@ -943,6 +953,10 @@ func (h *server) channelEnabled(c routeChannel) bool {
 		return h.cfg.QoderURL != nil
 	case channelOpenCode:
 		return h.cfg.OpenCodeURL != nil
+	case channelAutoClaw:
+		return h.cfg.AutoClawURL != nil
+	case channelTrae:
+		return h.cfg.TraeURL != nil
 	}
 	return false
 }
@@ -957,6 +971,10 @@ func (h *server) channelUpstream(c routeChannel) (*url.URL, string) {
 		return h.cfg.QoderURL, h.cfg.QoderKey
 	case channelOpenCode:
 		return h.cfg.OpenCodeURL, h.cfg.OpenCodeKey
+	case channelAutoClaw:
+		return h.cfg.AutoClawURL, h.cfg.AutoClawKey
+	case channelTrae:
+		return h.cfg.TraeURL, h.cfg.TraeKey
 	}
 	return h.cfg.CoreURL, h.cfg.APIKey
 }

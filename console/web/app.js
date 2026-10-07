@@ -10,6 +10,9 @@ let usagePage = 1, usagePageSize = 50, usageDetailRows = [];
 let zcodeModels = [], zcodeHistory = [], zcodeStatus = null, zcodePollTimer, zcodeBusy = false, zcodeAuthURL = '', zcodeLogoutArmed = false, zcodeProviderTouched = false, zcodePlanTouched = false, zcodeView = 'status', zcodeViewTouched = false, zcodeEnabled = false;
 let qoderModels = [], qoderHistory = [], qoderStatus = null, qoderPollTimer, qoderBusy = false, qoderAuthURL = '', qoderLogoutArmed = false, qoderControl = false, qoderLoggedIn = false, qoderLoginTimer = null, qoderView = 'status', qoderViewTouched = false, qoderEnabled = false;
 let opencodeModels = [], opencodeHistory = [], opencodeStatus = null, opencodeBusy = false, opencodeView = 'status', opencodeEnabled = false;
+let ccrStatus = null, ccrEnabled = false, ccrBusy = false;
+let autoclawModels = [], autoclawHistory = [], autoclawStatus = null, autoclawBusy = false, autoclawView = 'status', autoclawEnabled = false, autoclawAccounts = [], autoclawLoginBusy = false, autoclawCodeTimer = null;
+let traeModels = [], traeHistory = [], traeStatus = null, traeBusy = false, traeView = 'status', traeEnabled = false, traeAccounts = [], traeLoginBusy = false, traePollTimer = null, traeAuthURL = '';
 let routesState = null, routesBusy = false, routesEditing = null;
 let probeSnapshot = {running:false,done:0,total:0,channels:{}}, probeTarget = '', probeTimer, probeBusy = false;
 // modelsGroupByAccount：core 模型表是否按可用账号分层展示（默认开）。
@@ -41,9 +44,11 @@ function signedOut() {
  protocol='openai';$('prompt').value='';$('max-tokens').value='1024';$('usage').textContent='用量将在上游返回后显示';usageGeneration++;workbuddyView='accounts';renderAccess();
  zcodeModels=[];zcodeHistory=[];zcodeStatus=null;zcodeAuthURL='';zcodeLogoutArmed=false;zcodeBusy=false;zcodeProviderTouched=false;zcodePlanTouched=false;zcodeView='status';zcodeViewTouched=false;zcodeEnabled=false;clearTimeout(zcodePollTimer);zcodePollTimer=undefined;$('zcode-model').replaceChildren();clearMessages($('zcode-messages'));$('zcode-prompt').value='';$('zcode-usage').textContent='用量将在上游返回后显示';$('zcode-disabled').hidden=true;$('zcode-content').hidden=true;$('nav-zcode').classList.remove('nav-muted');
  qoderModels=[];qoderHistory=[];qoderStatus=null;qoderEnabled=false;qoderControl=false;qoderLoggedIn=false;qoderAuthURL='';qoderBusy=false;qoderLogoutArmed=false;qoderView='status';qoderViewTouched=false;clearTimeout(qoderPollTimer);qoderPollTimer=undefined;clearTimeout(qoderLoginTimer);qoderLoginTimer=null;$('qoder-model').replaceChildren();clearMessages($('qoder-messages'));$('qoder-prompt').value='';$('qoder-usage').textContent='用量将在上游返回后显示';$('qoder-disabled').hidden=true;$('qoder-content').hidden=true;$('nav-qoder').classList.remove('nav-muted');$('qoder-auth-row').hidden=true;$('qoder-pane-login').hidden=true;$('qoder-login-hint').textContent='';
- opencodeModels=[];opencodeHistory=[];opencodeStatus=null;opencodeEnabled=false;opencodeBusy=false;opencodeView='status';$('opencode-model').replaceChildren();clearMessages($('opencode-messages'));$('opencode-prompt').value='';$('opencode-usage').textContent='用量将在上游返回后显示';$('opencode-disabled').hidden=true;$('opencode-content').hidden=true;$('nav-opencode').classList.remove('nav-muted');$('opencode-health-wrap').hidden=true;$('opencode-health-body').replaceChildren();
+ opencodeModels=[];opencodeHistory=[];opencodeStatus=null;opencodeEnabled=false;opencodeBusy=false;opencodeView='status';$('opencode-model').replaceChildren();clearMessages($('opencode-messages'));$('opencode-prompt').value='';$('opencode-usage').textContent='用量将在上游返回后显示';$('opencode-disabled').hidden=true;$('opencode-content').hidden=true;$('nav-opencode').classList.remove('nav-muted');$('opencode-health-wrap').hidden=true;$('opencode-health-body').replaceChildren();ccrStatus=null;ccrEnabled=false;ccrBusy=false;$('ccr-disabled').hidden=true;$('ccr-content').hidden=true;$('nav-ccr').classList.remove('nav-muted');
+ autoclawModels=[];autoclawHistory=[];autoclawStatus=null;autoclawEnabled=false;autoclawBusy=false;autoclawLoginBusy=false;autoclawView='status';autoclawAccounts=[];clearTimeout(autoclawCodeTimer);autoclawCodeTimer=null;$('autoclaw-model').replaceChildren();clearMessages($('autoclaw-messages'));$('autoclaw-prompt').value='';$('autoclaw-usage').textContent='用量将在上游返回后显示';$('autoclaw-disabled').hidden=true;$('autoclaw-content').hidden=true;$('nav-autoclaw').classList.remove('nav-muted');$('autoclaw-health-wrap').hidden=true;$('autoclaw-health-body').replaceChildren();$('autoclaw-accounts-body').replaceChildren();$('autoclaw-phone').value='';$('autoclaw-code').value='';$('autoclaw-oauth-url').value='';$('autoclaw-login-hint').textContent='';$('autoclaw-global-hint').textContent='';const sc=$('autoclaw-sendcode');sc.disabled=false;sc.textContent='发送验证码';
+ traeModels=[];traeHistory=[];traeStatus=null;traeEnabled=false;traeBusy=false;traeLoginBusy=false;traeView='status';traeAccounts=[];traeAuthURL='';clearTimeout(traePollTimer);traePollTimer=null;$('trae-model').replaceChildren();clearMessages($('trae-messages'));$('trae-prompt').value='';$('trae-usage').textContent='用量将在上游返回后显示';$('trae-disabled').hidden=true;$('trae-content').hidden=true;$('nav-trae').classList.remove('nav-muted');$('trae-health-wrap').hidden=true;$('trae-health-body').replaceChildren();$('trae-accounts-body').replaceChildren();$('trae-auth-row').hidden=true;$('trae-login-hint').textContent='';$('trae-import-url').value='';$('trae-import-hint').textContent='';$('trae-schedule-body').replaceChildren();$('trae-schedule-hint').textContent='';$('trae-usage-body').replaceChildren();
  routesState=null;routesBusy=false;routesEditing=null;modelSwitchOverrides=new Map();capState=null;capByKeys=new Map();capDim='coding';capCategory='';capFilter='';$('routes-disabled').hidden=true;$('routes-content').hidden=true;$('routes-alias-body').replaceChildren();$('routes-channels').replaceChildren();$('routes-model-options').replaceChildren();$('routes-example').textContent='';$('routes-alias-name').value='';$('routes-alias-model').value='';$('routes-alias-note').value='';$('routes-auto-fallback').value='';$('cap-filter').value='';
- probeSnapshot={running:false,done:0,total:0,channels:{}};probeTarget='';probeBusy=false;clearTimeout(probeTimer);probeTimer=undefined;for(const n of ['core','zcode','qoder']){$('probe-'+n+'-progress').hidden=true;$('probe-'+n+'-progress').textContent='';}
+ probeSnapshot={running:false,done:0,total:0,channels:{}};probeTarget='';probeBusy=false;clearTimeout(probeTimer);probeTimer=undefined;for(const n of ['core','zcode','qoder','autoclaw','trae']){$('probe-'+n+'-progress').hidden=true;$('probe-'+n+'-progress').textContent='';}
  overviewUsageItems=[];overviewGeneration++;
  pinState={cn:null,global:null};lastStatus=null;renderPinBanner();
 }
@@ -57,10 +62,13 @@ async function signedIn(session) {
  qoderControl = !!session.qoder_control;
  $('nav-opencode').classList.toggle('nav-muted', !session.opencode_enabled);
  opencodeEnabled = !!session.opencode_enabled;
+ ccrEnabled = !!session.ccr_enabled; $('nav-ccr').classList.toggle('nav-muted', !ccrEnabled);
+ autoclawEnabled = !!session.autoclaw_enabled; $('nav-autoclaw').classList.toggle('nav-muted', !autoclawEnabled);
+ traeEnabled = !!session.trae_enabled; $('nav-trae').classList.toggle('nav-muted', !traeEnabled);
  await refreshStatus(); await refreshModels(); await loadPins();
  void loadModelHeat(); void loadModelSwitch(); void loadGlobalHeat(); void loadOverview(true); void restoreProbe();
 }
-const pageNames = {overview:'运行概览',workbuddy:'WorkBuddy 通道',zcode:'Zcode 通道',qoder:'Qoder 通道',opencode:'OpenCode 通道',usage:'调用统计',routes:'Agent 接入',access:'API 接入'};
+const pageNames = {overview:'运行概览',workbuddy:'WorkBuddy 通道',zcode:'Zcode 通道',qoder:'Qoder 通道',opencode:'OpenCode 通道',ccr:'CCR 网关',autoclaw:'AutoClaw 通道',trae:'Trae 通道',usage:'调用统计',routes:'Agent 接入',access:'API 接入'};
 const workbuddyNames = {accounts:'账号管理',tasks:'自动任务',models:'模型列表',chat:'对话测试'};
 function setWorkBuddyView(view) {
  workbuddyView = view;
@@ -95,12 +103,17 @@ function showPage(value) {
  if (page === 'zcode') loadZcode();
  if (page === 'qoder') loadQoder();
  if (page === 'opencode') loadOpenCode();
+ if (page === 'ccr') loadCCR();
+ if (page === 'autoclaw') loadAutoClaw();
+ if (page === 'trae') loadTrae();
  if (page === 'routes') loadRoutes();
  // The access tab lists GLM and Qoder channel models too; fetch statuses once lazily
  // so its select is complete even when the operator never opens those tabs.
  if (page === 'access' && zcodeEnabled && !zcodeStatus) loadZcode();
  if (page === 'access' && qoderEnabled && !qoderStatus) loadQoder();
  if (page === 'access' && opencodeEnabled && !opencodeStatus) loadOpenCode();
+ if (page === 'access' && autoclawEnabled && !autoclawStatus) loadAutoClaw();
+ if (page === 'access' && traeEnabled && !traeStatus) loadTrae();
 }
 document.querySelectorAll('[data-view]').forEach(button => button.addEventListener('click', () => {
  showPage(button.dataset.view);
@@ -157,11 +170,13 @@ function modelSwitchEffective(row){
 const modelChannels={zcode:{body:'zcode-models-body',empty:'zcode-models-empty',namePrefix:'GLM · '},
  qoder:{body:'qoder-models-body',empty:'qoder-models-empty',namePrefix:'Qoder · '},
  opencode:{body:'opencode-models-body',empty:'opencode-models-empty',namePrefix:'opencode-OC · '},
+ autoclaw:{body:'autoclaw-models-body',empty:'autoclaw-models-empty',namePrefix:'AutoClaw · '},
+ trae:{body:'trae-models-body',empty:'trae-models-empty',namePrefix:'Trae · '},
  core:{body:'core-models-body',empty:'core-models-empty',namePrefix:''}};
 const modelFailureLabels={timeout:'探测超时',access:'地区限制',error:'调用失败',model_error:'模型错误',auth:'未授权',rate_limit:'限流',empty:'空返回'};
 const modelProbeSources={probe:'探测',request:'真实请求'};
 // 公共模型名带通道前缀（opencode-OC · X / glm-X / opencode/x）与 realm 前缀（cn:/global:），去掉后作为跨源对齐键。
-function modelKey(id){return String(id||'').replace(/^opencode-OC · /,'').replace(/^OC · /,'').replace(/^opencode\//,'').replace(/^(?:cn|global):/,'').replace(/^glm-/,'').replace(/^qoder-/,'').toLowerCase().replace(/[^a-z0-9\u4e00-\u9fa5]+/g,'');}
+function modelKey(id){return String(id||'').replace(/^opencode-OC · /,'').replace(/^OC · /,'').replace(/^opencode\//,'').replace(/^(?:cn|global):/,'').replace(/^glm-/,'').replace(/^qoder-/,'').replace(/^autoclaw-/,'').replace(/^trae-/,'').toLowerCase().replace(/[^a-z0-9\u4e00-\u9fa5]+/g,'');}
 function badgeCell(text,tone){const td=document.createElement('td');const tag=document.createElement('span');tag.className='badge'+(tone?' '+tone:'');tag.textContent=text;td.append(tag);return td;}
 function chipsCell(labels,small){const td=document.createElement('td');if(labels.length){const row=document.createElement('span');row.className='badge-row';for(const label of labels){const tag=document.createElement('span');tag.className='badge';tag.textContent=label;row.append(tag);}td.append(row);}else td.textContent='—';if(small){const note=document.createElement('small');note.textContent=small;td.append(note);}return td;}
 // 五档语义：ok=探测确认能调，warn=能调但打了折（仅对话），bad=探测确认调不通，
@@ -282,7 +297,7 @@ function channelModelRows(channel,list,health){
  const caps=new Map();
  if(health&&Array.isArray(health.models))for(const item of health.models){if(item&&item.name)caps.set(modelKey(item.name),item);}
  const rows=new Map();
- const switchable=channel!=='opencode';
+ const switchable=channel!=='opencode'&&channel!=='autoclaw'&&channel!=='trae';
  const ensure=label=>{const identity=channel==='core'?String(label||''):modelKey(label);if(!identity)return null;const key=modelKey(label);if(!rows.has(identity))rows.set(identity,{key,label:String(label),id:String(label),cap:null,result:null,efforts:null,credits:null,creditValue:null,accounts:null});return rows.get(identity);};
  for(const item of(Array.isArray(list)?list:[])){
   if(!item||!item.id)continue;
@@ -333,7 +348,7 @@ function renderModelTable(channel,list,health){
  modelHeatSources[channel]={list,health};
  const body=$(config.body);body.replaceChildren();
  const rows=channelModelRows(channel,list,health);
- const cols=channel==='opencode'?8:10;
+ const cols=(channel==='opencode'||channel==='autoclaw'||channel==='trae')?8:10;
  const appendRow=row=>{
   const tr=document.createElement('tr');
   // 只有异常行抬底色：可用/未知是常态，整表染色等于没染色，失败行反而被淹掉。
@@ -392,12 +407,12 @@ function switchOpCell(row){
 }
 // ── 手工测速探测 ──
 // 探测仅由页面按钮触发（不点不耗额度）；结论缓存在服务端内存，重启即清空。
-// 通道键：core→"core"、zcode→"glm"、qoder→"qoder"（与后端 routeChannel 同一口径）。
-const probeChannelNames={core:'core',zcode:'glm',qoder:'qoder'};
-function setProbeButtonsDisabled(disabled){for(const n of ['core','zcode','qoder'])$('probe-'+n).disabled=disabled;}
+// 通道键：core→"core"、zcode→"glm"、qoder→"qoder"、autoclaw→"autoclaw"、trae→"trae"（与后端 routeChannel 同一口径）。
+const probeChannelNames={core:'core',zcode:'glm',qoder:'qoder',autoclaw:'autoclaw',trae:'trae'};
+function setProbeButtonsDisabled(disabled){for(const n of ['core','zcode','qoder','autoclaw','trae'])$('probe-'+n).disabled=disabled;}
 function renderProbeProgress(){
  const running=!!probeSnapshot.running,total=Number(probeSnapshot.total)||0,done=Number(probeSnapshot.done)||0;
- for(const name of ['core','zcode','qoder']){
+ for(const name of ['core','zcode','qoder','autoclaw','trae']){
   const el=$('probe-'+name+'-progress');
   if(running&&name===probeTarget){el.hidden=false;el.textContent=`正在探测 ${done}/${total}…`;}
   else if(!running&&name===probeTarget&&total>0){el.hidden=false;el.textContent=`探测完成：${total} 个模型，结论已接入 gateway-auto 选路。`;}
@@ -409,6 +424,16 @@ function applyProbeResults(){
  if(ch.core)renderModelTable('core',modelList,{modelResults:ch.core});
  if(ch.glm&&zcodeEnabled)void loadZcode();
  if(ch.qoder&&qoderEnabled)void loadQoder();
+ if(ch.autoclaw&&autoclawEnabled&&autoclawStatus){
+  // autoclaw 状态接口只回 health:{healthy,total}（没有 modelResults），
+  // 探测结论由这里合并进模型表，与 core 的做法一致。
+  renderModelTable('autoclaw',autoclawStatus.models,{...autoclawStatus.health,modelResults:ch.autoclaw});
+ }
+ if(ch.trae&&traeEnabled&&traeStatus){
+  // trae 状态接口的 health 是上游 /healthz 探活快照（不含 modelResults），
+  // 探测结论同样由这里合并进模型表。
+  renderModelTable('trae',traeStatus.models,{...traeStatus.health,modelResults:ch.trae});
+ }
  if(page==='overview')void loadOverview();
 }
 async function pollProbe(){
@@ -426,7 +451,7 @@ async function startProbe(name){
  try{probeSnapshot=await jsonAPI('probe',{channels:[probeChannelNames[name]]});renderProbeProgress();probeTimer=setTimeout(pollProbe,2000);}
  catch(error){probeBusy=false;probeTarget='';setProbeButtonsDisabled(false);renderProbeProgress();notice(error.message);}
 }
-for(const name of ['core','zcode','qoder'])$('probe-'+name).addEventListener('click',()=>startProbe(name));
+for(const name of ['core','zcode','qoder','autoclaw','trae'])$('probe-'+name).addEventListener('click',()=>startProbe(name));
 $('models-group-toggle').addEventListener('click',()=>{
  modelsGroupByAccount=!modelsGroupByAccount;
  const btn=$('models-group-toggle');
@@ -452,14 +477,14 @@ function overviewChannelStatus(channel){
   if(!lastStatus)return{label:'未知',tone:'unknown'};
   return lastStatus.total?{label:'运行中',tone:'ok'}:{label:'等待账号',tone:'idle'};
  }
- const st=channel==='zcode'?zcodeStatus:channel==='qoder'?qoderStatus:opencodeStatus;
+ const st=channel==='zcode'?zcodeStatus:channel==='qoder'?qoderStatus:channel==='autoclaw'?autoclawStatus:channel==='trae'?traeStatus:opencodeStatus;
  if(!st)return{label:'未加载',tone:'unknown'};
  if(!st.enabled)return{label:'未启用',tone:'idle'};
  return st.reachable?{label:'在线',tone:'ok'}:{label:'不可达',tone:'bad'};
 }
 function overviewChannelModelCount(channel){
  if(channel==='workbuddy')return modelList.length;
- const st=channel==='zcode'?zcodeStatus:channel==='qoder'?qoderStatus:opencodeStatus;
+ const st=channel==='zcode'?zcodeStatus:channel==='qoder'?qoderStatus:channel==='autoclaw'?autoclawStatus:channel==='trae'?traeStatus:opencodeStatus;
  if(!st||!st.enabled)return null;
  return Number(st.model_count)||0;
 }
@@ -468,7 +493,7 @@ function renderOverview(){
  const byChannel=new Map();
  for(const e of overviewUsageItems){const c=usageChannelOf(e);if(!byChannel.has(c))byChannel.set(c,[]);byChannel.get(c).push(e);}
  for(const c of usageChannelOrder){
-  const enabled=c==='workbuddy'||(c==='zcode'&&zcodeEnabled)||(c==='qoder'&&qoderEnabled)||(c==='opencode'&&opencodeEnabled);
+  const enabled=c==='workbuddy'||(c==='zcode'&&zcodeEnabled)||(c==='qoder'&&qoderEnabled)||(c==='opencode'&&opencodeEnabled)||(c==='autoclaw'&&autoclawEnabled)||(c==='trae'&&traeEnabled);
   if(!enabled)continue;
   const s=summarizeUsage(byChannel.get(c)||[]);
   const status=overviewChannelStatus(c);
@@ -503,10 +528,12 @@ function cardStats(c){
  }
  const count=overviewChannelModelCount(c);
  const out=[['模型',count===null?'—':String(count)]];
- const st=c==='zcode'?zcodeStatus:c==='qoder'?qoderStatus:opencodeStatus;
+ const st=c==='zcode'?zcodeStatus:c==='qoder'?qoderStatus:c==='autoclaw'?autoclawStatus:c==='trae'?traeStatus:opencodeStatus;
  if(c==='zcode'&&st&&st.enabled)out.push(['套餐',st.plan==='coding-plan'?'Coding':st.plan==='start-plan'?'Start':'—']);
  if(c==='qoder'&&st&&st.enabled)out.push(['凭据',st.control?(st.logged_in?'已登录':'未登录'):'PAT']);
  if(c==='opencode'&&st&&st.enabled)out.push(['阶段',st.health&&st.health.phase?st.health.phase:'—']);
+ if(c==='autoclaw'&&st&&st.enabled)out.push(['账号',st.health?`${st.health.healthy} / ${st.health.total}`:'—']);
+ if(c==='trae'&&st&&st.enabled)out.push(['账号',Array.isArray(st.accounts)?`${st.accounts.filter(a=>a.enabled&&!a.disabled&&!a.cooling).length} / ${st.accounts.length}`:'—']);
  return out;
 }
 function cardActions(c){
@@ -518,7 +545,7 @@ function cardActions(c){
 function cardStatus(c){
  const base=overviewChannelStatus(c);
  if(c==='workbuddy')return base;
- const st=c==='zcode'?zcodeStatus:c==='qoder'?qoderStatus:opencodeStatus;
+ const st=c==='zcode'?zcodeStatus:c==='qoder'?qoderStatus:c==='autoclaw'?autoclawStatus:c==='trae'?traeStatus:opencodeStatus;
  if(!st||!st.enabled||!st.control)return base;
  if(!st.logged_in)return{label:'未登录',tone:'warn'};
  if(c==='zcode'&&!st.proxy_running)return{label:'未启用',tone:'idle'};
@@ -527,7 +554,7 @@ function cardStatus(c){
 function renderCards(){
  const wrap=$('overview-cards');if(!wrap)return;wrap.replaceChildren();
  for(const c of usageChannelOrder){
-  const enabled=c==='workbuddy'||(c==='zcode'&&zcodeEnabled)||(c==='qoder'&&qoderEnabled)||(c==='opencode'&&opencodeEnabled);
+  const enabled=c==='workbuddy'||(c==='zcode'&&zcodeEnabled)||(c==='qoder'&&qoderEnabled)||(c==='opencode'&&opencodeEnabled)||(c==='autoclaw'&&autoclawEnabled)||(c==='trae'&&traeEnabled);
   if(!enabled)continue;
   const status=cardStatus(c);
   // 机架上的每个仓位顶着自己的通道色，状态徽章走暗底那一套深底亮字；
@@ -699,8 +726,8 @@ document.addEventListener?.('click', e => {
  if (switchBtn) return modelSwitchAction(switchBtn);
 });
 async function refreshStatus() { try { renderAccounts(await jsonAPI('status')); } catch(e) { notice(e.message); } }
-function realmLabel(realm) { return realm === 'global' ? '国际版' : realm === 'cn' ? '国内版' : realm === 'glm' ? 'GLM·智谱' : realm === 'qoder' ? 'Qoder' : realm === 'opencode' ? 'OpenCode' : ''; }
-function modelRealm(model) { return model.realm || (model.id.startsWith('global:') ? 'global' : model.id.startsWith('glm-') ? 'glm' : model.id.startsWith('qoder-') ? 'qoder' : model.id.startsWith('opencode-') ? 'opencode' : 'cn'); }
+function realmLabel(realm) { return realm === 'global' ? '国际版' : realm === 'cn' ? '国内版' : realm === 'glm' ? 'GLM·智谱' : realm === 'qoder' ? 'Qoder' : realm === 'opencode' ? 'OpenCode' : realm === 'autoclaw' ? 'AutoClaw' : realm === 'trae' ? 'Trae' : ''; }
+function modelRealm(model) { return model.realm || (model.id.startsWith('global:') ? 'global' : model.id.startsWith('glm-') ? 'glm' : model.id.startsWith('qoder-') ? 'qoder' : model.id.startsWith('opencode-') ? 'opencode' : model.id.startsWith('autoclaw-') ? 'autoclaw' : model.id.startsWith('trae-') ? 'trae' : 'cn'); }
 function modelOption(model) { const label = realmLabel(modelRealm(model)); const n = Array.isArray(model.accounts) ? model.accounts.length : 0; return `${label ? `${label} · ` : ''}${model.id}${n > 1 ? ` · ${n}账号` : ''}`; }
 // accessModelOptions feeds the API-access select: core models plus the GLM
 // channel models (the public /v1/models merges them, but /admin/models only
@@ -710,6 +737,8 @@ function accessModelOptions() {
  for (const id of zcodeModels) if (id && !items.some(m => m.id === id)) items.push({id, realm: 'glm'});
  for (const id of qoderModels) if (id && !items.some(m => m.id === id)) items.push({id, realm: 'qoder'});
  for (const id of opencodeModels) if (id && !items.some(m => m.id === id)) items.push({id, realm: 'opencode'});
+ for (const id of autoclawModels) if (id && !items.some(m => m.id === id)) items.push({id, realm: 'autoclaw'});
+ for (const id of traeModels) if (id && !items.some(m => m.id === id)) items.push({id, realm: 'trae'});
  return items;
 }
 function renderAccessModelSelect() {
@@ -848,9 +877,9 @@ const usageModeNames={stream:'流式',sync:'同步'};
 const usageAPINames={chat:'Chat',messages:'Messages',responses:'Responses'};
 // 通道归类：旁路通道用量由 console 以固定占位 uid 上报 core 账本（zcode/qoder/opencode），
 // 其余 uid 都是核心账号池的真实账号。分布表按此口径聚合，明细按当前筛选过滤。
-const usageChannelNames={workbuddy:'WorkBuddy',zcode:'GLM（Zcode）',qoder:'Qoder',opencode:'OpenCode'};
-const usageChannelOrder=['workbuddy','zcode','qoder','opencode'];
-function usageChannelOf(entry){const uid=entry.uid||'';return uid==='zcode'||uid==='qoder'||uid==='opencode'?uid:'workbuddy';}
+const usageChannelNames={workbuddy:'WorkBuddy',zcode:'GLM（Zcode）',qoder:'Qoder',opencode:'OpenCode',autoclaw:'AutoClaw',trae:'Trae'};
+const usageChannelOrder=['workbuddy','zcode','qoder','opencode','autoclaw','trae'];
+function usageChannelOf(entry){const uid=entry.uid||'';return uid==='zcode'||uid==='qoder'||uid==='opencode'||uid==='autoclaw'||uid==='trae'?uid:'workbuddy';}
 // 一束色认一条通道。routes 那侧的键是 core/glm，账本这侧是 workbuddy/zcode，
 // 指的是同一束光；翻译只写这一处，别在调用点各摆一份映射。
 // 通道类挂在单元格上，整行都是同一束光时（通道总览、通道分布）再挂到 <tr>，
@@ -1722,7 +1751,9 @@ function renderAccess(){
  const isGlm=model.startsWith('glm-');
  const isQoder=model.startsWith('qoder-');
  const isOpenCode=model.startsWith('opencode-');
- if(anthropic&&(isGlm||isQoder||isOpenCode)){$('copy-example').disabled=true;$('api-example').textContent=(isGlm?'GLM':isQoder?'Qoder':'OpenCode')+' 通道仅支持 OpenAI 协议（/v1/chat/completions），请切换协议后复制示例。';return;}
+ const isAutoClaw=model.startsWith('autoclaw-');
+ const isTrae=model.startsWith('trae-');
+ if(anthropic&&(isGlm||isQoder||isOpenCode||isAutoClaw||isTrae)){$('copy-example').disabled=true;$('api-example').textContent=(isGlm?'GLM':isQoder?'Qoder':isOpenCode?'OpenCode':isAutoClaw?'AutoClaw':'Trae')+' 通道仅支持 OpenAI 协议（/v1/chat/completions），请切换协议后复制示例。';return;}
  const body={model,...(anthropic?{max_tokens:1024}:{}),messages:[{role:'user',content:'你好'}],stream:true};
  const auth=anthropic?'  -H "x-api-key: <你的 API Key>" \\\n  -H "anthropic-version: 2023-06-01"':'  -H "Authorization: Bearer <你的 API Key>"';
  const json=JSON.stringify(body,null,2).replace(/'/g,"'\\''");
@@ -1730,6 +1761,8 @@ function renderAccess(){
  if(isGlm) prefix='# GLM 模型经 zcode 通道转发（按 glm- 前缀分流），账号为容器登录态\ncurl ';
  else if(isQoder) prefix='# Qoder 模型经 qoder 通道转发（按 qoder- 前缀分流）\ncurl ';
  else if(isOpenCode) prefix='# OpenCode 免费模型经 OW Bridge sidecar 转发（按 opencode- 前缀分流）\ncurl ';
+ else if(isAutoClaw) prefix='# AutoClaw 模型经 autoclaw2api 桥接转发（按 autoclaw- 前缀分流），账号为容器内登录态\ncurl ';
+ else if(isTrae) prefix='# Trae 模型经 trae2api 桥接转发（按 trae- 前缀分流），账号为容器内登录态\ncurl ';
  else if(!anthropic) prefix='# 成功响应头 X-Account / X-Account-Realm 标明本次服务的账号与平台\ncurl ';
  else prefix='curl ';
  $('api-example').textContent=prefix+$('api-endpoint').value+` \\\n${auth} \\\n  -H "Content-Type: application/json" \\\n  -d '${json}'`;
@@ -1737,7 +1770,7 @@ function renderAccess(){
 document.querySelectorAll('[data-protocol]').forEach(button=>button.addEventListener('click',()=>setProtocol(button.dataset.protocol)));
 $('access-model').addEventListener('change',renderAccess);
 $('copy-example').addEventListener('click',async()=>{if($('copy-example').disabled)return;try{await navigator.clipboard.writeText($('api-example').textContent);notice('调用示例已复制，请替换 API Key 占位符');}catch{notice('浏览器不允许自动复制，请手动复制下方示例');}});
-$('go-chat').addEventListener('click',()=>{if(activeRequest||$('go-chat').disabled)return;const model=$('access-model').value;if(model.startsWith('glm-')){if(zcodeModels.includes(model))$('zcode-model').value=model;showPage('zcode');return;}if(model.startsWith('qoder-')){if(qoderModels.includes(model))$('qoder-model').value=model;showPage('qoder');return;}if(model.startsWith('opencode-')){if(opencodeModels.includes(model))$('opencode-model').value=model;showPage('opencode');return;}$('model').value=model;updateEfforts();setWorkBuddyView('chat');showPage('workbuddy');});
+$('go-chat').addEventListener('click',()=>{if(activeRequest||$('go-chat').disabled)return;const model=$('access-model').value;if(model.startsWith('glm-')){if(zcodeModels.includes(model))$('zcode-model').value=model;showPage('zcode');return;}if(model.startsWith('qoder-')){if(qoderModels.includes(model))$('qoder-model').value=model;showPage('qoder');return;}if(model.startsWith('opencode-')){if(opencodeModels.includes(model))$('opencode-model').value=model;showPage('opencode');return;}if(model.startsWith('autoclaw-')){if(autoclawModels.includes(model))$('autoclaw-model').value=model;showPage('autoclaw');return;}if(model.startsWith('trae-')){if(traeModels.includes(model))$('trae-model').value=model;showPage('trae');return;}$('model').value=model;updateEfforts();setWorkBuddyView('chat');showPage('workbuddy');});
 function chatControls(){
  for(const id of ['model','access-model','clear-chat','send-chat','max-tokens'])$(id).disabled=!!activeRequest;
  $('stop-chat').hidden=!activeRequest;
@@ -1756,7 +1789,7 @@ function accountNote(response) {
  const platform = realm === 'global' ? '国际版' : realm === 'cn' ? '国内版' : realm;
  return ` · 本次账号：${account || '—'}${platform ? `（${platform}）` : ''}`;
 }
-for(const [inputId,formId] of [['prompt','chat-form'],['zcode-prompt','zcode-form'],['qoder-prompt','qoder-form'],['opencode-prompt','opencode-form']])$(inputId).addEventListener('keydown',event=>{
+for(const [inputId,formId] of [['prompt','chat-form'],['zcode-prompt','zcode-form'],['qoder-prompt','qoder-form'],['opencode-prompt','opencode-form'],['autoclaw-prompt','autoclaw-form'],['trae-prompt','trae-form']])$(inputId).addEventListener('keydown',event=>{
  if(event.key!=='Enter'||event.shiftKey||event.isComposing)return;
  event.preventDefault();$(formId).requestSubmit();
 });
@@ -1807,7 +1840,7 @@ renderAccess();
 // auto_preview, aliases, channels}；POST /admin/route/save 接收
 // {models:[{alias,channel,model,enabled,note}], auto_fallback}。
 // 路由判定完全在服务端，页面只负责展示与编辑；保存即生效，无需重启。
-const routeChannelLabels={core:'核心账号池',glm:'GLM 通道',qoder:'Qoder 通道',opencode:'OpenCode 通道'};
+const routeChannelLabels={core:'核心账号池',glm:'GLM 通道',qoder:'Qoder 通道',opencode:'OpenCode 通道',autoclaw:'AutoClaw 通道',trae:'Trae 通道'};
 function routeChannelLabel(channel){return routeChannelLabels[channel]||channel||'—';}
 async function loadRoutes(){
  if(!csrf)return;
@@ -1961,7 +1994,7 @@ function capPool(){
   for(const model of channel.models||[]){
    const cost=capCost(model,channel.channel,costs);
    out.push({channel:channel.channel,model,row:capByKeys.get(modelKey(model))||null,cost,
-    gate:modelSwitchEffective({id:model,switchable:channel.channel!=='opencode',creditValue:cost.known?cost.value:null})});
+    gate:modelSwitchEffective({id:model,switchable:channel.channel!=='opencode'&&channel.channel!=='autoclaw'&&channel.channel!=='trae',creditValue:cost.known?cost.value:null})});
   }
  }
  return out;
@@ -2127,4 +2160,578 @@ $('routes-refresh').addEventListener('click',()=>loadRoutes());
 $('routes-copy-example').addEventListener('click',async()=>{try{await navigator.clipboard.writeText($('routes-example').textContent);notice('配置片段已复制，请替换 API Key 占位符');}catch{notice('浏览器不允许自动复制，请手动复制下方片段');}});
 $('reveal-key').addEventListener('click',async()=>{try{$('api-key').value=(await jsonAPI('access',{})).api_key;$('api-key').type='text';}catch(e){notice(e.message);}});
 $('copy-key').addEventListener('click',async()=>{const generation=sessionGeneration;try{if(!$('api-key').value)$('api-key').value=(await jsonAPI('access',{})).api_key;await navigator.clipboard.writeText($('api-key').value);if(generation===sessionGeneration)notice('API Key 已复制');}catch{if(generation!==sessionGeneration)return;$('api-key').type='text';$('api-key').select();notice('浏览器不允许自动复制，请手动复制选中的密钥');}});
+async function loadCCR(){ if(!csrf)return; try{renderCCR(await jsonAPI('ccr'));}catch(error){notice(error.message);} }
+function ccrControls(){ const s=ccrStatus||{},usable=!!s.reachable&&!!s.auth_ready&&!ccrBusy;
+ $('ccr-start').disabled=!usable||s.state==='running';
+ $('ccr-stop').disabled=!usable||s.state!=='running';
+ $('ccr-link').disabled=ccrBusy;
+}
+function renderCCR(status){
+ ccrStatus=status;
+ const enabled=!!status.enabled;
+ $('ccr-disabled').hidden=enabled;
+ $('ccr-content').hidden=!enabled;
+ if(!enabled){ccrControls();return;}
+ const running=status.state==='running';
+ let tone='bad',label='不可达',text='';
+ if(!status.auth_ready){label='未配置';text='未读取到 CCR 管理 Token：请把 CCR 的 service.json 只读挂载给控制台，并用 WB2A_CCR_TOKEN_FILE 指向它。';}
+ else if(status.auth_mismatch){tone='warn';label='Token 不匹配';text='CCR 管理服务在线，但拒绝了当前的管理 Token：CCR 每次重启都会轮换 Token，容器里可能还是旧的那份。请重建控制台容器（docker compose up -d --force-recreate）重新读取挂载。';}
+ else if(!status.reachable){label='不可达';text='CCR 管理服务不可达：请在宿主机执行 ccr ui 拉起管理服务后点右上角刷新。控制台没有宿主进程权限，无法替你启动 ccr 本身。';}
+ else if(running){tone='ok';label='运行中';text=`CCR 模型网关运行中 · ${status.endpoint||'—'} · 进程号 ${status.pid||'—'}`;}
+ else{tone='warn';label='已停止';text=`CCR 管理服务在线，模型网关已停止${status.state?`（${status.state}）`:''}，点「启动网关」拉起。`;}
+ $('ccr-status-badge').textContent=label;
+ $('ccr-status-badge').className='badge '+tone;
+ $('ccr-status-text').textContent=text;
+ const rows=[];
+ if(status.reachable){
+  if(status.endpoint)rows.push(['网关地址',status.endpoint]);
+  if(status.pid)rows.push(['进程号',String(status.pid)]);
+  if(status.last_started_at)rows.push(['上次启动',formatProbeTime(status.last_started_at)]);
+ }
+ const body=$('ccr-detail-body');body.replaceChildren();
+ for(const [k,v] of rows){const tr=document.createElement('tr');tr.append(cell(k),cell(v));body.append(tr);}
+ $('ccr-detail-wrap').hidden=!rows.length;
+ ccrControls();
+}
+async function ccrAction(action){ if(ccrBusy)return; const generation=sessionGeneration; ccrBusy=true; ccrControls(); notice('');
+ try{await jsonAPI('ccr/gateway',{action});if(generation!==sessionGeneration)return;await loadCCR();}
+ catch(error){if(generation===sessionGeneration)notice(error.message);}
+ finally{if(generation===sessionGeneration){ccrBusy=false;ccrControls();}}
+}
+$('ccr-start').addEventListener('click',()=>ccrAction('start'));
+$('ccr-stop').addEventListener('click',()=>ccrAction('stop'));
+$('ccr-refresh').addEventListener('click',()=>loadCCR());
+$('ccr-link').addEventListener('click',async()=>{ const generation=sessionGeneration; ccrBusy=true; ccrControls();
+ try{const result=await jsonAPI('ccr/link');if(generation!==sessionGeneration)return;window.open(result.ui_url,'_blank','noopener');}
+ catch(error){if(generation===sessionGeneration)notice(error.message);}
+ finally{if(generation===sessionGeneration){ccrBusy=false;ccrControls();}}
+});
+
+// ── AutoClaw 通道（autoclaw2api 旁路，autoclaw- 前缀）──
+// 状态接口只回 {enabled,reachable,models,accounts,health:{healthy,total}}；bridge 的
+// 业务错误是 200 + {"error":...}，jsonAPI 不抛，autoclawResult 统一转成异常。
+function autoclawResult(result){
+ if(result&&typeof result.error==='string'&&result.error)throw new Error(result.error);
+ return result;
+}
+async function loadAutoClaw(){
+ if(!csrf)return;
+ try{renderAutoClaw(await jsonAPI('autoclaw'));}
+ catch(error){notice(error.message);}
+}
+function renderAutoClaw(status){
+ autoclawStatus=status;
+ const enabled=!!status.enabled;
+ $('autoclaw-disabled').hidden=enabled;
+ $('autoclaw-content').hidden=!enabled;
+ if(!enabled)return;
+ const reachable=!!status.reachable;
+ const badge=$('autoclaw-status-badge');
+ const health=status.health;
+ const healthy=health&&Number.isFinite(Number(health.healthy))?Number(health.healthy):null;
+ const total=health&&Number.isFinite(Number(health.total))?Number(health.total):null;
+ let tone='bad',label='不可达',text='autoclaw2api 容器不可达：请确认 overlay 已随 compose 启动；若容器在运行，通常是 console 刚被重启、旁路网络失联，重启旁路容器即可恢复。';
+ if(reachable){
+  if(total===0){tone='warn';label='无账号';text='容器可达，但还没有登录任何账号：到「账号登录」子页添加。';}
+  else if(healthy===0){tone='warn';label='全部冷却';text=`容器可达 · ${total} 个账号全部冷却或停用，等待恢复后自动继续。`;}
+  else{tone='ok';label='在线';text=`autoclaw2api 可达 · ${status.model_count} 个模型 · 健康账号 ${healthy} / ${total}`;}
+ }
+ badge.textContent=label;badge.className='badge '+tone;
+ $('autoclaw-status-text').textContent=text;
+ const rows=[];
+ if(health)rows.push(['健康账号',`${health.healthy??'—'} / ${health.total??'—'}`]);
+ if(status.mode)rows.push(['账号模式',status.mode==='global'?'国际版':'国内版']);
+ if(reachable)rows.push(['模型数',String(status.model_count||0)]);
+ const detail=$('autoclaw-health-body');detail.replaceChildren();
+ for(const [k,v] of rows){const tr=document.createElement('tr');tr.append(cell(String(k)),cell(String(v)));detail.append(tr);}
+ $('autoclaw-health-wrap').hidden=!rows.length;
+ // 登录子页在容器不可达时也保留（那是排障入口），其余数据子页只在可达时开放。
+ const dataTab=reachable;
+ if(autoclawView!=='status'&&autoclawView!=='login'&&!dataTab)autoclawView='status';
+ $('autoclaw-view-accounts').hidden=!dataTab;
+ $('autoclaw-view-models').hidden=!dataTab;
+ $('autoclaw-view-chat').hidden=!dataTab;
+ for(const view of ['status','login','accounts','models','chat']){
+  $('autoclaw-view-'+view).classList.toggle('active',view===autoclawView);
+  $('autoclaw-pane-'+view).hidden=view!==autoclawView;
+ }
+ autoclawModels=(status.models||[]).map(item=>item.id).filter(Boolean);
+ renderAccessModelSelect();renderAccess();
+ const previous=$('autoclaw-model').value;
+ $('autoclaw-model').replaceChildren();
+ for(const id of autoclawModels)$('autoclaw-model').append(new Option(id,id));
+ if(autoclawModels.includes(previous))$('autoclaw-model').value=previous;
+ renderModelTable('autoclaw',status.models,health||null);
+ renderAutoClawAccounts(status.accounts||[]);
+ $('autoclaw-model').disabled=!autoclawModels.length||!!activeRequest;
+ $('autoclaw-send').disabled=!autoclawModels.length||!!activeRequest;
+ autoclawControls();autoclawActionControls();
+}
+function autoclawControls(){
+ for(const id of ['autoclaw-model','autoclaw-prompt','autoclaw-send'])$(id).disabled=!!activeRequest;
+ $('autoclaw-stop').hidden=!activeRequest;
+}
+function autoclawActionControls(){
+ $('autoclaw-refresh').disabled=autoclawBusy;
+ $('autoclaw-credits-refresh').disabled=autoclawBusy;
+ $('autoclaw-maintain').disabled=autoclawBusy;
+}
+function autoclawLoginControls(){
+ $('autoclaw-sendcode').disabled=autoclawLoginBusy||autoclawCodeTimer!==null;
+ for(const id of ['autoclaw-login-start','autoclaw-import-desktop','autoclaw-oauth'])$(id).disabled=autoclawLoginBusy;
+}
+function startAutoClawCodeCountdown(){
+ clearTimeout(autoclawCodeTimer);let remain=60;
+ const btn=$('autoclaw-sendcode');btn.disabled=true;
+ const tick=()=>{
+  if(remain>0){btn.textContent=`重新发送（${remain}s）`;remain--;autoclawCodeTimer=setTimeout(tick,1000);return;}
+  clearTimeout(autoclawCodeTimer);autoclawCodeTimer=null;btn.disabled=autoclawLoginBusy;btn.textContent='发送验证码';
+ };
+ tick();
+}
+function renderAutoClawAccounts(list){
+ autoclawAccounts=Array.isArray(list)?list:[];
+ const usable=autoclawAccounts.filter(a=>!a.disabled&&!a.cooling).length;
+ const cooling=autoclawAccounts.filter(a=>a.cooling&&!a.disabled).length;
+ const disabled=autoclawAccounts.filter(a=>a.disabled).length;
+ $('autoclaw-stat-total').textContent=String(autoclawAccounts.length);
+ $('autoclaw-stat-usable').textContent=String(usable);
+ $('autoclaw-stat-cooling').textContent=String(cooling);
+ $('autoclaw-stat-disabled').textContent=String(disabled);
+ const body=$('autoclaw-accounts-body');body.replaceChildren();
+ for(const a of autoclawAccounts){
+  const tr=document.createElement('tr');
+  const state=a.disabled?'已停用':a.cooling?'冷却中':'可用';
+  const tone=a.disabled?'idle':a.cooling?'warn':'ok';
+  const status=cell('');const badge=document.createElement('span');badge.className='badge '+tone;badge.textContent=state;status.append(badge);
+  const region=a.region==='global'?'国际版':'国内版';
+  const ac=(label,action,cls)=>{const btn=document.createElement('button');btn.className=cls;btn.textContent=label;btn.dataset.acact=action;btn.dataset.uid=a.uid;btn.dataset.region=a.region||'cn';return btn;};
+  const op=document.createElement('td');
+  if(a.disabled)op.append(ac('启用','enable','secondary'),' ',ac('删除','delete','quiet'));
+  else op.append(ac('停用','disable','secondary'),' ',ac('签到','checkin','quiet'),' ',ac('删除','delete','quiet'));
+  tr.append(cell(a.nickname||a.uid,a.uid),cell(region),status,numCell(a.points==null?'—':String(a.points)),numCell(`${a.success_count||0} / ${a.err_count||0}`),cell(a.reason||'—',a.cool_remaining_sec?`约 ${Math.ceil(a.cool_remaining_sec/60)} 分钟后恢复`:''),op);
+  body.append(tr);
+ }
+ $('autoclaw-accounts-empty').hidden=autoclawAccounts.length>0;
+}
+async function autoclawAccountAction(action,uid,region){
+ if(autoclawBusy)return;
+ const generation=sessionGeneration;
+ if(action==='delete'&&!confirm(`确定删除账号 ${uid}？凭据将从容器中移除，需要重新登录才能恢复。`))return;
+ autoclawBusy=true;autoclawActionControls();notice('');
+ try{
+  let done='账号状态已更新';
+  if(action==='enable'||action==='disable'){
+   autoclawResult(await jsonAPI('autoclaw/accounts/toggle',{uid,region,enable:action==='enable'}));
+  }else if(action==='delete'){
+   autoclawResult(await jsonAPI('autoclaw/accounts/delete',{uid,region}));done='账号已删除';
+  }else if(action==='checkin'){
+   const result=autoclawResult(await jsonAPI('autoclaw/checkin',{region,uid}));
+   const rs=Array.isArray(result.results)?result.results:[];
+   const ok=rs.filter(x=>x&&x.ok).length,already=rs.filter(x=>x&&x.already_completed).length;
+   const fail=rs.filter(x=>x&&x.error).length;
+   done=fail?`签到结束：${ok} 成功 / ${already} 已签 / ${fail} 失败`:`签到完成：${ok} 成功 / ${already} 已签`;
+  }
+  if(generation!==sessionGeneration)return;
+  notice(done);
+  // 签到/启停之后补一次维护（积分刷新 + 会话保养），让积分列尽快反映奖励。
+  if(action==='checkin'){try{autoclawResult(await jsonAPI('autoclaw/maintain',{}));}catch{/* 维护失败不掩盖签到结果 */}}
+  await loadAutoClaw();
+ }catch(error){if(generation===sessionGeneration)notice(error.message);}
+ finally{if(generation===sessionGeneration){autoclawBusy=false;autoclawActionControls();}}
+}
+$('autoclaw-accounts-body').addEventListener('click',event=>{
+ const btn=event.target.closest('button[data-acact]');if(!btn||btn.disabled)return;
+ autoclawAccountAction(btn.dataset.acact,btn.dataset.uid,btn.dataset.region);
+});
+$('autoclaw-credits-refresh').addEventListener('click',async()=>{
+ if(autoclawBusy)return;const generation=sessionGeneration;autoclawBusy=true;autoclawActionControls();notice('');
+ try{
+  const result=autoclawResult(await jsonAPI('autoclaw/credits/refresh',{}));
+  if(generation!==sessionGeneration)return;
+  const list=Array.isArray(result.accounts)?result.accounts:[];
+  const failed=list.filter(x=>x&&x.error);
+  notice(failed.length?`积分刷新完成，${failed.length} 个账号失败：${failed[0].error}`:`积分已刷新（${list.length} 个账号）`);
+  await loadAutoClaw();
+ }catch(error){if(generation===sessionGeneration)notice(error.message);}
+ finally{if(generation===sessionGeneration){autoclawBusy=false;autoclawActionControls();}}
+});
+$('autoclaw-maintain').addEventListener('click',async()=>{
+ if(autoclawBusy)return;const generation=sessionGeneration;autoclawBusy=true;autoclawActionControls();notice('');
+ try{
+  autoclawResult(await jsonAPI('autoclaw/maintain',{}));
+  if(generation!==sessionGeneration)return;
+  notice('维护完成：积分已刷新，会话已保养');
+  await loadAutoClaw();
+ }catch(error){if(generation===sessionGeneration)notice(error.message);}
+ finally{if(generation===sessionGeneration){autoclawBusy=false;autoclawActionControls();}}
+});
+$('autoclaw-sendcode-form').addEventListener('submit',async event=>{
+ event.preventDefault();if(autoclawLoginBusy)return;
+ const phone=$('autoclaw-phone').value.trim();
+ if(!/^1\d{10}$/.test(phone)){$('autoclaw-login-hint').textContent='请输入 11 位国内手机号。';return;}
+ const generation=sessionGeneration;autoclawLoginBusy=true;autoclawLoginControls();
+ $('autoclaw-login-hint').textContent='正在发送验证码…';
+ try{
+  const result=autoclawResult(await jsonAPI('autoclaw/login/cn/sendcode',{phone}));
+  if(generation!==sessionGeneration)return;
+  $('autoclaw-login-hint').textContent=(result&&result.msg)?result.msg:'验证码已发送，请查收短信。';
+  startAutoClawCodeCountdown();
+ }catch(error){if(generation===sessionGeneration)$('autoclaw-login-hint').textContent=error.message;}
+ finally{if(generation===sessionGeneration){autoclawLoginBusy=false;autoclawLoginControls();}}
+});
+$('autoclaw-login-form').addEventListener('submit',async event=>{
+ event.preventDefault();if(autoclawLoginBusy)return;
+ const phone=$('autoclaw-phone').value.trim(),code=$('autoclaw-code').value.trim();
+ if(!phone||!code){$('autoclaw-login-hint').textContent='请先获取并填写短信验证码。';return;}
+ const generation=sessionGeneration;autoclawLoginBusy=true;autoclawLoginControls();
+ $('autoclaw-login-hint').textContent='正在登录…';
+ try{
+  autoclawResult(await jsonAPI('autoclaw/login/cn',{phone,code}));
+  if(generation!==sessionGeneration)return;
+  $('autoclaw-phone').value='';$('autoclaw-code').value='';
+  $('autoclaw-login-hint').textContent='登录成功，账号已加入容器账号池。';
+  notice('AutoClaw 账号登录成功');
+  await loadAutoClaw();
+  autoclawView='accounts';if(autoclawStatus)renderAutoClaw(autoclawStatus);
+ }catch(error){if(generation===sessionGeneration)$('autoclaw-login-hint').textContent=error.message;}
+ finally{if(generation===sessionGeneration){autoclawLoginBusy=false;autoclawLoginControls();}}
+});
+$('autoclaw-import-desktop').addEventListener('click',async()=>{
+ if(autoclawLoginBusy)return;const generation=sessionGeneration;autoclawLoginBusy=true;autoclawLoginControls();
+ $('autoclaw-global-hint').textContent='正在从桌面客户端导入凭据…';
+ try{
+  const result=autoclawResult(await jsonAPI('autoclaw/login/global/import-desktop',{}));
+  if(generation!==sessionGeneration)return;
+  $('autoclaw-global-hint').textContent=(result&&result.msg)?result.msg:'导入完成，国际版账号已加入容器账号池。';
+  notice('AutoClaw 国际版凭据导入成功');
+  await loadAutoClaw();
+ }catch(error){if(generation===sessionGeneration)$('autoclaw-global-hint').textContent=error.message;}
+ finally{if(generation===sessionGeneration){autoclawLoginBusy=false;autoclawLoginControls();}}
+});
+$('autoclaw-oauth-form').addEventListener('submit',async event=>{
+ event.preventDefault();if(autoclawLoginBusy)return;
+ const callback=$('autoclaw-oauth-url').value.trim();
+ if(!callback){$('autoclaw-global-hint').textContent='请粘贴浏览器回调 URL。';return;}
+ const generation=sessionGeneration;autoclawLoginBusy=true;autoclawLoginControls();
+ $('autoclaw-global-hint').textContent='正在导入 OAuth 凭据…';
+ try{
+  const result=autoclawResult(await jsonAPI('autoclaw/login/global/oauth',{callback_url:callback}));
+  if(generation!==sessionGeneration)return;
+  $('autoclaw-oauth-url').value='';
+  $('autoclaw-global-hint').textContent=(result&&result.msg)?result.msg:'导入完成，国际版账号已加入容器账号池。';
+  notice('AutoClaw OAuth 导入成功');
+  await loadAutoClaw();
+ }catch(error){if(generation===sessionGeneration)$('autoclaw-global-hint').textContent=error.message;}
+ finally{if(generation===sessionGeneration){autoclawLoginBusy=false;autoclawLoginControls();}}
+});
+for(const view of ['status','login','accounts','models','chat'])$('autoclaw-view-'+view).addEventListener('click',()=>{autoclawView=view;if(autoclawStatus)renderAutoClaw(autoclawStatus);});
+$('autoclaw-refresh').addEventListener('click',async()=>{
+ if(autoclawBusy)return;const generation=sessionGeneration;autoclawBusy=true;autoclawActionControls();
+ try{await loadAutoClaw();}finally{if(generation===sessionGeneration){autoclawBusy=false;autoclawActionControls();}}
+});
+$('autoclaw-stop').addEventListener('click',()=>activeRequest?.abort());
+$('autoclaw-form').addEventListener('submit',async event=>{
+ event.preventDefault();if(activeRequest)return;const text=$('autoclaw-prompt').value.trim();if(!text||!$('autoclaw-model').value)return;
+ const generation=sessionGeneration;
+ notice('');message('user',text,$('autoclaw-messages'));$('autoclaw-prompt').value='';const answer=message('assistant','正在等待模型…',$('autoclaw-messages'));
+ const controller=new AbortController();activeRequest=controller;autoclawControls();
+ let content='',usage,finished=false;const outgoing=[...autoclawHistory,{role:'user',content:text}];
+ try{
+  const response=await api('autoclaw/chat',{model:$('autoclaw-model').value,messages:outgoing,stream:true},controller.signal);
+  if(!response.ok){const err=await response.json();throw new Error(err.error?.message||err.error||`HTTP ${response.status}`);}
+  const reader=response.body.getReader(),decoder=new TextDecoder();let buffer='';
+  const processFrame=frame=>{
+   const payload=frame.split('\n').filter(l=>l.startsWith('data:')).map(l=>l.slice(5).trimStart()).join('\n');if(!payload)return;
+   if(payload==='[DONE]'){finished=true;return;}
+   const part=JSON.parse(payload);if(part.error)throw new Error(part.error.message||'上游流式响应发生错误');
+   content+=part.choices?.[0]?.delta?.content||'';answer.content.textContent=content||'模型正在思考…';
+   if(part.usage)usage=part.usage;
+  };
+  while(true){const{value,done}=await reader.read();if(controller.signal.aborted){const error=new Error('已停止生成');error.name='AbortError';throw error;}buffer+=done?decoder.decode():decoder.decode(value,{stream:true});buffer=buffer.replace(/\r\n/g,'\n');let split;while((split=buffer.indexOf('\n\n'))>=0){processFrame(buffer.slice(0,split));buffer=buffer.slice(split+2);}if(done){if(buffer.trim())processFrame(buffer);break;}}
+  if(!finished)throw new Error('响应提前中断，可重新发送问题');
+  if(!content)answer.content.textContent='模型未返回文本内容。';
+  autoclawHistory=[...outgoing,{role:'assistant',content}];
+  $('autoclaw-usage').textContent=(usage?`输入 ${usage.prompt_tokens??'—'} · 输出 ${usage.completion_tokens??'—'} · 总计 ${usage.total_tokens??'—'} tokens`:'上游未返回用量')+' · 本次通道：AutoClaw';
+ }catch(e){if(generation===sessionGeneration){const msg=e.name==='AbortError'?'已停止生成':e.message;answer.content.textContent=(content?content+'\n\n':'')+msg;$('autoclaw-usage').textContent=msg;}}
+ finally{controller.abort();activeRequest=undefined;autoclawControls();}
+});
+
+// ── Trae 通道（trae2api 旁路，trae- 前缀）──
+// 状态接口把容器 /status 与 /admin/api/accounts 按 uid 合并后下发；控制链路用标准 HTTP
+// 状态码表达业务结果（400/404/409 原样透传），jsonAPI 的 !ok 分支已能抛错，这里不再包一层。
+async function loadTrae(){
+ if(!csrf)return;
+ try{renderTrae(await jsonAPI('trae'));}
+ catch(error){notice(error.message);}
+}
+function renderTrae(status){
+ traeStatus=status;
+ const enabled=!!status.enabled;
+ $('trae-disabled').hidden=enabled;
+ $('trae-content').hidden=!enabled;
+ if(!enabled)return;
+ const reachable=!!status.reachable;
+ const accounts=Array.isArray(status.accounts)?status.accounts:[];
+ const badge=$('trae-status-badge');
+ let tone='bad',label='不可达',text='trae2api 容器不可达：请确认 overlay 已随 compose 启动；若容器在运行，通常是 console 刚被重启、旁路网络失联，重启旁路容器即可恢复。';
+ if(reachable){
+  if(!accounts.length){tone='warn';label='无账号';text='容器可达，但还没有导入账号：到「账号登录」子页用 OAuth 或回调 URL 添加。';}
+  else{tone='ok';label='在线';text=`trae2api 可达 · ${status.model_count||0} 个模型 · ${accounts.length} 个账号`;}
+ }
+ badge.textContent=label;badge.className='badge '+tone;
+ $('trae-status-text').textContent=text;
+ // 容器不可达时 /status 不存在，凭据与账号数一律留空而不是编造。
+ const rows=[];
+ if(reachable){rows.push(['模型数',String(status.model_count||0)]);rows.push(['账号数',String(accounts.length)]);}
+ const detail=$('trae-health-body');detail.replaceChildren();
+ for(const [k,v] of rows){const tr=document.createElement('tr');tr.append(cell(String(k)),cell(String(v)));detail.append(tr);}
+ $('trae-health-wrap').hidden=!rows.length;
+ // 登录子页在容器不可达时也保留（那是排障入口），其余数据子页只在可达时开放。
+ const dataTab=reachable;
+ if(traeView!=='status'&&traeView!=='login'&&!dataTab)traeView='status';
+ for(const view of ['accounts','schedule','models','chat','usage'])$('trae-view-'+view).hidden=!dataTab;
+ for(const view of ['status','login','accounts','schedule','models','chat','usage']){
+  $('trae-view-'+view).classList.toggle('active',view===traeView);
+  $('trae-pane-'+view).hidden=view!==traeView;
+ }
+ traeModels=(status.models||[]).map(item=>item.id).filter(Boolean);
+ renderAccessModelSelect();renderAccess();
+ const previous=$('trae-model').value;
+ $('trae-model').replaceChildren();
+ for(const id of traeModels)$('trae-model').append(new Option(id,id));
+ if(traeModels.includes(previous))$('trae-model').value=previous;
+ renderModelTable('trae',status.models,status.health||null);
+ renderTraeAccounts(accounts);
+ $('trae-model').disabled=!traeModels.length||!!activeRequest;
+ $('trae-send').disabled=!traeModels.length||!!activeRequest;
+ traeControls();traeActionControls();
+}
+function traeControls(){
+ for(const id of ['trae-model','trae-prompt','trae-send'])$(id).disabled=!!activeRequest;
+ $('trae-stop').hidden=!activeRequest;
+}
+function traeActionControls(){
+ for(const id of ['trae-refresh','trae-credits-refresh','trae-maintain','trae-schedule-refresh','trae-checkin-now','trae-refresh-now'])$(id).disabled=traeBusy;
+}
+function traeRecoveryHint(a){
+ if(!a.cooling||!a.until)return '';
+ const until=new Date(a.until);
+ if(Number.isNaN(until.getTime()))return '';
+ return '约 '+until.toLocaleString('zh-CN',{timeZone:'Asia/Shanghai',hour12:false})+' 恢复';
+}
+function renderTraeAccounts(list){
+ traeAccounts=Array.isArray(list)?list:[];
+ const usable=traeAccounts.filter(a=>!a.disabled&&!a.cooling).length;
+ const cooling=traeAccounts.filter(a=>a.cooling&&!a.disabled).length;
+ const disabled=traeAccounts.filter(a=>a.disabled).length;
+ $('trae-stat-total').textContent=String(traeAccounts.length);
+ $('trae-stat-usable').textContent=String(usable);
+ $('trae-stat-cooling').textContent=String(cooling);
+ $('trae-stat-disabled').textContent=String(disabled);
+ const body=$('trae-accounts-body');body.replaceChildren();
+ for(const a of traeAccounts){
+  const tr=document.createElement('tr');
+  const state=a.disabled?'已停用':a.cooling?'冷却中':'可用';
+  const tone=a.disabled?'idle':a.cooling?'warn':'ok';
+  const status=cell('');const badge=document.createElement('span');badge.className='badge '+tone;badge.textContent=state;status.append(badge);
+  const expires=a.expires_at?new Date(Number(a.expires_at)*1000).toLocaleString('zh-CN',{timeZone:'Asia/Shanghai',hour12:false}):'—';
+  const ta=(label,action,cls)=>{const btn=document.createElement('button');btn.className=cls;btn.textContent=label;btn.dataset.traact=action;btn.dataset.uid=a.uid;return btn;};
+  const op=document.createElement('td');
+  if(a.disabled)op.append(ta('启用','enable','secondary'),' ',ta('删除','delete','quiet'));
+  else op.append(ta('停用','disable','secondary'),' ',ta('刷新','refresh','quiet'),' ',ta('删除','delete','quiet'));
+  // sidecar 只回报失败次数，没有成功计数；成功列留「—」而不是拿 0 充数。
+  tr.append(cell(a.nickname||a.uid,a.uid),status,numCell(a.credits==null?'—':String(a.credits)),numCell('— / '+(a.err_count||0)),cell(expires,a.expired_soon?'Token 即将过期':''),cell(a.reason||'—',traeRecoveryHint(a)),op);
+  body.append(tr);
+ }
+ $('trae-accounts-empty').hidden=traeAccounts.length>0;
+}
+async function traeAccountAction(action,uid){
+ if(traeBusy)return;
+ const generation=sessionGeneration;
+ if(action==='delete'&&!confirm(`确定删除账号 ${uid}？凭据将从容器中移除，需要重新登录才能恢复。`))return;
+ traeBusy=true;traeActionControls();notice('');
+ try{
+  if(action==='enable'||action==='disable')await jsonAPI('trae/accounts/patch',{uid,enabled:action==='enable'});
+  else if(action==='delete'){await jsonAPI('trae/accounts/delete',{uid});if(generation===sessionGeneration)notice('账号已删除');}
+  else if(action==='refresh')await jsonAPI('trae/accounts/refresh',{uid});
+  if(generation!==sessionGeneration)return;
+  await loadTrae();
+ }catch(error){if(generation===sessionGeneration)notice(error.message);}
+ finally{if(generation===sessionGeneration){traeBusy=false;traeActionControls();}}
+}
+$('trae-accounts-body').addEventListener('click',event=>{
+ const btn=event.target.closest('button[data-traact]');if(!btn||btn.disabled)return;
+ traeAccountAction(btn.dataset.traact,btn.dataset.uid);
+});
+// 登录由容器侧 OAuth 回调驱动，console 只轮询 pending 状态；退出管理会话即中止轮询。
+async function pollTraeLogin(generation,pendingId){
+ while(generation===sessionGeneration){
+  let state;
+  try{state=await jsonAPI('trae/login?pending_id='+encodeURIComponent(pendingId));}
+  catch(error){
+   $('trae-login-badge').textContent='未登录';$('trae-login-badge').className='badge warn';
+   $('trae-login-hint').textContent=error.message;return;
+  }
+  if(generation!==sessionGeneration)return;
+  if(state.state==='success'){
+   $('trae-login-badge').textContent='已登录';$('trae-login-badge').className='badge ok';
+   $('trae-auth-row').hidden=true;traeAuthURL='';
+   $('trae-login-hint').textContent=state.nickname?`账号 ${state.nickname} 已登录。`:'账号已登录。';
+   notice('Trae 账号登录成功');
+   traeView='accounts';await loadTrae();
+   return;
+  }
+  if(state.state==='failed'){
+   $('trae-login-badge').textContent='未登录';$('trae-login-badge').className='badge warn';
+   $('trae-login-hint').textContent=`登录失败：${state.error||'未知错误'}，可重新发起。`;return;
+  }
+  if(state.state==='canceled'){$('trae-login-hint').textContent='登录已取消。';return;}
+  await new Promise(resolve=>{traePollTimer=setTimeout(resolve,2000);});
+ }
+}
+$('trae-login-form').addEventListener('submit',async event=>{
+ event.preventDefault();if(traeLoginBusy)return;
+ const generation=sessionGeneration;traeLoginBusy=true;$('trae-login-start').disabled=true;notice('');
+ $('trae-login-hint').textContent='正在发起登录…';
+ try{
+  const result=await jsonAPI('trae/login',{});
+  if(generation!==sessionGeneration)return;
+  traeAuthURL=result.login_url||'';
+  $('trae-auth-row').hidden=!traeAuthURL;
+  if(traeAuthURL){
+   $('trae-auth-link').href=traeAuthURL;
+   try{window.open(traeAuthURL,'_blank','noopener');}catch(_){}
+  }
+  $('trae-login-badge').textContent='登录中';$('trae-login-badge').className='badge warn';
+  $('trae-login-hint').textContent='请在新打开的页面完成授权，本页会自动等待结果。';
+  void pollTraeLogin(generation,result.pending_id);
+ }catch(error){
+  if(generation===sessionGeneration){
+   $('trae-login-badge').textContent='未登录';$('trae-login-badge').className='badge warn';
+   $('trae-login-hint').textContent=error.message;
+  }
+ }finally{if(generation===sessionGeneration){traeLoginBusy=false;$('trae-login-start').disabled=false;}}
+});
+$('trae-import-form').addEventListener('submit',async event=>{
+ event.preventDefault();if(traeLoginBusy)return;
+ const text=$('trae-import-url').value.trim();
+ if(!text){$('trae-import-hint').textContent='请粘贴浏览器回调 URL 或导出的凭据 JSON。';return;}
+ const generation=sessionGeneration;traeLoginBusy=true;$('trae-import').disabled=true;notice('');
+ $('trae-import-hint').textContent='正在导入…';
+ try{
+  const result=await jsonAPI('trae/accounts/import',{callback_url:text});
+  if(generation!==sessionGeneration)return;
+  $('trae-import-url').value='';
+  $('trae-import-hint').textContent=`已导入 ${result.nickname||result.uid||'账号'}，建议刷新积分核对。`;
+  notice('Trae 账号凭据导入成功');
+  await loadTrae();
+ }catch(error){
+  if(generation===sessionGeneration)$('trae-import-hint').textContent=error.status===409?'该账号已有更新的凭证，未覆盖（409）。':error.message;
+ }finally{if(generation===sessionGeneration){traeLoginBusy=false;$('trae-import').disabled=false;}}
+});
+function renderTraeSchedule(data){
+ const rows=[];
+ if(data.checkin_hour!==undefined&&data.checkin_hour!==null&&data.checkin_hour!=='')rows.push(['签到时刻',`${String(data.checkin_hour).padStart(2,'0')}:00`]);
+ if((data.refresh_hours||[]).length)rows.push(['凭据刷新时段',data.refresh_hours.join(', ')]);
+ if(data.next_fire)rows.push(['下次执行',String(data.next_fire)]);
+ if(data.last_checkin)rows.push(['上次签到',String(data.last_checkin)]);
+ if(data.last_refresh)rows.push(['上次刷新',String(data.last_refresh)]);
+ const body=$('trae-schedule-body');body.replaceChildren();
+ for(const [k,v] of rows){const tr=document.createElement('tr');tr.append(cell(String(k)),cell(v));body.append(tr);}
+ $('trae-schedule-empty').hidden=rows.length>0;
+}
+function renderTraeUsage(data){
+ const days=Array.isArray(data.days)?data.days:[];
+ const body=$('trae-usage-body');body.replaceChildren();
+ for(const day of days){
+  const tr=document.createElement('tr');
+  tr.append(cell(String(day.date||'—')),numCell(String(day.requests||0)),numCell(String(day.errors||0)),numCell(String(day.prompt_tokens||0)),numCell(String(day.completion_tokens||0)),numCell(String(day.total_tokens||0)));
+  body.append(tr);
+ }
+ $('trae-usage-empty').hidden=days.length>0;
+}
+$('trae-credits-refresh').addEventListener('click',async()=>{
+ if(traeBusy)return;const generation=sessionGeneration;traeBusy=true;traeActionControls();notice('');
+ try{
+  const result=await jsonAPI('trae/credits');
+  if(generation!==sessionGeneration)return;
+  const list=Array.isArray(result.accounts)?result.accounts:[];
+  const failed=list.filter(x=>x&&x.error);
+  notice(failed.length?`积分刷新完成，${failed.length} 个账号失败：${failed[0].error}`:`积分已刷新（${list.length} 个账号）`);
+  await loadTrae();
+ }catch(error){if(generation===sessionGeneration)notice(error.message);}
+ finally{if(generation===sessionGeneration){traeBusy=false;traeActionControls();}}
+});
+$('trae-maintain').addEventListener('click',async()=>{
+ if(traeBusy)return;const generation=sessionGeneration;traeBusy=true;traeActionControls();notice('');
+ try{
+  await jsonAPI('trae/schedule/checkin',{});
+  if(generation!==sessionGeneration)return;
+  notice('已触发签到：容器将在本轮执行签到与积分刷新');
+ }catch(error){if(generation===sessionGeneration)notice(error.message);}
+ finally{if(generation===sessionGeneration){traeBusy=false;traeActionControls();}}
+});
+$('trae-schedule-refresh').addEventListener('click',async()=>{
+ if(traeBusy)return;const generation=sessionGeneration;traeBusy=true;traeActionControls();
+ try{renderTraeSchedule(await jsonAPI('trae/schedule'));}
+ catch(error){if(generation===sessionGeneration)notice(error.message);}
+ finally{if(generation===sessionGeneration){traeBusy=false;traeActionControls();}}
+});
+$('trae-checkin-now').addEventListener('click',async()=>{
+ if(traeBusy)return;const generation=sessionGeneration;traeBusy=true;traeActionControls();
+ try{
+  await jsonAPI('trae/schedule/checkin',{});
+  if(generation!==sessionGeneration)return;
+  $('trae-schedule-hint').textContent='已触发签到：容器将在本轮执行，完成后点「刷新排程」查看结果。';
+ }catch(error){if(generation===sessionGeneration)$('trae-schedule-hint').textContent=error.message;}
+ finally{if(generation===sessionGeneration){traeBusy=false;traeActionControls();}}
+});
+$('trae-refresh-now').addEventListener('click',async()=>{
+ if(traeBusy)return;const generation=sessionGeneration;traeBusy=true;traeActionControls();
+ try{
+  await jsonAPI('trae/schedule/refresh',{});
+  if(generation!==sessionGeneration)return;
+  $('trae-schedule-hint').textContent='已触发凭据刷新：容器将在本轮执行，完成后点「刷新排程」查看结果。';
+ }catch(error){if(generation===sessionGeneration)$('trae-schedule-hint').textContent=error.message;}
+ finally{if(generation===sessionGeneration){traeBusy=false;traeActionControls();}}
+});
+$('trae-usage-refresh').addEventListener('click',async()=>{
+ if(traeBusy)return;const generation=sessionGeneration;traeBusy=true;$('trae-usage-refresh').disabled=true;
+ try{renderTraeUsage(await jsonAPI('trae/usage'));}
+ catch(error){if(generation===sessionGeneration)notice(error.message);}
+ finally{if(generation===sessionGeneration){traeBusy=false;$('trae-usage-refresh').disabled=false;}}
+});
+for(const view of ['status','login','accounts','schedule','models','chat','usage'])$('trae-view-'+view).addEventListener('click',()=>{traeView=view;if(traeStatus)renderTrae(traeStatus);});
+$('trae-refresh').addEventListener('click',async()=>{
+ if(traeBusy)return;const generation=sessionGeneration;traeBusy=true;traeActionControls();
+ try{await loadTrae();}finally{if(generation===sessionGeneration){traeBusy=false;traeActionControls();}}
+});
+$('trae-stop').addEventListener('click',()=>activeRequest?.abort());
+$('trae-form').addEventListener('submit',async event=>{
+ event.preventDefault();if(activeRequest)return;const text=$('trae-prompt').value.trim();if(!text||!$('trae-model').value)return;
+ const generation=sessionGeneration;
+ notice('');message('user',text,$('trae-messages'));$('trae-prompt').value='';const answer=message('assistant','正在等待模型…',$('trae-messages'));
+ const controller=new AbortController();activeRequest=controller;traeControls();
+ let content='',usage,finished=false;const outgoing=[...traeHistory,{role:'user',content:text}];
+ try{
+  const response=await api('trae/chat',{model:$('trae-model').value,messages:outgoing,stream:true},controller.signal);
+  if(!response.ok){const err=await response.json();throw new Error(err.error?.message||err.error||`HTTP ${response.status}`);}
+  const reader=response.body.getReader(),decoder=new TextDecoder();let buffer='';
+  const processFrame=frame=>{
+   const payload=frame.split('\n').filter(l=>l.startsWith('data:')).map(l=>l.slice(5).trimStart()).join('\n');if(!payload)return;
+   if(payload==='[DONE]'){finished=true;return;}
+   const part=JSON.parse(payload);if(part.error)throw new Error(part.error.message||'上游流式响应发生错误');
+   content+=part.choices?.[0]?.delta?.content||'';answer.content.textContent=content||'模型正在思考…';
+   if(part.usage)usage=part.usage;
+  };
+  while(true){const{value,done}=await reader.read();if(controller.signal.aborted){const error=new Error('已停止生成');error.name='AbortError';throw error;}buffer+=done?decoder.decode():decoder.decode(value,{stream:true});buffer=buffer.replace(/\r\n/g,'\n');let split;while((split=buffer.indexOf('\n\n'))>=0){processFrame(buffer.slice(0,split));buffer=buffer.slice(split+2);}if(done){if(buffer.trim())processFrame(buffer);break;}}
+  if(!finished)throw new Error('响应提前中断，可重新发送问题');
+  if(!content)answer.content.textContent='模型未返回文本内容。';
+  traeHistory=[...outgoing,{role:'assistant',content}];
+  $('trae-usage').textContent=(usage?`输入 ${usage.prompt_tokens??'—'} · 输出 ${usage.completion_tokens??'—'} · 总计 ${usage.total_tokens??'—'} tokens`:'上游未返回用量')+' · 本次通道：Trae';
+ }catch(e){if(generation===sessionGeneration){const msg=e.name==='AbortError'?'已停止生成':e.message;answer.content.textContent=(content?content+'\n\n':'')+msg;$('trae-usage').textContent=msg;}}
+ finally{controller.abort();activeRequest=undefined;traeControls();}
+});
+
 jsonAPI('session').then(signedIn).catch(()=>{});

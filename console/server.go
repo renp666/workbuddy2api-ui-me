@@ -42,6 +42,20 @@ type Config struct {
 	OpenCodeURL *url.URL
 	// OpenCodeKey replaces Authorization when forwarding to OpenCodeURL.
 	OpenCodeKey string
+	// CCRURL 是可选的 claude-code-router 管理服务地址（宿主回环，容器侧经 host.docker.internal）。
+	// nil 时不启用 CCR 页签；它不是模型上游，不参与公共出口分流。
+	CCRURL *url.URL
+	// CCRTokenFile 是 CCR 自己写的 service.json 路径（只读挂载）。管理 Token 每次启动轮换，
+	// 只能现读，不能写成环境变量。
+	CCRTokenFile string
+	// AutoClawURL 是可选的 autoclaw2api 容器地址（autoclaw-* 模型上游）；nil 时不启用分流。
+	AutoClawURL *url.URL
+	// AutoClawKey 是转发到 AutoClawURL 时替换 Authorization 的桥接密钥（bridge 的 AC2A_API_KEY）。
+	AutoClawKey string
+	// TraeURL 是可选的 trae2api sidecar 容器地址（trae-* 模型上游）；nil 时不启用分流。
+	TraeURL *url.URL
+	// TraeKey 是转发到 TraeURL 时替换 Authorization 的桥接密钥（sidecar 的 TRAE_API_KEY）。
+	TraeKey string
 	// RouteFile 是 console 自己可写的路由别名配置文件路径（容器内路径）。
 	// 为空时不启用别名功能，公共出口与现状完全一致。
 	RouteFile    string
@@ -117,6 +131,15 @@ func NewServer(cfg Config) (http.Handler, error) {
 	if cfg.OpenCodeURL != nil && !validOriginURL(cfg.OpenCodeURL) {
 		return nil, errors.New("WB2A_OPENCODE_URL 必须是无凭据、路径、查询和片段的 HTTP(S) 地址")
 	}
+	if cfg.CCRURL != nil && !validOriginURL(cfg.CCRURL) {
+		return nil, errors.New("WB2A_CCR_URL 必须是无凭据、路径、查询和片段的 HTTP(S) 地址，管理 Token 只从挂载的 service.json 读取")
+	}
+	if cfg.AutoClawURL != nil && !validOriginURL(cfg.AutoClawURL) {
+		return nil, errors.New("WB2A_AUTOCLAW_URL 必须是无凭据、路径、查询和片段的 HTTP(S) 地址")
+	}
+	if cfg.TraeURL != nil && !validOriginURL(cfg.TraeURL) {
+		return nil, errors.New("WB2A_TRAE_URL 必须是无凭据、路径、查询和片段的 HTTP(S) 地址")
+	}
 	if !ValidateAdminOrigin(cfg.PublicOrigin) {
 		return nil, errors.New("WB2A_PUBLIC_ORIGIN 必须是有效的 HTTP(S) origin")
 	}
@@ -145,6 +168,21 @@ func NewServer(cfg Config) (http.Handler, error) {
 		opencodeTarget := *cfg.OpenCodeURL
 		opencodeTarget.Path = ""
 		cfg.OpenCodeURL = &opencodeTarget
+	}
+	if cfg.CCRURL != nil {
+		ccrTarget := *cfg.CCRURL
+		ccrTarget.Path = ""
+		cfg.CCRURL = &ccrTarget
+	}
+	if cfg.AutoClawURL != nil {
+		autoclawTarget := *cfg.AutoClawURL
+		autoclawTarget.Path = ""
+		cfg.AutoClawURL = &autoclawTarget
+	}
+	if cfg.TraeURL != nil {
+		traeTarget := *cfg.TraeURL
+		traeTarget.Path = ""
+		cfg.TraeURL = &traeTarget
 	}
 	cfg.PublicOrigin = strings.TrimRight(cfg.PublicOrigin, "/")
 	var trusted []*net.IPNet
@@ -185,9 +223,9 @@ func NewServer(cfg Config) (http.Handler, error) {
 	public := h.proxy(false)
 	// 只要存在任一需要「先解析请求模型名再分流」的能力，就必须走 publicRouter：
 	// 旁路通道靠它按前缀分流，路由别名与 auto 虚拟模型也只在它内部生效。
-	// 只配了 core 的部署（RouteFile 非空但三个旁路 URL 全空）同样要挂上，
+	// 只配了 core 的部署（RouteFile 非空但旁路 URL 全空）同样要挂上，
 	// 否则别名改写与 /v1/models 的 auto 条目会静默失效。
-	if cfg.ZCodeURL != nil || cfg.QoderURL != nil || cfg.OpenCodeURL != nil || cfg.RouteFile != "" {
+	if cfg.ZCodeURL != nil || cfg.QoderURL != nil || cfg.OpenCodeURL != nil || cfg.AutoClawURL != nil || cfg.TraeURL != nil || cfg.RouteFile != "" {
 		routed := h.publicRouter(public)
 		h.mux.Handle("/v1/", routed)
 	} else {
@@ -202,7 +240,7 @@ func NewServer(cfg Config) (http.Handler, error) {
 			adminError(w, 503, err.Error())
 			return
 		}
-		writeJSON(w, 200, map[string]any{"csrf": sessionFrom(r).csrf, "global_enabled": info.GlobalEnabled, "zcode_enabled": cfg.ZCodeURL != nil, "zcode_control": cfg.ZCodeControlURL != nil, "qoder_enabled": cfg.QoderURL != nil, "qoder_control": cfg.QoderControlURL != nil, "opencode_enabled": cfg.OpenCodeURL != nil})
+		writeJSON(w, 200, map[string]any{"csrf": sessionFrom(r).csrf, "global_enabled": info.GlobalEnabled, "zcode_enabled": cfg.ZCodeURL != nil, "zcode_control": cfg.ZCodeControlURL != nil, "qoder_enabled": cfg.QoderURL != nil, "qoder_control": cfg.QoderControlURL != nil, "opencode_enabled": cfg.OpenCodeURL != nil, "ccr_enabled": cfg.CCRURL != nil, "autoclaw_enabled": cfg.AutoClawURL != nil, "trae_enabled": cfg.TraeURL != nil})
 	}))
 	h.mux.HandleFunc("POST /admin/logout", h.withAdmin(h.adminLogout))
 	h.mux.HandleFunc("GET /admin/zcode", h.withAdmin(h.adminZcodeStatus))
@@ -219,6 +257,41 @@ func NewServer(cfg Config) (http.Handler, error) {
 	h.mux.HandleFunc("POST /admin/qoder/logout", h.withAdmin(h.adminQoderLogout))
 	h.mux.HandleFunc("GET /admin/opencode", h.withAdmin(h.adminOpenCodeStatus))
 	h.mux.HandleFunc("POST /admin/opencode/chat", h.withAdmin(h.adminOpenCodeChat))
+	// AutoClaw 页签：状态/测试对话 + 完整控制链路（登录、账号启停、维护、签到、积分）。
+	h.mux.HandleFunc("GET /admin/autoclaw", h.withAdmin(h.adminAutoClawStatus))
+	h.mux.HandleFunc("POST /admin/autoclaw/chat", h.withAdmin(h.adminAutoClawChat))
+	h.mux.HandleFunc("POST /admin/autoclaw/login/cn/sendcode", h.withAdmin(h.adminAutoClawSendCode))
+	h.mux.HandleFunc("POST /admin/autoclaw/login/cn", h.withAdmin(h.adminAutoClawLoginCN))
+	h.mux.HandleFunc("POST /admin/autoclaw/login/global/import-desktop", h.withAdmin(h.adminAutoClawImportDesktop))
+	h.mux.HandleFunc("POST /admin/autoclaw/login/global/oauth", h.withAdmin(h.adminAutoClawOAuth))
+	h.mux.HandleFunc("POST /admin/autoclaw/accounts/toggle", h.withAdmin(h.adminAutoClawAccountsToggle))
+	h.mux.HandleFunc("POST /admin/autoclaw/accounts/delete", h.withAdmin(h.adminAutoClawAccountsDelete))
+	h.mux.HandleFunc("POST /admin/autoclaw/maintain", h.withAdmin(h.adminAutoClawMaintain))
+	h.mux.HandleFunc("POST /admin/autoclaw/credits/refresh", h.withAdmin(h.adminAutoClawCreditsRefresh))
+	h.mux.HandleFunc("GET /admin/autoclaw/credits", h.withAdmin(h.adminAutoClawCredits))
+	h.mux.HandleFunc("POST /admin/autoclaw/checkin", h.withAdmin(h.adminAutoClawCheckin))
+	// Trae 页签：状态/测试对话 + 完整控制链路（OAuth 登录、账号管理、排程签到、积分）。
+	h.mux.HandleFunc("GET /admin/trae", h.withAdmin(h.adminTraeStatus))
+	h.mux.HandleFunc("POST /admin/trae/chat", h.withAdmin(h.adminTraeChat))
+	h.mux.HandleFunc("POST /admin/trae/login", h.withAdmin(h.adminTraeLoginStart))
+	h.mux.HandleFunc("GET /admin/trae/login", h.withAdmin(h.adminTraeLoginPoll))
+	h.mux.HandleFunc("POST /admin/trae/login/cancel", h.withAdmin(h.adminTraeLoginCancel))
+	h.mux.HandleFunc("POST /admin/trae/accounts/import", h.withAdmin(h.adminTraeImport))
+	h.mux.HandleFunc("POST /admin/trae/accounts/delete", h.withAdmin(h.adminTraeAccountsDelete))
+	h.mux.HandleFunc("POST /admin/trae/accounts/patch", h.withAdmin(h.adminTraeAccountsPatch))
+	h.mux.HandleFunc("POST /admin/trae/accounts/refresh", h.withAdmin(h.adminTraeAccountsRefresh))
+	h.mux.HandleFunc("GET /admin/trae/accounts/json", h.withAdmin(h.adminTraeAccountJSON))
+	h.mux.HandleFunc("GET /admin/trae/schedule", h.withAdmin(h.adminTraeSchedule))
+	h.mux.HandleFunc("POST /admin/trae/schedule/checkin", h.withAdmin(h.adminTraeScheduleCheckin))
+	h.mux.HandleFunc("POST /admin/trae/schedule/refresh", h.withAdmin(h.adminTraeScheduleRefresh))
+	h.mux.HandleFunc("GET /admin/trae/credits", h.withAdmin(h.adminTraeCredits))
+	h.mux.HandleFunc("GET /admin/trae/usage", h.withAdmin(h.adminTraeUsage))
+	// Trae OAuth 浏览器 302 的公开落点：TRAE 域跳转不带 console Cookie，
+	// 故无 withAdmin（与 sidecar /authorize 语义一致），只转发回调 query。
+	h.mux.HandleFunc("GET /admin/trae/authorize", h.adminTraeAuthorize)
+	h.mux.HandleFunc("GET /admin/ccr", h.withAdmin(h.adminCCRStatus))
+	h.mux.HandleFunc("POST /admin/ccr/gateway", h.withAdmin(h.adminCCRGateway))
+	h.mux.HandleFunc("GET /admin/ccr/link", h.withAdmin(h.adminCCRLink))
 	// 路由别名：GET 读当前配置与各通道模型目录，POST 落盘并即时生效。
 	h.mux.HandleFunc("GET /admin/route", h.withAdmin(h.writeRouteState))
 	h.mux.HandleFunc("POST /admin/route/save", h.withAdmin(h.adminRouteSave))
@@ -473,7 +546,7 @@ func (h *server) adminLogin(w http.ResponseWriter, r *http.Request) {
 	http.SetCookie(w, &http.Cookie{Name: "wb2a_admin", Value: id, Path: "/admin", HttpOnly: true, Secure: r.TLS != nil || strings.HasPrefix(h.cfg.PublicOrigin, "https://"), SameSite: http.SameSiteStrictMode, MaxAge: 8 * 3600})
 	// Authentication remains available during a core outage; actions still fail closed.
 	info, _ := h.coreInfo(r.Context())
-	writeJSON(w, 200, map[string]any{"csrf": csrf, "global_enabled": info.GlobalEnabled, "zcode_enabled": h.cfg.ZCodeURL != nil, "zcode_control": h.cfg.ZCodeControlURL != nil, "qoder_enabled": h.cfg.QoderURL != nil, "qoder_control": h.cfg.QoderControlURL != nil, "opencode_enabled": h.cfg.OpenCodeURL != nil})
+	writeJSON(w, 200, map[string]any{"csrf": csrf, "global_enabled": info.GlobalEnabled, "zcode_enabled": h.cfg.ZCodeURL != nil, "zcode_control": h.cfg.ZCodeControlURL != nil, "qoder_enabled": h.cfg.QoderURL != nil, "qoder_control": h.cfg.QoderControlURL != nil, "opencode_enabled": h.cfg.OpenCodeURL != nil, "ccr_enabled": h.cfg.CCRURL != nil, "autoclaw_enabled": h.cfg.AutoClawURL != nil, "trae_enabled": h.cfg.TraeURL != nil})
 }
 func (h *server) adminLogout(w http.ResponseWriter, r *http.Request) {
 	h.mu.Lock()

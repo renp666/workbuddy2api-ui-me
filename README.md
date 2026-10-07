@@ -55,7 +55,7 @@ curl -N http://127.0.0.1:7863/v1/chat/completions \
 
 以上是填写示例，请替换地址、密钥和模型 ID。
 
-模型列表按账号池实际可用性过滤：只有至少存在一个可用账号（未禁用、不在冷却）的模型才会出现在 `/v1/models` 中，某平台（国内版/国际版）没有任何可用账号时整个平台的模型都不列出；每个模型条目带 `realm` 字段（`cn`/`global`，叠加 GLM 通道时另有 `glm`）标明归属平台，并带 `accounts` 清单（`uid` 与可选 `nickname`，按 UID 升序）列出多账号池中能服务该模型的账号。成功的对话响应会附带 `X-Account`（服务本次请求的账号昵称，昵称不适合展示时回落为 UID）与 `X-Account-Realm` 响应头，方便调用方定位实际使用的账号；失败响应不附带。控制台「API 接入」页的模型下拉同样带平台标签（国内版/国际版/GLM·智谱），多账号模型标注账号数（如「国内版 · cn:glm-5.2 · 3账号」），并在 GLM 通道启用时列出可选的 `glm-*` 模型及其调用示例。
+模型列表按账号池实际可用性过滤：只有至少存在一个可用账号（未禁用、不在冷却）的模型才会出现在 `/v1/models` 中，某平台（国内版/国际版）没有任何可用账号时整个平台的模型都不列出；每个模型条目带 `realm` 字段（`cn`/`global`，叠加旁路通道时另有 `glm`/`qoder`/`opencode`/`autoclaw`/`trae`）标明归属，并带 `accounts` 清单（`uid` 与可选 `nickname`，按 UID 升序）列出多账号池中能服务该模型的账号。成功的对话响应会附带 `X-Account`（服务本次请求的账号昵称，昵称不适合展示时回落为 UID）与 `X-Account-Realm` 响应头，方便调用方定位实际使用的账号；失败响应不附带。控制台「API 接入」页的模型下拉同样带平台标签（国内版/国际版/GLM·智谱），多账号模型标注账号数（如「国内版 · cn:glm-5.2 · 3账号」），并在对应旁路通道启用时列出可选的 `glm-*` 等前缀模型及其调用示例。
 
 ### Anthropic 文本接口
 
@@ -74,7 +74,7 @@ curl -N http://127.0.0.1:7863/v1/messages \
   }'
 ```
 
-`max_tokens` 必须是正整数；删除 `stream` 或设为 `false` 可获取普通 JSON 响应。支持 user/assistant 多轮消息、字符串或纯文本内容块，以及可选 `system`；不支持工具、图像、文件、扩展思考、缓存、beta、采样参数等高级字段，未支持字段会明确报错。
+`max_tokens` 必须是正整数；删除 `stream` 或设为 `false` 可获取普通 JSON 响应。支持 user/assistant 多轮消息、字符串或纯文本内容块，以及可选 `system`；不支持工具、图像、文件、扩展思考、缓存、beta、采样参数等高级字段，未支持字段会明确报错。Anthropic 协议只覆盖 WorkBuddy 核心账号池的模型，GLM/Qoder/OpenCode/AutoClaw/Trae 旁路模型不适用。
 
 仅传递上游实际返回的用量，未知 token 数返回 `null`，不会估算或填 0。这与原生 API 的整数用量字段有差异，严格要求整数的客户端可能不兼容。已验证的 SDK 基线为 Python 3.12 + `anthropic==0.67.0`，不代表所有版本或客户端可用，也不代表完整支持 Claude Code；模型能力仍由 WorkBuddy / CodeBuddy 上游决定。
 
@@ -102,7 +102,7 @@ Compose 从阿里云仓库拉取成品镜像，**无需下载源码、构建镜�
 
 ## 可选：接入 GLM 编码套餐
 
-本部署可以并列挂一个 [zcode-proxy](https://github.com/TriDefender/zcode-proxy) 容器，把你的智谱 GLM 编码套餐变成第三个模型来源。启用后仍是同一个 `:7863` 出口：控制台 `/v1/models` 会合并显示 GLM 模型，客户端请求 `model` 以 `glm-` 开头时由 console 自动转发给 zcode-proxy，其余模型仍走 WorkBuddy 账号池；本服务不管理 GLM 账号，额度与登录状态由 zcode-proxy 自持。
+本部署可以并列挂一个 [zcode-proxy](https://github.com/TriDefender/zcode-proxy) 容器，把你的智谱 GLM 编码套餐变成第二个模型来源。启用后仍是同一个 `:7863` 出口：控制台 `/v1/models` 会合并显示 GLM 模型，客户端请求 `model` 以 `glm-` 开头时由 console 自动转发给 zcode-proxy，其余模型仍走 WorkBuddy 账号池；本服务不管理 GLM 账号，额度与登录状态由 zcode-proxy 自持。
 
 前置：拉取镜像并放置配置。zcode-proxy 容器与 console 共享网络命名空间，只监听 `127.0.0.1`，不对外暴露端口；凭据、配置和设备标识持久化在宿主 `runtime/zcode/` 下。
 
@@ -138,7 +138,7 @@ docker run --rm -it \
 
 ## 可选：接入 Qoder 国内版
 
-本部署还可以并列挂一个 [qoder-proxy](https://github.com/avaritiachaos/qoder-proxy) 容器，把你的 Qoder 国内版账号变成第四个模型来源。与 GLM 通道相同，启用后仍是同一个 `:7863` 出口：控制台 `/v1/models` 会合并显示 Qoder 模型（统一加 `qoder-` 前缀并标注 `realm: qoder`），客户端请求 `model` 以 `qoder-` 开头时由 console 自动转发给 qoder-proxy，其余模型仍走 WorkBuddy 账号池；本服务不管理 Qoder 账号，额度与登录状态由 qoder-proxy 自持。
+本部署还可以并列挂一个 [qoder-proxy](https://github.com/avaritiachaos/qoder-proxy) 容器，把你的 Qoder 国内版账号变成第三个模型来源。与 GLM 通道相同，启用后仍是同一个 `:7863` 出口：控制台 `/v1/models` 会合并显示 Qoder 模型（统一加 `qoder-` 前缀并标注 `realm: qoder`），客户端请求 `model` 以 `qoder-` 开头时由 console 自动转发给 qoder-proxy，其余模型仍走 WorkBuddy 账号池；本服务不管理 Qoder 账号，额度与登录状态由 qoder-proxy 自持。
 
 与 GLM 通道不同，Qoder 通道使用 **Personal Access Token（PAT）** 认证，没有登录/启停生命周期：在 qoder.com.cn 的「账号设置 → Integrations」页面创建 PAT，启动前通过环境变量传给容器即可，之后无需在控制台做任何授权操作。
 
@@ -158,7 +158,7 @@ qoder-proxy 容器与 console 共享网络命名空间，只监听 `127.0.0.1`�
 
 ## 可选：接入 OpenCode 免费模型
 
-本部署还可以并列挂一个 [OW Bridge](https://github.com/louchi1984-coder/ow-bridge) sidecar 容器，把 OpenCode Zen 的免费模型变成第五个模型来源。与前两条旁路相同，启用后仍是同一个 `:7863` 出口：控制台 `/v1/models` 会合并显示 OpenCode 模型（统一加 `opencode-` 前缀并标注 `realm: opencode`），客户端请求 `model` 以 `opencode-` 开头时由 console 自动剥前缀转发给 OW Bridge，其余模型仍走 WorkBuddy 账号池；本服务不管理 OpenCode 账号，模型目录与运行状态由容器自持。
+本部署还可以并列挂一个 [OW Bridge](https://github.com/louchi1984-coder/ow-bridge) sidecar 容器，把 OpenCode Zen 的免费模型变成第四个模型来源。与前两条旁路相同，启用后仍是同一个 `:7863` 出口：控制台 `/v1/models` 会合并显示 OpenCode 模型（统一加 `opencode-` 前缀并标注 `realm: opencode`），客户端请求 `model` 以 `opencode-` 开头时由 console 自动剥前缀转发给 OW Bridge，其余模型仍走 WorkBuddy 账号池；本服务不管理 OpenCode 账号，模型目录与运行状态由容器自持。
 
 OW Bridge 把 OpenCode Zen 的免费模型（`opencode/*` 系列）代理成 OpenAI 兼容接口，无需申请密钥或登录。本部署通过 `BUDDY_NO_SYNC=1` 关闭它「反向写入 WorkBuddy 配置」的行为，所有运行数据只落在容器自己的持久卷 `runtime/opencode/` 内。旁路调用会异步记入控制台「调用统计」，账号列显示「OpenCode 通道」。
 
@@ -170,11 +170,39 @@ docker compose -f docker-compose.yml -f deploy/compose.opencode.yml up -d
 
 OpenCode 通道没有登录/启停生命周期，页签为只读模式：「通道状态」展示 OW Bridge 的运行阶段、版本与逐模型探测结果（哪些免费模型当前可用、探测是否仍在进行），「OpenCode 模型」列出可用免费模型，「对话测试」可直接流式验证。未叠加该 overlay 时页签置灰并提示未启用。不想要该通道时回到 `docker compose -f docker-compose.yml up -d` 启动即可，不影响原有服务。OpenCode 免费模型的可用性、限额和模型行为由 OW Bridge 与其上游决定，本仓未对其做真实上游验收。
 
+## 可选：接入 AutoClaw 免费模型
+
+本部署还可以并列挂一个 autoclaw2api sidecar 容器（`deploy/autoclaw2api/`，本仓自带源码），把 AutoClaw 的免费模型变成第五个模型来源。与前几条旁路相同，启用后仍是同一个 `:7863` 出口：控制台 `/v1/models` 会合并显示 AutoClaw 模型（统一加 `autoclaw-` 前缀并标注 `realm: autoclaw`），客户端请求 `model` 以 `autoclaw-` 开头时由 console 自动剥前缀转发给容器，其余模型仍走 WorkBuddy 账号池；本服务不管理 AutoClaw 之外的账号，登录状态、积分与签到由容器自持。
+
+与前几条旁路不同，AutoClaw 通道的**账号要自己登录**：国内版用手机号 + 短信验证码，国际版先在本机浏览器完成 Google OAuth 再把回调地址粘贴进页签（或从已登录的桌面客户端直接导入凭据）。账号、积分与运行数据持久化在宿主 `runtime/autoclaw/` 下。容器内的账号是否可用、积分能否签到、免费模型的限额与可用性均由 AutoClaw 上游决定，本仓未对其做真实上游验收。
+
+```bash
+docker compose -f docker-compose.yml -f deploy/compose.autoclaw.yml up -d
+```
+
+接口与密钥：数据面只实现 OpenAI 协议的 `/v1/chat/completions`，AutoClaw 模型不支持 Anthropic 协议的 `/v1/messages`。console 到容器的内部调用使用 `WB2A_AUTOCLAW_KEY` 作为 Bearer 密钥（overlay 启动时由宿主环境变量传入）；留空则不校验——容器只监听 console 网络命名空间内的回环地址 `127.0.0.1:7865`，外部无法直连。
+
+AutoClaw 页签是带控制链路的完整页签：「通道状态」展示容器可达性与健康账号数，「账号登录」完成两类登录，「账号管理」查看积分、启停/删除账号、刷新积分与逐账号签到（成功后自动级联一次维护），「AutoClaw 模型」与「对话测试」同其他旁路页签。未叠加该 overlay 时页签置灰并提示未启用。旁路调用会异步记入控制台「调用统计」，账号列显示「AutoClaw 通道」。
+
+## 可选：接入 Trae 免费模型
+
+本部署还可以并列挂一个 trae2api sidecar 容器（`deploy/trae2api/`，本仓自带源码），把 Trae SOLO 的免费模型变成第六个模型来源。与前几条旁路相同，启用后仍是同一个 `:7863` 出口：控制台 `/v1/models` 会合并显示 Trae 模型（统一加 `trae-` 前缀并标注 `realm: trae`），客户端请求 `model` 以 `trae-` 开头时由 console 自动剥前缀转发给容器，其余模型仍走 WorkBuddy 账号池。
+
+与前几条旁路不同，Trae 通道的**账号要自己登录**：在 Trae 页签「账号登录」点「开始登录」，容器返回一个授权地址，控制台自动新开页面，授权完成后本页自动等待结果并切到「账号管理」；如果回调 URL 不在手边，也可以把浏览器回调地址或导出的凭据 JSON 粘贴进同一子页导入（容器里已有更新的凭据时返回 409，不会覆盖旧凭据）。账号、积分与运行数据持久化在宿主 `runtime/trae/` 下。
+
+```bash
+docker compose -f docker-compose.yml -f deploy/compose.trae.yml up -d
+```
+
+接口与密钥：控制台只为 Trae 模型生成 OpenAI 协议的调用示例，Trae 模型不支持 Anthropic 协议的 `/v1/messages`。console 到容器的内部调用使用 `WB2A_TRAE_KEY` 作为 Bearer 密钥（overlay 启动时由宿主环境变量传入）；留空则不校验——容器只监听 console 网络命名空间内的回环地址 `127.0.0.1:7866`，外部无法直连。
+
+Trae 页签是带控制链路的完整页签：「通道状态」展示容器可达性、模型数与账号数，「账号登录」完成 OAuth 登录与凭据导入，「账号管理」查看积分与凭据有效期、启停/删除/刷新单个账号、刷新全部积分与一键签到，「排程」展示容器的签到时刻、凭据刷新时段与上下次执行时间，并可立即触发签到或凭据刷新，「Trae 模型」与「对话测试」同其他旁路页签，「用量」展示容器侧按天的请求与 token 记录。未叠加该 overlay 时页签置灰并提示未启用。旁路调用会异步记入控制台「调用统计」，账号列显示「Trae 通道」。Trae 免费模型的可用性、限额和模型行为由 Trae 上游决定，本仓未对其做真实上游验收。
+
 ## 配套 Web 控制台
 
 ### 对话测试
 
-选择 OpenAI 或 Anthropic 协议、模型并发送问题，直接检查模型响应与流式显示。Anthropic 模式可设置最大输出 tokens，默认 1024；切换协议会清空当前测试对话，生成中可停止。回答完成后用量行会显示本次服务请求的账号与平台（来自响应归属头），Zcode、Qoder 与 OpenCode 页签的测试则分别标明 GLM、Qoder 与 OpenCode 通道。真实部署中的测试会消耗账号额度；页面内的对话刷新后清空。
+选择 OpenAI 或 Anthropic 协议、模型并发送问题，直接检查模型响应与流式显示。Anthropic 模式可设置最大输出 tokens，默认 1024；切换协议会清空当前测试对话，生成中可停止。回答完成后用量行会显示本次服务请求的账号与平台（来自响应归属头），Zcode、Qoder、OpenCode、AutoClaw 与 Trae 页签的测试则分别标明 GLM、Qoder、OpenCode、AutoClaw 与 Trae 通道。真实部署中的测试会消耗账号额度；页面内的对话刷新后清空。
 
 ![对话测试页面：选择模型并查看流式回答](docs/superpowers/verification/2026-09-16-openai-chat-playground.jpg)
 
@@ -186,7 +214,7 @@ OpenCode 通道没有登录/启停生命周期，页签为只读模式：「通�
 
 ### 调用统计
 
-“调用统计”汇总四个通道（WorkBuddy 核心账号池与 GLM、Qoder、OpenCode 旁路）的成功调用，可按通道和时间范围筛选。明细每行给出模型、协议入口（Chat / Messages / Responses）、token 与积分实测值，以及**来源网段**和**客户端自报标识**（User-Agent），用来回答“谁在用、用在哪”。上游或客户端没有给出的项保持空白（显示“—”），不会被补成 0 或某个默认值。
+“调用统计”汇总六个通道（WorkBuddy 核心账号池与 GLM、Qoder、OpenCode、AutoClaw、Trae 旁路）的成功调用，可按通道和时间范围筛选。明细每行给出模型、协议入口（Chat / Messages / Responses）、token 与积分实测值，以及**来源网段**和**客户端自报标识**（User-Agent），用来回答“谁在用、用在哪”。上游或客户端没有给出的项保持空白（显示“—”），不会被补成 0 或某个默认值。
 
 指标卡下方另有一条鉴权失败提示：API Key 不对的请求不计入调用次数，只按来源网段汇总出现次数（形如“鉴权失败 3 次（本范围），来源：203.0.113.0/24 ×2、未知来源 ×1”），用于发现有人在猜密钥。来源地址只保留网段（IPv4 /24、IPv6 /64），完整地址不写盘；客户端标识由调用方自报，只作参考，不能当作身份凭据。
 

@@ -102,7 +102,7 @@ func TestProbeAdminAuthAndValidation(t *testing.T) {
 		t.Fatalf("missing csrf: %d", rec.Code)
 	}
 	rec := adminRequest(h, "POST", "/admin/probe", `{"channels":["opencode"]}`, cookie, csrf)
-	if rec.Code != 400 || !strings.Contains(rec.Body.String(), "只能是 core、glm 或 qoder") {
+	if rec.Code != 400 || !strings.Contains(rec.Body.String(), "只能是 core、glm、qoder、autoclaw 或 trae") {
 		t.Fatalf("bad channel: %d %s", rec.Code, rec.Body)
 	}
 }

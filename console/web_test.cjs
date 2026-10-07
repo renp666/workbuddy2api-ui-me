@@ -97,7 +97,7 @@ function taskFixture(fetch, cryptoImpl={randomUUID:()=> '11111111-2222-4333-8444
   }
   const get=id=>{if(!elements.has(id))elements.set(id,element());return elements.get(id);};
   const protocolButtons=['access-openai','access-anthropic','chat-openai','chat-anthropic'].map(id=>{const button=get(id);button.dataset.protocol=id.split('-')[1];return button;});
-  const railButtons=[['refresh','overview'],['zcode-refresh','zcode'],['qoder-refresh','qoder'],['opencode-refresh','opencode'],['usage-refresh','usage'],['routes-refresh','routes']].map(([id,view])=>{const button=get(id);button.dataset.refreshFor=view;return button;});
+  const railButtons=[['refresh','overview'],['zcode-refresh','zcode'],['qoder-refresh','qoder'],['opencode-refresh','opencode'],['ccr-refresh','ccr'],['autoclaw-refresh','autoclaw'],['trae-refresh','trae'],['usage-refresh','usage'],['routes-refresh','routes']].map(([id,view])=>{const button=get(id);button.dataset.refreshFor=view;return button;});
   const opened=[];
   const ctx=vm.createContext({document:{getElementById:get,querySelectorAll:selector=>selector==='[data-protocol]'?protocolButtons:selector==='[data-refresh-for]'?railButtons:[],createElement:element,hidden:false,handlers:{},addEventListener(name,fn){this.handlers[name]=fn;}},
     location:{origin:'http://console.test'},AbortController,TextDecoder,TextEncoder,Option:function(text,value){return {textContent:text,value};},
@@ -1310,6 +1310,357 @@ test('opencode dialog posts an opencode model to the admin proxy and streams the
   assert.equal(vm.runInContext('activeRequest',ctx),undefined,'opencode request left controls locked');
 });
 
+function autoclawFixture(autoclawStatus) {
+  const response=body=>({ok:true,status:200,json:async()=>body});
+  const {ctx,get,opened}=taskFixture(url=>{
+    if(url==='/admin/session')return new Promise(()=>{});
+    if(url==='/admin/status')return response({total:0,healthy:0,cooling:0,disabled:0,accounts:[]});
+    if(url==='/admin/models')return response({data:[]});
+    if(url==='/admin/autoclaw')return response(autoclawStatus);
+    throw new Error('unexpected '+url);
+  });
+  get('realm').querySelector=()=>({disabled:false});
+  return {ctx,get,opened};
+}
+
+test('autoclaw tab greys out and shows the disabled notice when the channel is off',async()=>{
+  const {ctx,get}=autoclawFixture({enabled:false});
+  await vm.runInContext("signedIn({csrf:'c',global_enabled:true,zcode_enabled:false,qoder_enabled:false,opencode_enabled:false,autoclaw_enabled:false})",ctx);
+  assert.equal(get('nav-autoclaw').classList.toggled['nav-muted'],true,'disabled channel left the tab fully lit');
+  await vm.runInContext('loadAutoClaw()',ctx);
+  assert.equal(get('autoclaw-disabled').hidden,false,'disabled notice stayed hidden');
+  assert.equal(get('autoclaw-content').hidden,true,'enabled content showed while disabled');
+});
+
+test('autoclaw tab renders badge, health rows, accounts, models and select when reachable',async()=>{
+  const {ctx,get}=autoclawFixture({enabled:true,reachable:true,model_count:2,mode:'global',
+    models:[{id:'autoclaw-AC · Fast',realm:'autoclaw'},{id:'autoclaw-AC · Slow',realm:'autoclaw'}],
+    accounts:[{uid:'ac-1',nickname:'一号',region:'global',points:120,success_count:3,err_count:1},
+      {uid:'ac-2',region:'cn',cooling:true,cool_remaining_sec:3600,reason:'签到冷却'},{uid:'ac-3',region:'cn',disabled:true}],
+    health:{healthy:1,total:3}});
+  await vm.runInContext("signedIn({csrf:'c',global_enabled:true,zcode_enabled:false,qoder_enabled:false,opencode_enabled:false,autoclaw_enabled:true})",ctx);
+  assert.equal(get('nav-autoclaw').classList.toggled['nav-muted'],false,'enabled channel greyed the tab');
+  await vm.runInContext('loadAutoClaw()',ctx);
+  assert.equal(get('autoclaw-disabled').hidden,true);
+  assert.equal(get('autoclaw-content').hidden,false);
+  assert.equal(get('autoclaw-status-badge').textContent,'在线');
+  assert.equal(get('autoclaw-status-badge').className,'badge ok');
+  assert.match(get('autoclaw-status-text').textContent,/autoclaw2api 可达 · 2 个模型 · 健康账号 1 \/ 3/);
+  assert.deepEqual(get('autoclaw-health-body').children.map(tr=>tr.children[0].textContent),['健康账号','账号模式','模型数']);
+  assert.equal(get('autoclaw-health-body').children[1].children[1].textContent,'国际版');
+  for(const id of ['autoclaw-view-status','autoclaw-view-login','autoclaw-view-accounts','autoclaw-view-models','autoclaw-view-chat'])
+    assert.equal(get(id).hidden,false,'reachable container must keep tab '+id+' offered');
+  assert.deepEqual(['autoclaw-stat-total','autoclaw-stat-usable','autoclaw-stat-cooling','autoclaw-stat-disabled'].map(id=>get(id).textContent),['3','1','1','1']);
+  const rows=get('autoclaw-accounts-body').children;
+  assert.equal(rows.length,3,'account table row count');
+  assert.match(rows[0].children[0].textContent,/一号/);
+  assert.equal(rows[0].children[1].textContent,'国际版');
+  assert.equal(rows[0].children[2].children[0].textContent,'可用');
+  assert.equal(rows[0].children[3].textContent,'120');
+  assert.equal(rows[0].children[4].textContent,'3 / 1');
+  assert.equal(rows[0].children[6].children[0].textContent,'停用');
+  assert.equal(rows[0].children[6].children[2].textContent,'签到');
+  assert.equal(rows[0].children[6].children[4].textContent,'删除');
+  assert.equal(rows[2].children[2].children[0].textContent,'已停用');
+  assert.equal(rows[2].children[6].children[0].textContent,'启用','disabled account must offer enable instead of disable');
+  assert.equal(get('autoclaw-models-body').children.length,2,'model table row count');
+  assert.deepEqual(get('autoclaw-model').children.map(option=>option.value),['autoclaw-AC · Fast','autoclaw-AC · Slow']);
+});
+
+test('autoclaw tab reports an unreachable container and keeps only the login entry',async()=>{
+  const {ctx,get}=autoclawFixture({enabled:true,reachable:false,model_count:0,models:[],accounts:[]});
+  await vm.runInContext("signedIn({csrf:'c',global_enabled:true,zcode_enabled:false,qoder_enabled:false,opencode_enabled:false,autoclaw_enabled:true})",ctx);
+  await vm.runInContext('loadAutoClaw()',ctx);
+  assert.equal(get('autoclaw-content').hidden,false);
+  assert.equal(get('autoclaw-status-badge').textContent,'不可达');
+  assert.equal(get('autoclaw-status-badge').className,'badge bad');
+  assert.match(get('autoclaw-status-text').textContent,/autoclaw2api 容器不可达/);
+  assert.equal(get('autoclaw-health-wrap').hidden,true,'health rows showed without a reachable container');
+  assert.equal(get('autoclaw-view-accounts').hidden,true,'accounts tab offered while unreachable');
+  assert.equal(get('autoclaw-view-models').hidden,true,'models tab offered while unreachable');
+  assert.equal(get('autoclaw-view-chat').hidden,true,'chat tab offered while unreachable');
+  assert.equal(get('autoclaw-view-login').hidden,false,'login tab is the troubleshooting entry and must stay');
+});
+
+test('access model select merges autoclaw models and routes autoclaw go-chat to the autoclaw tab',async()=>{
+  const {ctx,get}=autoclawFixture({enabled:true,reachable:true,model_count:1,models:[{id:'autoclaw-AC · Free',realm:'autoclaw'}],accounts:[],health:{healthy:1,total:1}});
+  vm.runInContext("modelList=[{id:'cn:workbuddy',realm:'cn'}]",ctx);
+  await vm.runInContext('loadAutoClaw()',ctx);
+  assert.deepEqual(get('access-model').children.map(o=>o.value),['cn:workbuddy','autoclaw-AC · Free'],'autoclaw model missing from access select');
+  assert.deepEqual(get('access-model').children.map(o=>o.textContent),['国内版 · cn:workbuddy','AutoClaw · autoclaw-AC · Free']);
+  get('access-model').value='autoclaw-AC · Free';vm.runInContext('renderAccess()',ctx);
+  assert.equal(get('copy-example').disabled,false,'autoclaw example stayed disabled');
+  assert.match(get('api-example').textContent,/autoclaw2api 桥接转发/);
+  vm.runInContext("protocol='anthropic'",ctx);
+  vm.runInContext('renderAccess()',ctx);
+  assert.match(get('api-example').textContent,/AutoClaw 通道仅支持 OpenAI 协议/,'anthropic autoclaw example not rejected');
+  vm.runInContext("protocol='openai'",ctx);
+  get('go-chat').handlers.click();
+  assert.equal(vm.runInContext('page',ctx),'autoclaw','autoclaw go-chat did not route to the autoclaw tab');
+  assert.equal(get('autoclaw-model').value,'autoclaw-AC · Free','go-chat did not preselect the model');
+});
+
+test('autoclaw dialog posts an autoclaw model to the admin proxy and streams the answer',async()=>{
+  const requests=[];
+  const {ctx,get}=autoclawFixture({enabled:true,reachable:true,model_count:1,models:[{id:'autoclaw-AC · Free',realm:'autoclaw'}],accounts:[],health:{healthy:1,total:1}});
+  ctx.fetch=async(url,options={})=>{
+    if(url==='/admin/autoclaw/chat'){
+      requests.push({url,...options});
+      const chunks=[new TextEncoder().encode('data: '+JSON.stringify({choices:[{delta:{content:'Auto'} }]})+'\n\n'),new TextEncoder().encode('data: '+JSON.stringify({choices:[{delta:{content:' reply'} }],usage:{prompt_tokens:2,completion_tokens:3,total_tokens:5}})+'\n\n'),new TextEncoder().encode('data: [DONE]\n\n')];
+      let index=0;
+      return {ok:true,status:200,body:{getReader:()=>({read:async()=>index<chunks.length?{value:chunks[index++],done:false}:{done:true}})}};
+    }
+    if(url==='/admin/status')return {ok:true,status:200,json:async()=>({total:0,healthy:0,cooling:0,disabled:0,accounts:[]})};
+    if(url==='/admin/models')return {ok:true,status:200,json:async()=>({data:[]})};
+    if(url==='/admin/autoclaw')return {ok:true,status:200,json:async()=>({enabled:true,reachable:true,model_count:1,models:[{id:'autoclaw-AC · Free',realm:'autoclaw'}],accounts:[],health:{healthy:1,total:1}})};
+    if(url==='/admin/session')return new Promise(()=>{});
+    throw new Error('unexpected '+url);
+  };
+  await vm.runInContext("signedIn({csrf:'c',global_enabled:true,zcode_enabled:false,qoder_enabled:false,opencode_enabled:false,autoclaw_enabled:true})",ctx);
+  await vm.runInContext('loadAutoClaw()',ctx);
+  get('autoclaw-model').value='autoclaw-AC · Free';
+  get('autoclaw-prompt').value='你好';
+  await get('autoclaw-form').handlers.submit({preventDefault(){}});
+  assert.equal(requests.length,1,'autoclaw dialog issued no request');
+  const body=JSON.parse(requests[0].body);
+  assert.equal(body.model,'autoclaw-AC · Free');
+  assert.deepEqual(body.messages,[{role:'user',content:'你好'}]);
+  assert.equal(body.stream,true);
+  assert.match(vm.runInContext('autoclawHistory[1].content',ctx),/Auto reply/);
+  assert.match(get('autoclaw-usage').textContent,/输入 2 · 输出 3 · 总计 5/);
+  assert.match(get('autoclaw-usage').textContent,/本次通道：AutoClaw/);
+  assert.equal(vm.runInContext('activeRequest',ctx),undefined,'autoclaw request left controls locked');
+});
+
+test('autoclaw bridge business errors surface verbatim through the 200 envelope',async()=>{
+  const status={enabled:true,reachable:true,model_count:1,models:[{id:'autoclaw-AC · Free',realm:'autoclaw'}],accounts:[],health:{healthy:1,total:1}};
+  const response=body=>({ok:true,status:200,json:async()=>body});
+  const {ctx,get}=taskFixture(url=>{
+    if(url==='/admin/session')return new Promise(()=>{});
+    if(url==='/admin/status')return response({total:0,healthy:0,cooling:0,disabled:0,accounts:[]});
+    if(url==='/admin/models')return response({data:[]});
+    if(url==='/admin/autoclaw')return response(status);
+    if(url==='/admin/autoclaw/maintain')return response({error:'维护接口暂不可用'});
+    throw new Error('unexpected '+url);
+  });
+  get('realm').querySelector=()=>({disabled:false});
+  await vm.runInContext("signedIn({csrf:'c',global_enabled:true,zcode_enabled:false,qoder_enabled:false,opencode_enabled:false,autoclaw_enabled:true})",ctx);
+  await vm.runInContext('loadAutoClaw()',ctx);
+  await get('autoclaw-maintain').handlers.click();
+  assert.equal(get('notice').textContent,'维护接口暂不可用','bridge error was not surfaced verbatim');
+  assert.equal(get('notice').hidden,false,'error notice stayed hidden');
+  assert.equal(vm.runInContext('autoclawBusy',ctx),false,'failed maintain left the channel busy');
+});
+
+test('autoclaw sendcode validates the phone number and starts the resend countdown',async()=>{
+  const status={enabled:true,reachable:true,model_count:0,models:[],accounts:[],health:{healthy:0,total:0}};
+  const response=body=>({ok:true,status:200,json:async()=>body});
+  const posts=[];
+  const {ctx,get}=taskFixture(url=>{
+    if(url==='/admin/session')return new Promise(()=>{});
+    if(url==='/admin/status')return response({total:0,healthy:0,cooling:0,disabled:0,accounts:[]});
+    if(url==='/admin/models')return response({data:[]});
+    if(url==='/admin/autoclaw')return response(status);
+    if(url==='/admin/autoclaw/login/cn/sendcode'){posts.push(url);return response({msg:'验证码已发送（测试）'});}
+    throw new Error('unexpected '+url);
+  });
+  get('realm').querySelector=()=>({disabled:false});
+  await vm.runInContext("signedIn({csrf:'c',global_enabled:true,zcode_enabled:false,qoder_enabled:false,opencode_enabled:false,autoclaw_enabled:true})",ctx);
+  get('autoclaw-phone').value='12345';
+  await get('autoclaw-sendcode-form').handlers.submit({preventDefault(){}});
+  assert.equal(posts.length,0,'invalid phone number reached the bridge');
+  assert.equal(get('autoclaw-login-hint').textContent,'请输入 11 位国内手机号。');
+  get('autoclaw-phone').value='13800138000';
+  await get('autoclaw-sendcode-form').handlers.submit({preventDefault(){}});
+  assert.deepEqual(posts,['/admin/autoclaw/login/cn/sendcode']);
+  assert.equal(get('autoclaw-login-hint').textContent,'验证码已发送（测试）');
+  // setTimeout 在 fixture 里是 no-op：tick 立即执行一次就停在第一秒文案，按钮保持禁用。
+  assert.equal(get('autoclaw-sendcode').textContent,'重新发送（60s）');
+  assert.equal(get('autoclaw-sendcode').disabled,true,'countdown left the button enabled');
+});
+
+test('autoclaw account checkin reports the tally, chains maintenance and reloads',async()=>{
+  const status={enabled:true,reachable:true,model_count:0,models:[],mode:'cn',
+    accounts:[{uid:'ac-1',region:'cn',points:10}],health:{healthy:1,total:1}};
+  const response=body=>({ok:true,status:200,json:async()=>body});
+  const posts=[];let statusGets=0;
+  const {ctx,get}=taskFixture((url,options={})=>{
+    if(url==='/admin/session')return new Promise(()=>{});
+    if(url==='/admin/status')return response({total:0,healthy:0,cooling:0,disabled:0,accounts:[]});
+    if(url==='/admin/models')return response({data:[]});
+    if(url==='/admin/autoclaw'){statusGets++;return response(status);}
+    if(url==='/admin/autoclaw/checkin'){posts.push({url,body:options.body});return response({results:[{ok:true,uid:'ac-1'},{already_completed:true,uid:'ac-2'}]});}
+    if(url==='/admin/autoclaw/maintain'){posts.push({url,body:options.body});return response({});}
+    throw new Error('unexpected '+url);
+  });
+  get('realm').querySelector=()=>({disabled:false});
+  await vm.runInContext("signedIn({csrf:'c',global_enabled:true,zcode_enabled:false,qoder_enabled:false,opencode_enabled:false,autoclaw_enabled:true})",ctx);
+  await vm.runInContext('loadAutoClaw()',ctx);
+  const rows=get('autoclaw-accounts-body').children;
+  const checkin=rows[0].children[6].children[2];
+  assert.equal(checkin.textContent,'签到','checkin button missing from the account row');
+  // 账号操作走事件委托，mock 元素没有 closest，这里直接把目标按钮喂给处理器。
+  await get('autoclaw-accounts-body').handlers.click({target:{closest:()=>checkin}});
+  await new Promise(resolve=>setImmediate(resolve));
+  assert.deepEqual(posts.map(item=>item.url),['/admin/autoclaw/checkin','/admin/autoclaw/maintain'],'checkin did not chain the maintenance refresh');
+  assert.deepEqual(JSON.parse(posts[0].body),{region:'cn',uid:'ac-1'});
+  assert.equal(get('notice').textContent,'签到完成：1 成功 / 1 已签');
+  assert.equal(statusGets,2,'checkin did not reload the account table');
+  assert.equal(vm.runInContext('autoclawBusy',ctx),false,'checkin left the channel busy');
+});
+
+function traeFixture(traeStatus){
+  const response=body=>({ok:true,status:200,json:async()=>body});
+  let statusGets=0;
+  const {ctx,get,opened}=taskFixture(url=>{
+    if(url==='/admin/session')return new Promise(()=>{});
+    if(url==='/admin/status')return response({total:0,healthy:0,cooling:0,disabled:0,accounts:[]});
+    if(url==='/admin/models')return response({data:[]});
+    if(url==='/admin/trae'){statusGets++;return response(traeStatus);}
+    throw new Error('unexpected '+url);
+  });
+  get('realm').querySelector=()=>({disabled:false});
+  return {ctx,get,opened,statusGets:()=>statusGets};
+}
+
+test('trae tab greys out and shows the disabled notice when the channel is off',async()=>{
+  const {ctx,get}=traeFixture({enabled:false});
+  await vm.runInContext("signedIn({csrf:'c',global_enabled:true,zcode_enabled:false,qoder_enabled:false,opencode_enabled:false,autoclaw_enabled:false,trae_enabled:false})",ctx);
+  assert.equal(get('nav-trae').classList.toggled['nav-muted'],true,'disabled channel left the trae tab fully lit');
+  await vm.runInContext('loadTrae()',ctx);
+  assert.equal(get('trae-disabled').hidden,false,'disabled notice stayed hidden');
+  assert.equal(get('trae-content').hidden,true,'enabled content showed while disabled');
+});
+
+test('trae tab renders badge, health rows, accounts, models and select when reachable',async()=>{
+  const {ctx,get}=traeFixture({enabled:true,reachable:true,model_count:1,models:[{id:'trae-GLM · X',realm:'trae'}],
+    accounts:[{uid:'t1',nickname:'一号',credits:120,cooling:false,disabled:false,enabled:true,err_count:1,expires_at:1799999999,expired_soon:false,has_auth:true},
+      {uid:'t2',nickname:'二号',credits:0,cooling:true,reason:'签到冷却',until:'2026-10-07T12:00:00Z',disabled:false,enabled:true,err_count:0},
+      {uid:'t3',nickname:'三号',credits:0,disabled:true,enabled:false,err_count:0}]});
+  await vm.runInContext("signedIn({csrf:'c',global_enabled:true,zcode_enabled:false,qoder_enabled:false,opencode_enabled:false,autoclaw_enabled:false,trae_enabled:true})",ctx);
+  assert.equal(get('nav-trae').classList.toggled['nav-muted'],false,'enabled channel greyed the trae tab');
+  await vm.runInContext('loadTrae()',ctx);
+  assert.equal(get('trae-disabled').hidden,true);
+  assert.equal(get('trae-content').hidden,false);
+  assert.equal(get('trae-status-badge').textContent,'在线');
+  assert.equal(get('trae-status-badge').className,'badge ok');
+  assert.match(get('trae-status-text').textContent,/trae2api 可达 · 1 个模型 · 3 个账号/);
+  assert.deepEqual(get('trae-health-body').children.map(tr=>tr.children[0].textContent),['模型数','账号数']);
+  assert.equal(get('trae-health-body').children[1].children[1].textContent,'3');
+  for(const id of ['trae-view-status','trae-view-login','trae-view-accounts','trae-view-schedule','trae-view-models','trae-view-chat','trae-view-usage'])
+    assert.equal(get(id).hidden,false,'reachable container must keep tab '+id+' offered');
+  assert.deepEqual(['trae-stat-total','trae-stat-usable','trae-stat-cooling','trae-stat-disabled'].map(id=>get(id).textContent),['3','1','1','1']);
+  const rows=get('trae-accounts-body').children;
+  assert.equal(rows.length,3,'account table row count');
+  assert.match(rows[0].children[0].textContent,/一号/);
+  assert.equal(rows[0].children[1].children[0].textContent,'可用');
+  assert.equal(rows[0].children[2].textContent,'120');
+  assert.equal(rows[0].children[3].textContent,'— / 1');
+  assert.match(rows[0].children[4].textContent,/20\d\d/,'有效期列应显示凭据到期时间');
+  assert.equal(rows[0].children[6].children[0].textContent,'停用');
+  assert.equal(rows[1].children[1].children[0].textContent,'冷却中');
+  assert.match(rows[1].children[5].textContent,/签到冷却/);
+  assert.equal(rows[2].children[1].children[0].textContent,'已停用');
+  assert.equal(rows[2].children[6].children[0].textContent,'启用','disabled account must offer enable instead of disable');
+  assert.equal(get('trae-models-body').children.length,1,'model table row count');
+  assert.deepEqual(get('trae-model').children.map(option=>option.value),['trae-GLM · X']);
+});
+
+test('trae tab reports an unreachable container and keeps only the login entry',async()=>{
+  const {ctx,get}=traeFixture({enabled:true,reachable:false,model_count:0,models:[],accounts:[]});
+  await vm.runInContext("signedIn({csrf:'c',global_enabled:true,zcode_enabled:false,qoder_enabled:false,opencode_enabled:false,autoclaw_enabled:false,trae_enabled:true})",ctx);
+  await vm.runInContext('loadTrae()',ctx);
+  assert.equal(get('trae-content').hidden,false);
+  assert.equal(get('trae-status-badge').textContent,'不可达');
+  assert.equal(get('trae-status-badge').className,'badge bad');
+  assert.match(get('trae-status-text').textContent,/trae2api 容器不可达/);
+  assert.equal(get('trae-health-wrap').hidden,true,'health rows showed without a reachable container');
+  for(const id of ['trae-view-accounts','trae-view-schedule','trae-view-models','trae-view-chat','trae-view-usage'])
+    assert.equal(get(id).hidden,true,id+' tab offered while unreachable');
+  assert.equal(get('trae-view-login').hidden,false,'login tab is the troubleshooting entry and must stay');
+});
+
+test('access model select merges trae models and routes trae go-chat to the trae tab',async()=>{
+  const {ctx,get}=traeFixture({enabled:true,reachable:true,model_count:1,models:[{id:'trae-GLM · X',realm:'trae'}],accounts:[]});
+  vm.runInContext("modelList=[{id:'cn:workbuddy',realm:'cn'}]",ctx);
+  await vm.runInContext('loadTrae()',ctx);
+  assert.deepEqual(get('access-model').children.map(o=>o.value),['cn:workbuddy','trae-GLM · X'],'trae model missing from access select');
+  assert.deepEqual(get('access-model').children.map(o=>o.textContent),['国内版 · cn:workbuddy','Trae · trae-GLM · X']);
+  get('access-model').value='trae-GLM · X';vm.runInContext('renderAccess()',ctx);
+  assert.equal(get('copy-example').disabled,false,'trae example stayed disabled');
+  assert.match(get('api-example').textContent,/trae2api 桥接转发/);
+  vm.runInContext("protocol='anthropic'",ctx);
+  vm.runInContext('renderAccess()',ctx);
+  assert.match(get('api-example').textContent,/Trae 通道仅支持 OpenAI 协议/,'anthropic trae example not rejected');
+  vm.runInContext("protocol='openai'",ctx);
+  get('go-chat').handlers.click();
+  assert.equal(vm.runInContext('page',ctx),'trae','trae go-chat did not route to the trae tab');
+  assert.equal(get('trae-model').value,'trae-GLM · X','go-chat did not preselect the model');
+});
+
+test('trae dialog posts a trae model to the admin proxy and streams the answer',async()=>{
+  const requests=[];
+  const {ctx,get}=traeFixture({enabled:true,reachable:true,model_count:1,models:[{id:'trae-GLM · X',realm:'trae'}],accounts:[]});
+  ctx.fetch=async(url,options={})=>{
+    if(url==='/admin/trae/chat'){
+      requests.push({url,...options});
+      const chunks=[new TextEncoder().encode('data: '+JSON.stringify({choices:[{delta:{content:'Trae'} }]})+'\n\n'),new TextEncoder().encode('data: '+JSON.stringify({choices:[{delta:{content:' reply'} }],usage:{prompt_tokens:2,completion_tokens:3,total_tokens:5}})+'\n\n'),new TextEncoder().encode('data: [DONE]\n\n')];
+      let index=0;
+      return {ok:true,status:200,body:{getReader:()=>({read:async()=>index<chunks.length?{value:chunks[index++],done:false}:{done:true}})}};
+    }
+    if(url==='/admin/status')return {ok:true,status:200,json:async()=>({total:0,healthy:0,cooling:0,disabled:0,accounts:[]})};
+    if(url==='/admin/models')return {ok:true,status:200,json:async()=>({data:[]})};
+    if(url==='/admin/trae')return {ok:true,status:200,json:async()=>({enabled:true,reachable:true,model_count:1,models:[{id:'trae-GLM · X',realm:'trae'}],accounts:[]})};
+    if(url==='/admin/session')return new Promise(()=>{});
+    throw new Error('unexpected '+url);
+  };
+  await vm.runInContext("signedIn({csrf:'c',global_enabled:true,zcode_enabled:false,qoder_enabled:false,opencode_enabled:false,autoclaw_enabled:false,trae_enabled:true})",ctx);
+  await vm.runInContext('loadTrae()',ctx);
+  get('trae-model').value='trae-GLM · X';
+  get('trae-prompt').value='你好';
+  await get('trae-form').handlers.submit({preventDefault(){}});
+  assert.equal(requests.length,1,'trae dialog issued no request');
+  const body=JSON.parse(requests[0].body);
+  assert.equal(body.model,'trae-GLM · X');
+  assert.deepEqual(body.messages,[{role:'user',content:'你好'}]);
+  assert.equal(body.stream,true);
+  assert.match(vm.runInContext('traeHistory[1].content',ctx),/Trae reply/);
+  assert.match(get('trae-usage').textContent,/输入 2 · 输出 3 · 总计 5/);
+  assert.match(get('trae-usage').textContent,/本次通道：Trae/);
+  assert.equal(vm.runInContext('activeRequest',ctx),undefined,'trae request left controls locked');
+});
+
+test('trae login start opens the authorize page and the poll loop lands on the account tab',async()=>{
+  const {ctx,get,opened}=traeFixture({enabled:true,reachable:true,model_count:1,models:[{id:'trae-GLM · X',realm:'trae'}],accounts:[]});
+  let statusGets=0,starts=0,polls=0;
+  ctx.fetch=async(url,options={})=>{
+    if(url==='/admin/trae/login'&&options.method==='POST'){starts++;return {ok:true,status:200,json:async()=>({login_url:'https://auth.test/authorize?x=1',pending_id:'p1',callback_url:'http://console.test/admin/trae/authorize'})};}
+    if(url==='/admin/trae/login?pending_id=p1'){polls++;return {ok:true,status:200,json:async()=>({state:'success',uid:'t1',nickname:'一号'})};}
+    if(url==='/admin/trae'){statusGets++;return {ok:true,status:200,json:async()=>({enabled:true,reachable:true,model_count:1,models:[{id:'trae-GLM · X',realm:'trae'}],accounts:[{uid:'t1',nickname:'一号',credits:0,cooling:false,disabled:false,enabled:true,err_count:0}]})};}
+    if(url==='/admin/status')return {ok:true,status:200,json:async()=>({total:0,healthy:0,cooling:0,disabled:0,accounts:[]})};
+    if(url==='/admin/models')return {ok:true,status:200,json:async()=>({data:[]})};
+    if(url==='/admin/session')return new Promise(()=>{});
+    throw new Error('unexpected '+url);
+  };
+  await vm.runInContext("signedIn({csrf:'c',global_enabled:true,zcode_enabled:false,qoder_enabled:false,opencode_enabled:false,autoclaw_enabled:false,trae_enabled:true})",ctx);
+  await get('trae-login-form').handlers.submit({preventDefault(){}});
+  assert.equal(starts,1,'login start issued no request');
+  assert.equal(opened.length,1,'the authorize page was not opened');
+  assert.equal(opened[0].location.href,'https://auth.test/authorize?x=1');
+  assert.equal(get('trae-auth-row').hidden,false,'the authorize link stayed hidden');
+  // fixture 的 setTimeout 不会回调，成功路径没有定时器参与，排空微任务即可走完轮询。
+  await new Promise(resolve=>setImmediate(resolve));
+  await new Promise(resolve=>setImmediate(resolve));
+  assert.equal(polls,1,'the login poll loop did not query the pending id');
+  assert.equal(get('trae-login-badge').textContent,'已登录');
+  assert.equal(get('trae-login-badge').className,'badge ok');
+  assert.equal(get('trae-auth-row').hidden,true,'the authorize link stayed visible after login');
+  assert.match(get('trae-login-hint').textContent,/一号/);
+  assert.equal(vm.runInContext('traeView',ctx),'accounts','a successful login did not switch to the account tab');
+  assert.equal(statusGets,1,'a successful login did not reload the channel status');
+  assert.equal(vm.runInContext('traeLoginBusy',ctx),false,'the login button stayed locked');
+});
+
 test('model table sorts by probe outcome first and ascending latency second',async()=>{
   // The catalog order is deliberately misleading: the healthy model is the slowest one, and the
   // fastest probe fails. Availability has to win over latency, latency only breaks ties inside a band.
@@ -2323,10 +2674,10 @@ test('overview page, probe buttons and the speed column exist in the page shell'
   assert.match(html,/id="overview-trend"[\s\S]*id="overview-trend-note"/,'daily trend chart missing');
   assert.match(html,/id="models-group-toggle"/,'model grouping toggle missing');
   assert.match(html,/id="overview-usage-channel"[\s\S]*id="overview-usage-range"/,'overview usage filters missing');
-  for(const id of ['probe-core','probe-zcode','probe-qoder'])assert.ok(html.includes('id="'+id+'"'),'probe button '+id+' missing');
+  for(const id of ['probe-core','probe-zcode','probe-qoder','probe-autoclaw'])assert.ok(html.includes('id="'+id+'"'),'probe button '+id+' missing');
   assert.ok(!html.includes('id="probe-opencode"'),'opencode must not get a manual probe button');
   // 允许表头带 class（数值列要挂 class="num" 才能和单元格同侧对齐），只认列名本身。
-  assert.equal((html.match(/<th[^>]*>速度<\/th>/g)||[]).length,4,'every model table must carry the speed column');
+  assert.equal((html.match(/<th[^>]*>速度<\/th>/g)||[]).length,6,'every model table must carry the speed column');
   assert.match(html,/gateway-auto/,'routes page still advertises the bare auto name');
   // 改造后的界面契约：常驻无障碍播报区存在，逐节的营销小标题不再回来。
   assert.match(html,/id="announce"[^>]*aria-live="polite"/,'persistent live region missing');
@@ -2548,4 +2899,121 @@ test('机架面（暗底）用深底亮字那一套：五档徽章与通道名�
   assert.match(cssRuleBody(css,'.channel-card-stats strong'),/color:#fff/,'机架读数不是白字，暗底上会读不清');
   for(const tone of ['ok','warn','bad','idle','unknown'])
     assert.ok(css.includes(`.badge.rail-state.${tone}{`),`缺 .badge.rail-state.${tone}，机架上的该档位会退回浅紫胶囊`);
+});
+
+function ccrFixture(statuses,linkBody={ui_url:'http://127.0.0.1:3458/?ccr_web_token=zzz'}) {
+  const requests=[];let index=0;
+  const response=(body,ok=true)=>({ok,status:ok?200:502,json:async()=>body});
+  const {ctx,get,opened}=taskFixture(()=>{throw new Error('unused');});
+  ctx.fetch=async(url,options={})=>{
+    if(url==='/admin/ccr'){const body=statuses[Math.min(index,statuses.length-1)];index++;requests.push({url,method:'GET'});return response(body);}
+    if(url==='/admin/ccr/gateway'){requests.push({url,method:'POST',body:options.body});return response(statuses[Math.min(index,statuses.length-1)]);}
+    if(url==='/admin/ccr/link'){requests.push({url,method:'GET'});return response(linkBody);}
+    if(url==='/admin/session')return new Promise(()=>{});
+    if(url==='/admin/status')return response({total:0,healthy:0,cooling:0,disabled:0,accounts:[]});
+    if(url==='/admin/models')return response({data:[]});
+    throw new Error('unexpected '+url+' '+options.method);
+  };
+  get('realm').querySelector=()=>({disabled:false});
+  return {ctx,get,opened,requests};
+}
+
+const ccrRunning={enabled:true,auth_ready:true,reachable:true,state:'running',endpoint:'http://127.0.0.1:3456',pid:455672,last_started_at:'2026-10-07T01:22:25.643Z'};
+const ccrStopped={enabled:true,auth_ready:true,reachable:true,state:'stopped',endpoint:'http://127.0.0.1:3456'};
+const ccrDown={enabled:true,auth_ready:true,reachable:false};
+const ccrNoToken={enabled:true,auth_ready:false,reachable:false};
+const ccrStaleToken={enabled:true,auth_ready:true,reachable:false,auth_mismatch:true};
+
+test('CCR tab greys out and shows the disabled notice when the channel is off',async()=>{
+  const {ctx,get}=ccrFixture([{enabled:false}]);
+  await vm.runInContext("signedIn({csrf:'c',global_enabled:true,zcode_enabled:false,qoder_enabled:false,opencode_enabled:false,ccr_enabled:false})",ctx);
+  assert.equal(get('nav-ccr').classList.toggled['nav-muted'],true,'disabled channel left the tab fully lit');
+  await vm.runInContext('loadCCR()',ctx);
+  assert.equal(get('ccr-disabled').hidden,false,'disabled notice stayed hidden');
+  assert.equal(get('ccr-content').hidden,true,'enabled content showed while disabled');
+});
+
+test('CCR running state lights the badge and offers only the stop action',async()=>{
+  const {ctx,get}=ccrFixture([ccrRunning]);
+  await vm.runInContext("signedIn({csrf:'c',global_enabled:true,zcode_enabled:false,qoder_enabled:false,opencode_enabled:false,ccr_enabled:true})",ctx);
+  assert.equal(get('nav-ccr').classList.toggled['nav-muted'],false,'enabled channel greyed the tab');
+  await vm.runInContext('loadCCR()',ctx);
+  assert.equal(get('ccr-content').hidden,false);
+  assert.equal(get('ccr-status-badge').textContent,'运行中');
+  assert.equal(get('ccr-status-badge').className,'badge ok');
+  assert.match(get('ccr-status-text').textContent,/127\.0\.0\.1:3456/);
+  assert.equal(get('ccr-start').disabled,true,'start offered while the gateway already runs');
+  assert.equal(get('ccr-stop').disabled,false,'stop disabled while the gateway runs');
+  assert.deepEqual(get('ccr-detail-body').children.map(tr=>tr.children[0].textContent),['网关地址','进程号','上次启动']);
+});
+
+test('CCR stopped state offers the start action and marks the badge warn',async()=>{
+  const {ctx,get}=ccrFixture([ccrStopped]);
+  await vm.runInContext("signedIn({csrf:'c',global_enabled:true,zcode_enabled:false,qoder_enabled:false,opencode_enabled:false,ccr_enabled:true})",ctx);
+  await vm.runInContext('loadCCR()',ctx);
+  assert.equal(get('ccr-status-badge').textContent,'已停止');
+  assert.equal(get('ccr-status-badge').className,'badge warn');
+  assert.equal(get('ccr-start').disabled,false,'start disabled while the gateway is stopped');
+  assert.equal(get('ccr-stop').disabled,true,'stop offered while the gateway is stopped');
+});
+
+test('CCR admin service down locks both actions and names the host command',async()=>{
+  const {ctx,get}=ccrFixture([ccrDown]);
+  await vm.runInContext("signedIn({csrf:'c',global_enabled:true,zcode_enabled:false,qoder_enabled:false,opencode_enabled:false,ccr_enabled:true})",ctx);
+  await vm.runInContext('loadCCR()',ctx);
+  assert.equal(get('ccr-status-badge').textContent,'不可达');
+  assert.equal(get('ccr-status-badge').className,'badge bad');
+  assert.match(get('ccr-status-text').textContent,/ccr ui/,'hint must name what the admin has to run');
+  assert.equal(get('ccr-start').disabled,true);
+  assert.equal(get('ccr-stop').disabled,true);
+});
+
+test('CCR without a mounted token file asks for the mount instead of probing',async()=>{
+  const {ctx,get}=ccrFixture([ccrNoToken]);
+  await vm.runInContext("signedIn({csrf:'c',global_enabled:true,zcode_enabled:false,qoder_enabled:false,opencode_enabled:false,ccr_enabled:true})",ctx);
+  await vm.runInContext('loadCCR()',ctx);
+  assert.match(get('ccr-status-text').textContent,/WB2A_CCR_TOKEN_FILE/);
+  assert.equal(get('ccr-start').disabled,true);
+  assert.equal(get('ccr-stop').disabled,true);
+});
+
+test('CCR start posts once, refreshes the badge, and keeps buttons usable after failure',async()=>{
+  const {ctx,get,requests}=ccrFixture([ccrStopped,ccrRunning]);
+  await vm.runInContext("signedIn({csrf:'c',global_enabled:true,zcode_enabled:false,qoder_enabled:false,opencode_enabled:false,ccr_enabled:true})",ctx);
+  await vm.runInContext('loadCCR()',ctx);
+  get('ccr-start').handlers.click();
+  get('ccr-start').handlers.click();
+  await new Promise(r=>setTimeout(r,0));
+  const posts=requests.filter(r=>r.url==='/admin/ccr/gateway');
+  assert.equal(posts.length,1,'double click posted the start action twice');
+  assert.equal(JSON.parse(posts[0].body).action,'start');
+  assert.equal(get('ccr-status-badge').textContent,'运行中','badge did not follow the refreshed state');
+  assert.equal(get('ccr-start').disabled,true);
+  // 后端报错时按钮要回到可用，否则一次失败就把页面钉死。
+  ctx.fetch=async(url,options={})=>({ok:false,status:502,json:async()=>({error:'CCR 模型网关关停失败'})});
+  await get('ccr-stop').handlers.click();
+  await new Promise(r=>setTimeout(r,0));
+  assert.equal(get('notice').textContent,'CCR 模型网关关停失败');
+  assert.equal(get('ccr-stop').disabled,false,'action stayed locked after a failure');
+});
+
+test('CCR management link is fetched only on click and opened in a new tab',async()=>{
+  const {ctx,get,opened,requests}=ccrFixture([ccrRunning]);
+  await vm.runInContext("signedIn({csrf:'c',global_enabled:true,zcode_enabled:false,qoder_enabled:false,opencode_enabled:false,ccr_enabled:true})",ctx);
+  await vm.runInContext('loadCCR()',ctx);
+  assert.equal(requests.some(r=>r.url==='/admin/ccr/link'),false,'management token reached the browser before the click');
+  await get('ccr-link').handlers.click();
+  assert.equal(requests.filter(r=>r.url==='/admin/ccr/link').length,1);
+  assert.equal(opened[opened.length-1].location.href,'http://127.0.0.1:3458/?ccr_web_token=zzz');
+});
+
+test('CCR token mismatch is its own state, not a missing service',async()=>{
+  const {ctx,get}=ccrFixture([ccrStaleToken]);
+  await vm.runInContext("signedIn({csrf:'c',global_enabled:true,zcode_enabled:false,qoder_enabled:false,opencode_enabled:false,ccr_enabled:true})",ctx);
+  await vm.runInContext('loadCCR()',ctx);
+  assert.equal(get('ccr-status-badge').textContent,'Token 不匹配');
+  assert.match(get('ccr-status-text').textContent,/force-recreate/,'hint must name the recreate command');
+  assert.doesNotMatch(get('ccr-status-text').textContent,/ccr ui/,'stale token must not send the admin to ccr ui');
+  assert.equal(get('ccr-start').disabled,true);
+  assert.equal(get('ccr-stop').disabled,true);
 });

@@ -1,14 +1,14 @@
 # HOST-ONLY entry pin. Not shipped: production stays a bare `docker compose up -d` on
 # docker-compose.yml alone. This file exists so that on this machine a bare up -d always
-# recreates the SAME five services from the SAME newest local build, instead of silently
+# recreates the SAME seven services from the SAME newest local build, instead of silently
 # falling back to the published image pair pinned in docker-compose.yml.
 #
 # Why each piece is here:
 #   - pull_policy: never + :local tags: a bare up -d must never be able to resurrect an older
 #     published tag. If :local is missing the command must fail loudly, not pull.
-#   - include: the three channel overlays are merged wholesale (their console env blocks too),
+#   - include: the five channel overlays are merged wholesale (their console env blocks too),
 #     so deploy/compose.*.yml stays the single source of truth for sidecar definitions.
-#   - all five services keep restart: unless-stopped, so Docker Desktop autostarts them; the
+#   - all seven services keep restart: unless-stopped, so Docker Desktop autostarts them; the
 #     sidecars join console's network namespace by container id, which is why a console
 #     recreation has to carry them in the same command (a bare up -d with this file does that).
 #
@@ -24,6 +24,10 @@ include:
     project_directory: data
   - path: deploy/compose.opencode.yml
     project_directory: data
+  - path: deploy/compose.autoclaw.yml
+    project_directory: data
+  - path: deploy/compose.trae.yml
+    project_directory: data
 
 services:
   core:
@@ -33,3 +37,17 @@ services:
   console:
     image: workbuddy2api-console:local
     pull_policy: never
+    # CCR 通道是宿主机进程，不是本仓的第六只容器：控制台只借用它的管理 RPC 做网关启停。
+    # 复制本文件回 docker-compose.override.yml 时，把 source 换成本机 CCR 的 service.json
+    # 绝对路径（Windows 形如 C:/Users/<用户>/AppData/Roaming/claude-code-router/service.json）。
+    # 只挂这一个文件：CCR 的配置目录里还有它的 sqlite 库和 provider profiles，控制台都不该看到。
+    environment:
+      WB2A_CCR_URL: http://host.docker.internal:3458
+      WB2A_CCR_TOKEN_FILE: /run/ccr/service.json
+    volumes:
+      - type: bind
+        source: C:/Users/REPLACE-ME/AppData/Roaming/claude-code-router/service.json
+        target: /run/ccr/service.json
+        read_only: true
+        bind:
+          create_host_path: false

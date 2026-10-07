@@ -52,9 +52,10 @@ func (h *server) zcodeProxy() *httputil.ReverseProxy {
 
 // publicRouter dispatches the public /v1/* surface: glm-* model chat/messages/responses requests
 // go to zcode-proxy, qoder-* model requests go to qoder-proxy, opencode-* model requests go to
-// the opencode sidecar, everything else stays on core.
+// the opencode sidecar, autoclaw-* model requests go to the autoclaw2api sidecar,
+// trae-* model requests go to the trae2api sidecar, everything else stays on core.
 func (h *server) publicRouter(core *httputil.ReverseProxy) http.HandlerFunc {
-	var zcode, qoder, opencode *httputil.ReverseProxy
+	var zcode, qoder, opencode, autoclaw, trae *httputil.ReverseProxy
 	if h.cfg.ZCodeURL != nil {
 		zcode = h.zcodeProxy()
 	}
@@ -63,6 +64,12 @@ func (h *server) publicRouter(core *httputil.ReverseProxy) http.HandlerFunc {
 	}
 	if h.cfg.OpenCodeURL != nil {
 		opencode = h.opencodeProxy()
+	}
+	if h.cfg.AutoClawURL != nil {
+		autoclaw = h.autoclawProxy()
+	}
+	if h.cfg.TraeURL != nil {
+		trae = h.traeProxy()
 	}
 	return func(w http.ResponseWriter, r *http.Request) {
 		switch r.Method + " " + r.URL.Path {
@@ -139,6 +146,30 @@ func (h *server) publicRouter(core *httputil.ReverseProxy) http.HandlerFunc {
 				// opencode 上报同样保留公共前缀模型名，便于与 zcode/core 区分通道。
 				capture := h.newUsageCapture(w, r, envelope.Model, "opencode", envelope.Stream)
 				opencode.ServeHTTP(capture, r)
+				h.finishUsageCapture(capture)
+				return
+			}
+			if autoclaw != nil && strings.HasPrefix(envelope.Model, autoclawModelPrefix) {
+				modified := stripAutoClawModelPrefix(body)
+				r.Body = io.NopCloser(bytes.NewReader(modified))
+				r.ContentLength = int64(len(modified))
+				r.TransferEncoding = nil
+				r.Header.Del("Content-Length")
+				// autoclaw 上报同样保留公共前缀模型名，便于与 zcode/core 区分通道。
+				capture := h.newUsageCapture(w, r, envelope.Model, "autoclaw", envelope.Stream)
+				autoclaw.ServeHTTP(capture, r)
+				h.finishUsageCapture(capture)
+				return
+			}
+			if trae != nil && strings.HasPrefix(envelope.Model, traeModelPrefix) {
+				modified := stripTraeModelPrefix(body)
+				r.Body = io.NopCloser(bytes.NewReader(modified))
+				r.ContentLength = int64(len(modified))
+				r.TransferEncoding = nil
+				r.Header.Del("Content-Length")
+				// trae 上报同样保留公共前缀模型名，便于与 zcode/core 区分通道。
+				capture := h.newUsageCapture(w, r, envelope.Model, "trae", envelope.Stream)
+				trae.ServeHTTP(capture, r)
 				h.finishUsageCapture(capture)
 				return
 			}
@@ -246,12 +277,14 @@ func (h *server) mergedModels(w http.ResponseWriter, r *http.Request, core *http
 		coreReq.Header.Set("Authorization", auth)
 	}
 	var (
-		wg          sync.WaitGroup
-		coreResp    upstreamResponse
-		zcodeRaw    []json.RawMessage
-		qoderRaw    []json.RawMessage
-		opencodeRaw []json.RawMessage
-		zcodePlan   string
+		wg           sync.WaitGroup
+		coreResp     upstreamResponse
+		zcodeRaw     []json.RawMessage
+		qoderRaw     []json.RawMessage
+		opencodeRaw  []json.RawMessage
+		autoclawRaw  []json.RawMessage
+		traeRaw      []json.RawMessage
+		zcodePlan    string
 	)
 	wg.Add(1)
 	go func() {
@@ -352,6 +385,78 @@ func (h *server) mergedModels(w http.ResponseWriter, r *http.Request, core *http
 			}
 		}()
 	}
+	if h.cfg.AutoClawURL != nil {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			autoclawURL := *h.cfg.AutoClawURL
+			autoclawURL.Path = "/v1/models"
+			autoclawReq, err := http.NewRequestWithContext(r.Context(), "GET", autoclawURL.String(), nil)
+			if err != nil {
+				return
+			}
+			// autoclaw2api guards /v1/models with the bridge key.
+			if h.cfg.AutoClawKey != "" {
+				autoclawReq.Header.Set("Authorization", "Bearer "+h.cfg.AutoClawKey)
+			}
+			list, _ := h.fetchModels(autoclawReq)
+			for _, item := range list {
+				// Add routing prefix so public /v1/models entries match the autoclaw-* dispatch.
+				var entry map[string]any
+				if json.Unmarshal(item, &entry) != nil || entry == nil {
+					continue
+				}
+				id, ok := entry["id"].(string)
+				if !ok || id == "" {
+					continue
+				}
+				if !strings.HasPrefix(id, autoclawModelPrefix) {
+					entry["id"] = autoclawModelPrefix + id
+				}
+				tagged, err := json.Marshal(entry)
+				if err != nil {
+					continue
+				}
+				autoclawRaw = append(autoclawRaw, tagModelRealm(tagged, "autoclaw"))
+			}
+		}()
+	}
+	if h.cfg.TraeURL != nil {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			traeURL := *h.cfg.TraeURL
+			traeURL.Path = "/v1/models"
+			traeReq, err := http.NewRequestWithContext(r.Context(), "GET", traeURL.String(), nil)
+			if err != nil {
+				return
+			}
+			// trae2api guards /v1/models with the bridge key.
+			if h.cfg.TraeKey != "" {
+				traeReq.Header.Set("Authorization", "Bearer "+h.cfg.TraeKey)
+			}
+			list, _ := h.fetchModels(traeReq)
+			for _, item := range list {
+				// Add routing prefix so public /v1/models entries match the trae-* dispatch.
+				var entry map[string]any
+				if json.Unmarshal(item, &entry) != nil || entry == nil {
+					continue
+				}
+				id, ok := entry["id"].(string)
+				if !ok || id == "" {
+					continue
+				}
+				if !strings.HasPrefix(id, traeModelPrefix) {
+					entry["id"] = traeModelPrefix + id
+				}
+				tagged, err := json.Marshal(entry)
+				if err != nil {
+					continue
+				}
+				traeRaw = append(traeRaw, tagModelRealm(tagged, "trae"))
+			}
+		}()
+	}
 	wg.Wait()
 	zcodeRaw = filterZcodeModels(zcodeRaw, zcodePlan)
 	coreList, ok := parseModelList(coreResp)
@@ -367,12 +472,14 @@ func (h *server) mergedModels(w http.ResponseWriter, r *http.Request, core *http
 		w.Write(coreResp.body)
 		return
 	}
-	totalLen := len(coreList) + len(zcodeRaw) + len(qoderRaw) + len(opencodeRaw)
+	totalLen := len(coreList) + len(zcodeRaw) + len(qoderRaw) + len(opencodeRaw) + len(autoclawRaw) + len(traeRaw)
 	seen := make(map[string]bool, totalLen)
 	merged := make([]json.RawMessage, 0, totalLen)
 	all := append(append([]json.RawMessage{}, coreList...), zcodeRaw...)
 	all = append(all, qoderRaw...)
 	all = append(all, opencodeRaw...)
+	all = append(all, autoclawRaw...)
+	all = append(all, traeRaw...)
 	// 用刚拿到的 core 目录刷新倍率缓存，省掉 modelGate 判定的一次重复抓取。
 	if h.credits != nil {
 		h.credits.store(creditRulesFromList(coreList))

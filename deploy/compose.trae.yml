@@ -1,0 +1,33 @@
+# Optional Trae free-model sidecar: docker compose -f docker-compose.yml -f deploy/compose.trae.yml up -d
+# The container runs workbuddy2api-trae, a pure-Go OpenAI-compatible gateway for the TRAE SOLO
+# upstream (trae.cn). It joins console's network namespace (network_mode: service:console) and
+# listens on 127.0.0.1:7866 only, so its API is reachable from console but never from the Compose
+# network or the host. Console injects WB2A_TRAE_KEY as the Bearer token and routes public /v1
+# requests whose model starts with "trae-" to the sidecar; everything else stays on core. The
+# console Trae tab drives the sidecar's /admin/api/* control endpoints (account import, web login,
+# refresh, schedule, usage) through the console admin session; the TRAE OAuth callback lands on
+# console's public /admin/trae/authorize, which proxies to the sidecar's /authorize without CSRF.
+services:
+  trae-proxy:
+    build:
+      context: .
+      dockerfile: deploy/trae.Dockerfile
+    platform: linux/amd64
+    restart: unless-stopped
+    network_mode: service:console
+    environment:
+      TZ: Asia/Shanghai
+      # 数据面密钥（console -> trae2api:7866 的 Bearer）；为空时 sidecar 视为免鉴权。
+      WB2A_TRAE_KEY: ${WB2A_TRAE_KEY:-}
+      # 回调由 console 公开 origin 代理，sidecar 自身不起独立回调端口。
+      TRAE_CALLBACK_LISTEN: "0"
+    volumes:
+      - ./runtime/trae:/data
+
+  console:
+    environment:
+      WB2A_TRAE_URL: http://127.0.0.1:7866
+      WB2A_TRAE_KEY: ${WB2A_TRAE_KEY:-}
+    depends_on:
+      core:
+        condition: service_started

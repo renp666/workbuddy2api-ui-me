@@ -123,19 +123,40 @@ func configFromEnv() (Config, string, error) {
 			return Config{}, "", errors.New("WB2A_OPENCODE_URL 无效")
 		}
 	}
+	var ccrURL *url.URL
+	if rawCCR := os.Getenv("WB2A_CCR_URL"); rawCCR != "" {
+		ccrURL, err = url.Parse(rawCCR)
+		if err != nil {
+			return Config{}, "", errors.New("WB2A_CCR_URL 无效")
+		}
+	}
+	var autoclawURL *url.URL
+	if rawAutoClaw := os.Getenv("WB2A_AUTOCLAW_URL"); rawAutoClaw != "" {
+		autoclawURL, err = url.Parse(rawAutoClaw)
+		if err != nil {
+			return Config{}, "", errors.New("WB2A_AUTOCLAW_URL 无效")
+		}
+	}
+	var traeURL *url.URL
+	if rawTrae := os.Getenv("WB2A_TRAE_URL"); rawTrae != "" {
+		traeURL, err = url.Parse(rawTrae)
+		if err != nil {
+			return Config{}, "", errors.New("WB2A_TRAE_URL 无效")
+		}
+	}
 	listen := os.Getenv("WB2A_LISTEN")
 	if listen == "" {
 		listen = ":7863"
 	}
 	keyFile := os.Getenv("WB2A_KEY_FILE")
 	if keyFile == "" {
-		return Config{CoreURL: target, ZCodeURL: zcodeURL, ZCodeKey: os.Getenv("WB2A_ZCODE_KEY"), ZCodeControlURL: zcodeControlURL, QoderURL: qoderURL, QoderKey: os.Getenv("WB2A_QODER_KEY"), QoderControlURL: qoderControlURL, OpenCodeURL: opencodeURL, OpenCodeKey: os.Getenv("WB2A_OPENCODE_KEY"), AdminKey: os.Getenv("WB2A_ADMIN_KEY"), APIKey: os.Getenv("WB2A_API_KEY"), BridgeKey: os.Getenv("WB2A_BRIDGE_KEY"), PublicOrigin: os.Getenv("WB2A_PUBLIC_ORIGIN"), TrustedProxyCIDRs: os.Getenv("WB2A_TRUSTED_PROXY_CIDRS"), RouteFile: os.Getenv("WB2A_ROUTE_FILE"), RequireHTTPS: os.Getenv("WB2A_REQUIRE_HTTPS") == "1"}, listen, nil
+		return Config{CoreURL: target, ZCodeURL: zcodeURL, ZCodeKey: os.Getenv("WB2A_ZCODE_KEY"), ZCodeControlURL: zcodeControlURL, QoderURL: qoderURL, QoderKey: os.Getenv("WB2A_QODER_KEY"), QoderControlURL: qoderControlURL, OpenCodeURL: opencodeURL, OpenCodeKey: os.Getenv("WB2A_OPENCODE_KEY"), CCRURL: ccrURL, CCRTokenFile: os.Getenv("WB2A_CCR_TOKEN_FILE"), AutoClawURL: autoclawURL, AutoClawKey: os.Getenv("WB2A_AUTOCLAW_KEY"), TraeURL: traeURL, TraeKey: os.Getenv("WB2A_TRAE_KEY"), AdminKey: os.Getenv("WB2A_ADMIN_KEY"), APIKey: os.Getenv("WB2A_API_KEY"), BridgeKey: os.Getenv("WB2A_BRIDGE_KEY"), PublicOrigin: os.Getenv("WB2A_PUBLIC_ORIGIN"), TrustedProxyCIDRs: os.Getenv("WB2A_TRUSTED_PROXY_CIDRS"), RouteFile: os.Getenv("WB2A_ROUTE_FILE"), RequireHTTPS: os.Getenv("WB2A_REQUIRE_HTTPS") == "1"}, listen, nil
 	}
 	keys, err := readDeploymentKeys(keyFile, 30*time.Second, os.Getenv("WB2A_ADMIN_KEY"), os.Getenv("WB2A_API_KEY"))
 	if err != nil {
 		return Config{}, "", err
 	}
-	return Config{CoreURL: target, ZCodeURL: zcodeURL, ZCodeKey: os.Getenv("WB2A_ZCODE_KEY"), ZCodeControlURL: zcodeControlURL, QoderURL: qoderURL, QoderKey: os.Getenv("WB2A_QODER_KEY"), QoderControlURL: qoderControlURL, OpenCodeURL: opencodeURL, OpenCodeKey: os.Getenv("WB2A_OPENCODE_KEY"), AdminKey: keys.AdminKey, APIKey: keys.APIKey, BridgeKey: keys.BridgeKey, PublicOrigin: os.Getenv("WB2A_PUBLIC_ORIGIN"), TrustedProxyCIDRs: os.Getenv("WB2A_TRUSTED_PROXY_CIDRS"), RouteFile: os.Getenv("WB2A_ROUTE_FILE"), RequireHTTPS: os.Getenv("WB2A_REQUIRE_HTTPS") == "1"}, listen, nil
+	return Config{CoreURL: target, ZCodeURL: zcodeURL, ZCodeKey: os.Getenv("WB2A_ZCODE_KEY"), ZCodeControlURL: zcodeControlURL, QoderURL: qoderURL, QoderKey: os.Getenv("WB2A_QODER_KEY"), QoderControlURL: qoderControlURL, OpenCodeURL: opencodeURL, OpenCodeKey: os.Getenv("WB2A_OPENCODE_KEY"), CCRURL: ccrURL, CCRTokenFile: os.Getenv("WB2A_CCR_TOKEN_FILE"), AutoClawURL: autoclawURL, AutoClawKey: os.Getenv("WB2A_AUTOCLAW_KEY"), TraeURL: traeURL, TraeKey: os.Getenv("WB2A_TRAE_KEY"), AdminKey: keys.AdminKey, APIKey: keys.APIKey, BridgeKey: keys.BridgeKey, PublicOrigin: os.Getenv("WB2A_PUBLIC_ORIGIN"), TrustedProxyCIDRs: os.Getenv("WB2A_TRUSTED_PROXY_CIDRS"), RouteFile: os.Getenv("WB2A_ROUTE_FILE"), RequireHTTPS: os.Getenv("WB2A_REQUIRE_HTTPS") == "1"}, listen, nil
 }
 func httpsExposure(listen, publicOrigin string, requireHTTPS bool) (string, error) {
 	host := listen

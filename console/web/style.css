@@ -23,19 +23,19 @@
  --focus:#3a2bc4;
  --focus-dark:#8ee3ff;
  --prism:linear-gradient(135deg,#5b4bf0 0%,#7c4bec 52%,#0a7f96 100%);
- /* 四束光 = 四条通道，全站唯一取色处：一条通道一束色，色值只在这里定义一次。
+ /* 五束光 = 五条通道，全站唯一取色处：一条通道一束色，色值只在这里定义一次。
     --ch 是本色（描边/色点/色带），--ch-ink 是浅色底上的文字版，--ch-wash 是极浅底。
-    文字版全部实测 ≥4.5:1（在各自 wash 上：靛 7.40 / 青 5.45 / 紫罗兰 6.66 / 玫红 5.28），
+    文字版全部实测 ≥4.5:1（在各自 wash 上：靛 7.40 / 青 5.45 / 紫罗兰 6.66 / 玫红 5.28 / 琥珀 5.32），
     本色只做图形不做正文。 */
- --ch-workbuddy:#4f52d6;--ch-zcode:#0a7f96;--ch-qoder:#7a3fc4;--ch-opencode:#c4356f;
- --ch-workbuddy-ink:#3d40a8;--ch-zcode-ink:#076b80;--ch-qoder-ink:#6a36ab;--ch-opencode-ink:#b02f63;
- --ch-workbuddy-wash:#eef0fa;--ch-zcode-wash:#e6f4f7;--ch-qoder-wash:#f2ecfb;--ch-opencode-wash:#fbeaf1;
+ --ch-workbuddy:#4f52d6;--ch-zcode:#0a7f96;--ch-qoder:#7a3fc4;--ch-opencode:#c4356f;--ch-autoclaw:#8a5a00;
+ --ch-workbuddy-ink:#3d40a8;--ch-zcode-ink:#076b80;--ch-qoder-ink:#6a36ab;--ch-opencode-ink:#b02f63;--ch-autoclaw-ink:#6e4700;
+ --ch-workbuddy-wash:#eef0fa;--ch-zcode-wash:#e6f4f7;--ch-qoder-wash:#f2ecfb;--ch-opencode-wash:#fbeaf1;--ch-autoclaw-wash:#faf3e2;
  /* --ch-lit 是暗底（机架面）上的文字版，同样逐个实测过 4.5:1。 */
- --ch-workbuddy-lit:#8f92ff;--ch-zcode-lit:#4fd6e8;--ch-qoder-lit:#b78cf5;--ch-opencode-lit:#ff8fb8;
- /* 谱线按色相排（靛→紫罗兰→青→玫红），不是 usageChannelOrder 的通道顺序：
-    隔色相邻会断成四段色条，顺色相才读成一道连续的光。列表顺序仍以通道为准。 */
- --spectrum:linear-gradient(90deg,var(--ch-workbuddy) 0%,var(--ch-qoder) 34%,var(--ch-zcode) 67%,var(--ch-opencode) 100%);
- --spectrum-v:linear-gradient(180deg,var(--ch-workbuddy) 0%,var(--ch-qoder) 34%,var(--ch-zcode) 67%,var(--ch-opencode) 100%);
+ --ch-workbuddy-lit:#8f92ff;--ch-zcode-lit:#4fd6e8;--ch-qoder-lit:#b78cf5;--ch-opencode-lit:#ff8fb8;--ch-autoclaw-lit:#e8b45a;
+ /* 谱线按色相排（靛→紫罗兰→琥珀→青→玫红），不是 usageChannelOrder 的通道顺序：
+    隔色相邻会断成五段色条，顺色相才读成一道连续的光。列表顺序仍以通道为准。 */
+ --spectrum:linear-gradient(90deg,var(--ch-workbuddy) 0%,var(--ch-qoder) 27%,var(--ch-autoclaw) 45%,var(--ch-zcode) 72%,var(--ch-opencode) 100%);
+ --spectrum-v:linear-gradient(180deg,var(--ch-workbuddy) 0%,var(--ch-qoder) 27%,var(--ch-autoclaw) 45%,var(--ch-zcode) 72%,var(--ch-opencode) 100%);
  --sidebar:#0f1120;
  --sidebar-hi:#262b50;
  --sidebar-ink:#d3d6ee;
@@ -98,6 +98,7 @@ code{font-family:var(--font-mono);font-size:.92em}
 .ch-zcode{--ch:var(--ch-zcode);--ch-ink:var(--ch-zcode-ink);--ch-wash:var(--ch-zcode-wash);--ch-lit:var(--ch-zcode-lit)}
 .ch-qoder{--ch:var(--ch-qoder);--ch-ink:var(--ch-qoder-ink);--ch-wash:var(--ch-qoder-wash);--ch-lit:var(--ch-qoder-lit)}
 .ch-opencode{--ch:var(--ch-opencode);--ch-ink:var(--ch-opencode-ink);--ch-wash:var(--ch-opencode-wash);--ch-lit:var(--ch-opencode-lit)}
+.ch-autoclaw{--ch:var(--ch-autoclaw);--ch-ink:var(--ch-autoclaw-ink);--ch-wash:var(--ch-autoclaw-wash);--ch-lit:var(--ch-autoclaw-lit)}
 /* 通道名单元格：色点由 ::before 画，不另起 <span>——文字仍是这个单元格的唯一子节点，
    读屏念出来也只有通道名，不会多出一段无意义的点。 */
 .ch-name{color:var(--ch-ink);font-weight:650;white-space:nowrap}
@@ -405,11 +406,11 @@ textarea{width:100%;resize:vertical;min-height:64px;max-height:180px;display:blo
 .access-panel,.chat-panel{min-width:0}
 .badge-row{display:flex;gap:6px;flex-wrap:wrap}
 
-/* ---------- 通道子页签（WorkBuddy / Zcode / Qoder / OpenCode） ---------- */
-.zcode-tabs,.qoder-tabs,.opencode-tabs,.workbuddy-tabs{display:flex;gap:4px;flex-wrap:wrap;margin-bottom:18px;border-bottom:1px solid var(--line)}
-.zcode-tab,.qoder-tab,.opencode-tab,.workbuddy-tab{background:none;color:var(--muted);font-size:13px;padding:11px 16px;border-radius:var(--radius-sm) var(--radius-sm) 0 0;margin-bottom:-1px;border-bottom:2px solid transparent;transition:color .14s,border-color .14s,background .14s}
-.zcode-tab:hover,.qoder-tab:hover,.opencode-tab:hover,.workbuddy-tab:hover{color:var(--ink);background:var(--bg-soft)}
-.zcode-tab.active,.qoder-tab.active,.opencode-tab.active,.workbuddy-tab.active{color:var(--accent-strong);border-bottom-color:var(--accent);font-weight:650}
+/* ---------- 通道子页签（WorkBuddy / Zcode / Qoder / OpenCode / AutoClaw / Trae） ---------- */
+.zcode-tabs,.qoder-tabs,.opencode-tabs,.workbuddy-tabs,.autoclaw-tabs,.trae-tabs{display:flex;gap:4px;flex-wrap:wrap;margin-bottom:18px;border-bottom:1px solid var(--line)}
+.zcode-tab,.qoder-tab,.opencode-tab,.workbuddy-tab,.autoclaw-tab,.trae-tab{background:none;color:var(--muted);font-size:13px;padding:11px 16px;border-radius:var(--radius-sm) var(--radius-sm) 0 0;margin-bottom:-1px;border-bottom:2px solid transparent;transition:color .14s,border-color .14s,background .14s}
+.zcode-tab:hover,.qoder-tab:hover,.opencode-tab:hover,.workbuddy-tab:hover,.autoclaw-tab:hover,.trae-tab:hover{color:var(--ink);background:var(--bg-soft)}
+.zcode-tab.active,.qoder-tab.active,.opencode-tab.active,.workbuddy-tab.active,.autoclaw-tab.active,.trae-tab.active{color:var(--accent-strong);border-bottom-color:var(--accent);font-weight:650}
 
 /* ---------- 锁定提示 ---------- */
 .pin-banner{margin:12px 0;padding:12px 14px;border:1px solid var(--line);background:var(--bg-soft);border-radius:var(--radius);display:flex;flex-direction:column;gap:8px}

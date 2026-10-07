@@ -1,0 +1,30 @@
+# Optional AutoClaw free-model sidecar: docker compose -f docker-compose.yml -f deploy/compose.autoclaw.yml up -d
+# The container runs the autoclaw2api Python bridge (bridge.py + check.py). It joins console's
+# network namespace (network_mode: service:console) and listens on 127.0.0.1:7865 only, so its
+# API is reachable from console but never from the Compose network or the host. Console injects
+# WB2A_AUTOCLAW_KEY as the Bearer token and routes public /v1 requests whose model starts with
+# "autoclaw-" to the sidecar; everything else stays on core. The console AutoClaw tab drives the
+# bridge's /api/* control endpoints (SMS login, Google OAuth import, account toggle/delete,
+# maintenance, credits, checkin) through the console admin session.
+services:
+  autoclaw-proxy:
+    build:
+      context: .
+      dockerfile: deploy/autoclaw.Dockerfile
+    platform: linux/amd64
+    restart: unless-stopped
+    network_mode: service:console
+    environment:
+      TZ: Asia/Shanghai
+      # 数据面密钥（console -> autoclaw2api:7865 的 Bearer）；为空时 bridge 视为免鉴权。
+      WB2A_AUTOCLAW_KEY: ${WB2A_AUTOCLAW_KEY:-}
+    volumes:
+      - ./runtime/autoclaw:/data
+
+  console:
+    environment:
+      WB2A_AUTOCLAW_URL: http://127.0.0.1:7865
+      WB2A_AUTOCLAW_KEY: ${WB2A_AUTOCLAW_KEY:-}
+    depends_on:
+      core:
+        condition: service_started
