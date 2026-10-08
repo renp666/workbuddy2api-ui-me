@@ -127,9 +127,9 @@ func (h *server) modelGate(ctx context.Context, model string) bool {
 	if h.routes == nil || model == "" {
 		return true
 	}
-	// opencode/autoclaw/trae 是免费通道：不采集倍率、不参与开关（需求明确排除），
+	// opencode/autoclaw/trae/raccoon 是免费通道：不采集倍率、不参与开关（需求明确排除），
 	// 与前端 channelModelRows 的 switchable=false 保持同一口径。
-	if strings.HasPrefix(model, opencodeModelPrefix) || strings.HasPrefix(model, autoclawModelPrefix) || strings.HasPrefix(model, traeModelPrefix) {
+	if strings.HasPrefix(model, opencodeModelPrefix) || strings.HasPrefix(model, autoclawModelPrefix) || strings.HasPrefix(model, traeModelPrefix) || strings.HasPrefix(model, raccoonModelPrefix) {
 		return true
 	}
 	if enabled, has := h.routes.modelOverride(model); has {

@@ -56,6 +56,10 @@ type Config struct {
 	TraeURL *url.URL
 	// TraeKey 是转发到 TraeURL 时替换 Authorization 的桥接密钥（sidecar 的 TRAE_API_KEY）。
 	TraeKey string
+	// RaccoonURL 是可选的 raccoon2api sidecar 容器地址（raccoon-* 模型上游）；nil 时不启用分流。
+	RaccoonURL *url.URL
+	// RaccoonKey 是转发到 RaccoonURL 时替换 Authorization 的桥接密钥（sidecar 的 RACCOON_API_KEY）。
+	RaccoonKey string
 	// RouteFile 是 console 自己可写的路由别名配置文件路径（容器内路径）。
 	// 为空时不启用别名功能，公共出口与现状完全一致。
 	RouteFile    string
@@ -140,6 +144,9 @@ func NewServer(cfg Config) (http.Handler, error) {
 	if cfg.TraeURL != nil && !validOriginURL(cfg.TraeURL) {
 		return nil, errors.New("WB2A_TRAE_URL 必须是无凭据、路径、查询和片段的 HTTP(S) 地址")
 	}
+	if cfg.RaccoonURL != nil && !validOriginURL(cfg.RaccoonURL) {
+		return nil, errors.New("WB2A_RACCOON_URL 必须是无凭据、路径、查询和片段的 HTTP(S) 地址")
+	}
 	if !ValidateAdminOrigin(cfg.PublicOrigin) {
 		return nil, errors.New("WB2A_PUBLIC_ORIGIN 必须是有效的 HTTP(S) origin")
 	}
@@ -184,6 +191,11 @@ func NewServer(cfg Config) (http.Handler, error) {
 		traeTarget.Path = ""
 		cfg.TraeURL = &traeTarget
 	}
+	if cfg.RaccoonURL != nil {
+		raccoonTarget := *cfg.RaccoonURL
+		raccoonTarget.Path = ""
+		cfg.RaccoonURL = &raccoonTarget
+	}
 	cfg.PublicOrigin = strings.TrimRight(cfg.PublicOrigin, "/")
 	var trusted []*net.IPNet
 	for _, raw := range strings.Split(cfg.TrustedProxyCIDRs, ",") {
@@ -225,7 +237,7 @@ func NewServer(cfg Config) (http.Handler, error) {
 	// 旁路通道靠它按前缀分流，路由别名与 auto 虚拟模型也只在它内部生效。
 	// 只配了 core 的部署（RouteFile 非空但旁路 URL 全空）同样要挂上，
 	// 否则别名改写与 /v1/models 的 auto 条目会静默失效。
-	if cfg.ZCodeURL != nil || cfg.QoderURL != nil || cfg.OpenCodeURL != nil || cfg.AutoClawURL != nil || cfg.TraeURL != nil || cfg.RouteFile != "" {
+	if cfg.ZCodeURL != nil || cfg.QoderURL != nil || cfg.OpenCodeURL != nil || cfg.AutoClawURL != nil || cfg.TraeURL != nil || cfg.RaccoonURL != nil || cfg.RouteFile != "" {
 		routed := h.publicRouter(public)
 		h.mux.Handle("/v1/", routed)
 	} else {
@@ -240,7 +252,7 @@ func NewServer(cfg Config) (http.Handler, error) {
 			adminError(w, 503, err.Error())
 			return
 		}
-		writeJSON(w, 200, map[string]any{"csrf": sessionFrom(r).csrf, "global_enabled": info.GlobalEnabled, "zcode_enabled": cfg.ZCodeURL != nil, "zcode_control": cfg.ZCodeControlURL != nil, "qoder_enabled": cfg.QoderURL != nil, "qoder_control": cfg.QoderControlURL != nil, "opencode_enabled": cfg.OpenCodeURL != nil, "ccr_enabled": cfg.CCRURL != nil, "autoclaw_enabled": cfg.AutoClawURL != nil, "trae_enabled": cfg.TraeURL != nil})
+		writeJSON(w, 200, map[string]any{"csrf": sessionFrom(r).csrf, "global_enabled": info.GlobalEnabled, "zcode_enabled": cfg.ZCodeURL != nil, "zcode_control": cfg.ZCodeControlURL != nil, "qoder_enabled": cfg.QoderURL != nil, "qoder_control": cfg.QoderControlURL != nil, "opencode_enabled": cfg.OpenCodeURL != nil, "ccr_enabled": cfg.CCRURL != nil, "autoclaw_enabled": cfg.AutoClawURL != nil, "trae_enabled": cfg.TraeURL != nil, "raccoon_enabled": cfg.RaccoonURL != nil})
 	}))
 	h.mux.HandleFunc("POST /admin/logout", h.withAdmin(h.adminLogout))
 	h.mux.HandleFunc("GET /admin/zcode", h.withAdmin(h.adminZcodeStatus))
@@ -293,6 +305,15 @@ func NewServer(cfg Config) (http.Handler, error) {
 	// 路径必须是 /authorize（端口任意），否则 SSR 返回空数据并显示登录失败。所以
 	// 实际回调落在 console 根路径上，与 /admin/trae/authorize 共用同一处理器。
 	h.mux.HandleFunc("GET /authorize", h.adminTraeAuthorize)
+	// Raccoon 页签：状态/测试对话 + 凭证导入与账号控制链路（Docker 下无网页登录，只能粘贴凭证）。
+	h.mux.HandleFunc("GET /admin/raccoon", h.withAdmin(h.adminRaccoonStatus))
+	h.mux.HandleFunc("POST /admin/raccoon/chat", h.withAdmin(h.adminRaccoonChat))
+	h.mux.HandleFunc("POST /admin/raccoon/accounts/import", h.withAdmin(h.adminRaccoonImport))
+	h.mux.HandleFunc("POST /admin/raccoon/accounts/delete", h.withAdmin(h.adminRaccoonAccountsDelete))
+	h.mux.HandleFunc("POST /admin/raccoon/accounts/patch", h.withAdmin(h.adminRaccoonAccountsPatch))
+	h.mux.HandleFunc("POST /admin/raccoon/accounts/refresh", h.withAdmin(h.adminRaccoonAccountsRefresh))
+	h.mux.HandleFunc("GET /admin/raccoon/credits", h.withAdmin(h.adminRaccoonCredits))
+	h.mux.HandleFunc("GET /admin/raccoon/usage", h.withAdmin(h.adminRaccoonUsage))
 	h.mux.HandleFunc("GET /admin/ccr", h.withAdmin(h.adminCCRStatus))
 	h.mux.HandleFunc("POST /admin/ccr/gateway", h.withAdmin(h.adminCCRGateway))
 	h.mux.HandleFunc("GET /admin/ccr/link", h.withAdmin(h.adminCCRLink))
@@ -550,7 +571,7 @@ func (h *server) adminLogin(w http.ResponseWriter, r *http.Request) {
 	http.SetCookie(w, &http.Cookie{Name: "wb2a_admin", Value: id, Path: "/admin", HttpOnly: true, Secure: r.TLS != nil || strings.HasPrefix(h.cfg.PublicOrigin, "https://"), SameSite: http.SameSiteStrictMode, MaxAge: 8 * 3600})
 	// Authentication remains available during a core outage; actions still fail closed.
 	info, _ := h.coreInfo(r.Context())
-	writeJSON(w, 200, map[string]any{"csrf": csrf, "global_enabled": info.GlobalEnabled, "zcode_enabled": h.cfg.ZCodeURL != nil, "zcode_control": h.cfg.ZCodeControlURL != nil, "qoder_enabled": h.cfg.QoderURL != nil, "qoder_control": h.cfg.QoderControlURL != nil, "opencode_enabled": h.cfg.OpenCodeURL != nil, "ccr_enabled": h.cfg.CCRURL != nil, "autoclaw_enabled": h.cfg.AutoClawURL != nil, "trae_enabled": h.cfg.TraeURL != nil})
+	writeJSON(w, 200, map[string]any{"csrf": csrf, "global_enabled": info.GlobalEnabled, "zcode_enabled": h.cfg.ZCodeURL != nil, "zcode_control": h.cfg.ZCodeControlURL != nil, "qoder_enabled": h.cfg.QoderURL != nil, "qoder_control": h.cfg.QoderControlURL != nil, "opencode_enabled": h.cfg.OpenCodeURL != nil, "ccr_enabled": h.cfg.CCRURL != nil, "autoclaw_enabled": h.cfg.AutoClawURL != nil, "trae_enabled": h.cfg.TraeURL != nil, "raccoon_enabled": h.cfg.RaccoonURL != nil})
 }
 func (h *server) adminLogout(w http.ResponseWriter, r *http.Request) {
 	h.mu.Lock()

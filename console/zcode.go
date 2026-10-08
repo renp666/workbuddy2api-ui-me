@@ -53,9 +53,10 @@ func (h *server) zcodeProxy() *httputil.ReverseProxy {
 // publicRouter dispatches the public /v1/* surface: glm-* model chat/messages/responses requests
 // go to zcode-proxy, qoder-* model requests go to qoder-proxy, opencode-* model requests go to
 // the opencode sidecar, autoclaw-* model requests go to the autoclaw2api sidecar,
-// trae-* model requests go to the trae2api sidecar, everything else stays on core.
+// trae-* model requests go to the trae2api sidecar, raccoon-* model requests go to
+// the raccoon2api sidecar, everything else stays on core.
 func (h *server) publicRouter(core *httputil.ReverseProxy) http.HandlerFunc {
-	var zcode, qoder, opencode, autoclaw, trae *httputil.ReverseProxy
+	var zcode, qoder, opencode, autoclaw, trae, raccoon *httputil.ReverseProxy
 	if h.cfg.ZCodeURL != nil {
 		zcode = h.zcodeProxy()
 	}
@@ -70,6 +71,9 @@ func (h *server) publicRouter(core *httputil.ReverseProxy) http.HandlerFunc {
 	}
 	if h.cfg.TraeURL != nil {
 		trae = h.traeProxy()
+	}
+	if h.cfg.RaccoonURL != nil {
+		raccoon = h.raccoonProxy()
 	}
 	return func(w http.ResponseWriter, r *http.Request) {
 		switch r.Method + " " + r.URL.Path {
@@ -170,6 +174,18 @@ func (h *server) publicRouter(core *httputil.ReverseProxy) http.HandlerFunc {
 				// trae 上报同样保留公共前缀模型名，便于与 zcode/core 区分通道。
 				capture := h.newUsageCapture(w, r, envelope.Model, "trae", envelope.Stream)
 				trae.ServeHTTP(capture, r)
+				h.finishUsageCapture(capture)
+				return
+			}
+			if raccoon != nil && strings.HasPrefix(envelope.Model, raccoonModelPrefix) {
+				modified := stripRaccoonModelPrefix(body)
+				r.Body = io.NopCloser(bytes.NewReader(modified))
+				r.ContentLength = int64(len(modified))
+				r.TransferEncoding = nil
+				r.Header.Del("Content-Length")
+				// raccoon 上报同样保留公共前缀模型名，便于与 zcode/core 区分通道。
+				capture := h.newUsageCapture(w, r, envelope.Model, "raccoon", envelope.Stream)
+				raccoon.ServeHTTP(capture, r)
 				h.finishUsageCapture(capture)
 				return
 			}
@@ -284,6 +300,7 @@ func (h *server) mergedModels(w http.ResponseWriter, r *http.Request, core *http
 		opencodeRaw  []json.RawMessage
 		autoclawRaw  []json.RawMessage
 		traeRaw      []json.RawMessage
+		raccoonRaw   []json.RawMessage
 		zcodePlan    string
 	)
 	wg.Add(1)
@@ -457,6 +474,42 @@ func (h *server) mergedModels(w http.ResponseWriter, r *http.Request, core *http
 			}
 		}()
 	}
+	if h.cfg.RaccoonURL != nil {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			raccoonURL := *h.cfg.RaccoonURL
+			raccoonURL.Path = "/v1/models"
+			raccoonReq, err := http.NewRequestWithContext(r.Context(), "GET", raccoonURL.String(), nil)
+			if err != nil {
+				return
+			}
+			// raccoon2api guards /v1/models with the bridge key.
+			if h.cfg.RaccoonKey != "" {
+				raccoonReq.Header.Set("Authorization", "Bearer "+h.cfg.RaccoonKey)
+			}
+			list, _ := h.fetchModels(raccoonReq)
+			for _, item := range list {
+				// Add routing prefix so public /v1/models entries match the raccoon-* dispatch.
+				var entry map[string]any
+				if json.Unmarshal(item, &entry) != nil || entry == nil {
+					continue
+				}
+				id, ok := entry["id"].(string)
+				if !ok || id == "" {
+					continue
+				}
+				if !strings.HasPrefix(id, raccoonModelPrefix) {
+					entry["id"] = raccoonModelPrefix + id
+				}
+				tagged, err := json.Marshal(entry)
+				if err != nil {
+					continue
+				}
+				raccoonRaw = append(raccoonRaw, tagModelRealm(tagged, "raccoon"))
+			}
+		}()
+	}
 	wg.Wait()
 	zcodeRaw = filterZcodeModels(zcodeRaw, zcodePlan)
 	coreList, ok := parseModelList(coreResp)
@@ -472,7 +525,7 @@ func (h *server) mergedModels(w http.ResponseWriter, r *http.Request, core *http
 		w.Write(coreResp.body)
 		return
 	}
-	totalLen := len(coreList) + len(zcodeRaw) + len(qoderRaw) + len(opencodeRaw) + len(autoclawRaw) + len(traeRaw)
+	totalLen := len(coreList) + len(zcodeRaw) + len(qoderRaw) + len(opencodeRaw) + len(autoclawRaw) + len(traeRaw) + len(raccoonRaw)
 	seen := make(map[string]bool, totalLen)
 	merged := make([]json.RawMessage, 0, totalLen)
 	all := append(append([]json.RawMessage{}, coreList...), zcodeRaw...)
@@ -480,6 +533,7 @@ func (h *server) mergedModels(w http.ResponseWriter, r *http.Request, core *http
 	all = append(all, opencodeRaw...)
 	all = append(all, autoclawRaw...)
 	all = append(all, traeRaw...)
+	all = append(all, raccoonRaw...)
 	// 用刚拿到的 core 目录刷新倍率缓存，省掉 modelGate 判定的一次重复抓取。
 	if h.credits != nil {
 		h.credits.store(creditRulesFromList(coreList))

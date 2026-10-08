@@ -28,11 +28,12 @@ const (
 	channelOpenCode routeChannel = "opencode"
 	channelAutoClaw routeChannel = "autoclaw"
 	channelTrae     routeChannel = "trae"
+	channelRaccoon  routeChannel = "raccoon"
 )
 
 // routeChannelOrder 是页面展示与目录抓取的固定通道顺序：core 在前，
 // 让「回退核心通道」的默认目标在界面上排在最前面。
-var routeChannelOrder = []routeChannel{channelCore, channelGLM, channelQoder, channelOpenCode, channelAutoClaw, channelTrae}
+var routeChannelOrder = []routeChannel{channelCore, channelGLM, channelQoder, channelOpenCode, channelAutoClaw, channelTrae, channelRaccoon}
 
 // autoModelName 是 console 自建的虚拟模型名：不在任何上游目录里，由 console
 // 在请求时按探测结论挑一条最优链路。名字带 gateway- 前缀，是为了和各通道可能
@@ -89,6 +90,8 @@ func (c routeChannel) prefix() string {
 		return autoclawModelPrefix
 	case channelTrae:
 		return traeModelPrefix
+	case channelRaccoon:
+		return raccoonModelPrefix
 	}
 	return ""
 }
@@ -127,6 +130,8 @@ func (c routeChannel) realm(model string) string {
 		return "autoclaw"
 	case channelTrae:
 		return "trae"
+	case channelRaccoon:
+		return "raccoon"
 	}
 	if strings.HasPrefix(model, "global:") {
 		return "global"
@@ -182,7 +187,7 @@ const routeBodyLimit = 256 << 10
 
 // reservedAliasPrefixes 是别名不得占用的前缀：各旁路通道的公共前缀加上 core 的
 // 两个命名空间。别名解析发生在前缀分流之前，占用这些前缀会静默遮蔽同名真实模型。
-var reservedAliasPrefixes = []string{zcodeModelPrefix, qoderModelPrefix, opencodeModelPrefix, autoclawModelPrefix, traeModelPrefix, "cn:", "global:"}
+var reservedAliasPrefixes = []string{zcodeModelPrefix, qoderModelPrefix, opencodeModelPrefix, autoclawModelPrefix, traeModelPrefix, raccoonModelPrefix, "cn:", "global:"}
 
 // validateRouteEntries 校验整份配置，返回第一条可读的错误文案直接给页面用。
 // 校验失败一律拒绝写入，不做「尽力而为的部分生效」。
@@ -209,9 +214,9 @@ func validateRouteEntries(models []routeEntry) error {
 			}
 		}
 		switch entry.Channel {
-		case channelCore, channelGLM, channelQoder, channelOpenCode, channelAutoClaw, channelTrae:
+		case channelCore, channelGLM, channelQoder, channelOpenCode, channelAutoClaw, channelTrae, channelRaccoon:
 		default:
-			return fmt.Errorf("别名 %q 的通道必须是 core、glm、qoder、opencode、autoclaw 或 trae", alias)
+			return fmt.Errorf("别名 %q 的通道必须是 core、glm、qoder、opencode、autoclaw、trae 或 raccoon", alias)
 		}
 		model := strings.TrimSpace(entry.Model)
 		if !validRouteName(model, 128, routeModelChars) {
@@ -633,7 +638,7 @@ func (h *server) collectProbeCandidates(ctx context.Context) (map[routeChannel][
 			}
 		}
 	}
-	for _, channel := range []routeChannel{channelCore, channelGLM, channelQoder, channelAutoClaw, channelTrae} {
+	for _, channel := range []routeChannel{channelCore, channelGLM, channelQoder, channelAutoClaw, channelTrae, channelRaccoon} {
 		results := h.probe.channelResults(channel)
 		if len(results) == 0 {
 			continue
@@ -958,6 +963,8 @@ func (h *server) channelEnabled(c routeChannel) bool {
 		return h.cfg.AutoClawURL != nil
 	case channelTrae:
 		return h.cfg.TraeURL != nil
+	case channelRaccoon:
+		return h.cfg.RaccoonURL != nil
 	}
 	return false
 }
@@ -976,6 +983,8 @@ func (h *server) channelUpstream(c routeChannel) (*url.URL, string) {
 		return h.cfg.AutoClawURL, h.cfg.AutoClawKey
 	case channelTrae:
 		return h.cfg.TraeURL, h.cfg.TraeKey
+	case channelRaccoon:
+		return h.cfg.RaccoonURL, h.cfg.RaccoonKey
 	}
 	return h.cfg.CoreURL, h.cfg.APIKey
 }

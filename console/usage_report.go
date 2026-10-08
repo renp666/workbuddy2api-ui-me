@@ -121,6 +121,8 @@ func (h *server) newUsageCapture(w http.ResponseWriter, r *http.Request, model, 
 		e.Account = "AutoClaw 通道"
 	case "trae":
 		e.Account = "Trae 通道"
+	case "raccoon":
+		e.Account = "Raccoon 通道"
 	default:
 		e.Account = "GLM 通道"
 	}

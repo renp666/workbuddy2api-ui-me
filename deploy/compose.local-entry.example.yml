@@ -28,6 +28,8 @@ include:
     project_directory: data
   - path: deploy/compose.trae.yml
     project_directory: data
+  - path: deploy/compose.raccoon.yml
+    project_directory: data
 
 services:
   core:

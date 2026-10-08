@@ -352,7 +352,7 @@ func probeFailResult(category, note string, durationMs int) map[string]any {
 }
 
 // probeableChannels 是手工探测覆盖的通道；opencode 由 OW Bridge 自带探测，排除。
-var probeableChannels = []routeChannel{channelCore, channelGLM, channelQoder, channelAutoClaw, channelTrae}
+var probeableChannels = []routeChannel{channelCore, channelGLM, channelQoder, channelAutoClaw, channelTrae, channelRaccoon}
 
 // adminProbeStart 触发一轮手工探测。body.channels 缺省为全部可探测通道。
 func (h *server) adminProbeStart(w http.ResponseWriter, r *http.Request) {
@@ -367,8 +367,8 @@ func (h *server) adminProbeStart(w http.ResponseWriter, r *http.Request) {
 		wanted = nil
 		for _, raw := range body.Channels {
 			c := routeChannel(strings.TrimSpace(raw))
-			if c != channelCore && c != channelGLM && c != channelQoder && c != channelAutoClaw && c != channelTrae {
-				adminError(w, 400, "探测通道只能是 core、glm、qoder、autoclaw 或 trae")
+			if c != channelCore && c != channelGLM && c != channelQoder && c != channelAutoClaw && c != channelTrae && c != channelRaccoon {
+				adminError(w, 400, "探测通道只能是 core、glm、qoder、autoclaw、trae 或 raccoon")
 				return
 			}
 			wanted = append(wanted, c)
