@@ -2540,8 +2540,9 @@ test('probe start rejects while a run is in flight and keeps the old conclusions
   assert.equal(get('core-models-body').children[0].children[4].textContent,'40.0 tok/s','rejected start wiped cached conclusions');
 });
 
-function overviewFixture(items,zcodeStatus) {
+function overviewFixture(items,zcodeStatus,extraStatuses) {
   const response=body=>({ok:true,status:200,json:async()=>body});
+  const extras=extraStatuses||{};
   const {ctx,get}=taskFixture((url)=>{
     if(url==='/admin/session')return new Promise(()=>{});
     if(url==='/admin/status')return response({total:1,healthy:1,cooling:0,disabled:0,accounts:[]});
@@ -2551,6 +2552,8 @@ function overviewFixture(items,zcodeStatus) {
     if(url==='/admin/model-switch')return response({enabled:false,overrides:{}});
     if(url==='/admin/probe')return response({running:false,done:0,total:0,channels:{}});
     if(url==='/admin/zcode')return response(zcodeStatus);
+    if(url==='/admin/autoclaw'&&extras.autoclaw)return response(extras.autoclaw);
+    if(url==='/admin/trae'&&extras.trae)return response(extras.trae);
     throw new Error('unexpected '+url);
   });
   get('realm').querySelector=()=>({disabled:false});
@@ -2563,23 +2566,32 @@ test('overview aggregates every enabled channel and filters the metric cards by 
     {ts:1001,uid:'zcode',account:'GLM 通道',model:'glm-5.3-flash',mode:'sync',prompt_tokens:10,completion_tokens:20,credit:null},
     {ts:1002,uid:'qoder',account:'Qoder 通道',model:'qoder-x',mode:'stream',prompt_tokens:-1,completion_tokens:5,credit:0},
     {ts:1003,uid:'opencode',account:'OpenCode 通道',model:'opencode-y',mode:'sync',prompt_tokens:3,completion_tokens:4,credit:2},
+    {ts:1004,uid:'autoclaw',account:'AutoClaw 通道',model:'autoclaw-a',mode:'sync',prompt_tokens:6,completion_tokens:7,credit:0},
+    {ts:1005,uid:'trae',account:'Trae 通道',model:'trae-b',mode:'stream',prompt_tokens:8,completion_tokens:9,credit:0},
   ];
-  const {ctx,get}=overviewFixture(items,{enabled:true,reachable:true,model_count:3});
-  await vm.runInContext("signedIn({csrf:'c',global_enabled:true,zcode_enabled:true,qoder_enabled:true,opencode_enabled:true})",ctx);
-  // 概览的旁路状态只读页签缓存：先访问一次 Zcode 页签，再刷新概览，验证「在线/3 模型」口径。
+  const {ctx,get}=overviewFixture(items,{enabled:true,reachable:true,model_count:3},{
+    autoclaw:{enabled:true,reachable:true,model_count:2,health:{healthy:1,total:2},models:[{id:'autoclaw-a'},{id:'autoclaw-c'}]},
+    trae:{enabled:true,reachable:true,model_count:2,accounts:[{uid:'t1',enabled:true},{uid:'t2',enabled:false}],models:[{id:'trae-b'},{id:'trae-d'}]},
+  });
+  await vm.runInContext("signedIn({csrf:'c',global_enabled:true,zcode_enabled:true,qoder_enabled:true,opencode_enabled:true,autoclaw_enabled:true,trae_enabled:true})",ctx);
+  // 概览的旁路状态只读页签缓存：先访问一次各旁路页签，再刷新概览，验证「在线/N 模型」口径。
   await vm.runInContext('loadZcode()',ctx);
+  await vm.runInContext('loadAutoClaw()',ctx);
+  await vm.runInContext('loadTrae()',ctx);
   await vm.runInContext('loadOverview()',ctx);
   await new Promise(r=>setImmediate(r));
   const rows=get('overview-channels-body').children;
   const text=td=>td.children.length?td.children[0].textContent:td.textContent;
-  assert.deepEqual(rows.map(tr=>tr.children[0].textContent),['WorkBuddy','GLM（Zcode）','Qoder','OpenCode'],'channel overview rows missing or misordered');
+  assert.deepEqual(rows.map(tr=>tr.children[0].textContent),['WorkBuddy','GLM（Zcode）','Qoder','OpenCode','AutoClaw','Trae'],'channel overview rows missing or misordered');
   assert.deepEqual(rows[0].children.map(text),['WorkBuddy','运行中','1','1','100','200','1.5']);
   // 旁路状态来自页签缓存：未访问过的通道如实标「未加载」，不伪造在线。
   assert.deepEqual(rows[1].children.map(text),['GLM（Zcode）','在线','3','1','10','20','—'],'zcode missing credit must show dash, not 0');
   assert.deepEqual(rows[2].children.map(text),['Qoder','未加载','—','1','—','5','0'],'qoder 输入整组缺失显示「—」，输出与真实 0 积分保留');
   assert.match(text(rows[3].children[1]),/不可达|未加载/);
-  assert.equal(get('overview-usage-calls').textContent,'4');
-  assert.equal(get('overview-usage-tokens').textContent,'342');
+  assert.deepEqual(rows[4].children.map(text),['AutoClaw','在线','2','1','6','7','0'],'autoclaw 通道行口径不符');
+  assert.deepEqual(rows[5].children.map(text),['Trae','在线','2','1','8','9','0'],'trae 通道行口径不符');
+  assert.equal(get('overview-usage-calls').textContent,'6');
+  assert.equal(get('overview-usage-tokens').textContent,'372');
   assert.equal(get('overview-usage-credit').textContent,'3.5');
   assert.match(get('overview-usage-note').textContent,/1 条记录未回报输入 token/);
   assert.match(get('overview-usage-note').textContent,/1 条记录未回报积分扣费/);
@@ -2588,7 +2600,7 @@ test('overview aggregates every enabled channel and filters the metric cards by 
   assert.equal(get('overview-usage-calls').textContent,'1');
   assert.equal(get('overview-usage-tokens').textContent,'30');
   assert.equal(get('overview-usage-credit').textContent,'—','all-missing credit must not read as zero');
-  assert.equal(get('overview-channels-body').children.length,4,'channel table must stay full while metrics are filtered');
+  assert.equal(get('overview-channels-body').children.length,6,'channel table must stay full while metrics are filtered');
 });
 
 test('overview hides channels the deployment never enabled',async()=>{
@@ -2674,7 +2686,14 @@ test('overview page, probe buttons and the speed column exist in the page shell'
   assert.match(html,/id="overview-trend"[\s\S]*id="overview-trend-note"/,'daily trend chart missing');
   assert.match(html,/id="models-group-toggle"/,'model grouping toggle missing');
   assert.match(html,/id="overview-usage-channel"[\s\S]*id="overview-usage-range"/,'overview usage filters missing');
-  for(const id of ['probe-core','probe-zcode','probe-qoder','probe-autoclaw'])assert.ok(html.includes('id="'+id+'"'),'probe button '+id+' missing');
+  // 探测按钮的名单从 app.js 的 probeChannelNames 现读：先前这里写死四颗，
+  // Trae 接入时页面补了按钮、脚本补了监听，这条测试一直没去看第三处。
+  const js=readFileSync(__dirname+'/web/app.js','utf8');
+  const probeNames=objectKeysFrom(js,'probeChannelNames');
+  for(const name of probeNames){
+    assert.ok(html.includes('id="probe-'+name+'"'),'探测按钮 probe-'+name+' 不存在，脚本会给 undefined 绑事件');
+    assert.ok(html.includes('id="probe-'+name+'-progress"'),'探测进度行 probe-'+name+'-progress 不存在，renderProbeProgress 会读到 null');
+  }
   assert.ok(!html.includes('id="probe-opencode"'),'opencode must not get a manual probe button');
   // 允许表头带 class（数值列要挂 class="num" 才能和单元格同侧对齐），只认列名本身。
   assert.equal((html.match(/<th[^>]*>速度<\/th>/g)||[]).length,6,'every model table must carry the speed column');
@@ -2733,7 +2752,7 @@ test('changing page starts the new view at its own top', () => {
 test('页面级刷新按钮吸顶，落在网关状态左侧且只有当前页那一个可见', () => {
   const html=readFileSync(__dirname+'/web/index.html','utf8');
   const rail=html.match(/<header class="topbar">[\s\S]*?<\/header>/)[0];
-  const ids=['refresh','zcode-refresh','qoder-refresh','opencode-refresh','usage-refresh','routes-refresh'];
+  const ids=['refresh','zcode-refresh','qoder-refresh','opencode-refresh','ccr-refresh','autoclaw-refresh','trae-refresh','usage-refresh','routes-refresh'];
   const stateAt=rail.indexOf('id="service-state"');
   assert.ok(stateAt>0,'顶栏里找不到网关状态，无从判断左右');
   for(const id of ids){
@@ -2746,7 +2765,7 @@ test('页面级刷新按钮吸顶，落在网关状态左侧且只有当前页�
 
   const {ctx,get}=taskFixture(async()=>({ok:true,status:200,json:async()=>({}),headers:{get:()=>null}}));
   const visible=()=>ids.filter(id=>get(id).hidden===false);
-  for(const [view,id] of [['overview','refresh'],['zcode','zcode-refresh'],['qoder','qoder-refresh'],['opencode','opencode-refresh'],['usage','usage-refresh'],['routes','routes-refresh']]){
+  for(const [view,id] of [['overview','refresh'],['zcode','zcode-refresh'],['qoder','qoder-refresh'],['opencode','opencode-refresh'],['ccr','ccr-refresh'],['autoclaw','autoclaw-refresh'],['trae','trae-refresh'],['usage','usage-refresh'],['routes','routes-refresh']]){
     vm.runInContext(`showPage('${view}')`,ctx);
     assert.deepEqual(visible(),[id],`切到 ${view} 页时顶栏可见的刷新按钮不是唯一那一个`);
   }
@@ -2814,22 +2833,98 @@ function numHeaderCells(html,tbodyId){
   return (head[1].match(/<th class="num">/g)||[]).length;
 }
 
-test('通道色只有一处真源：app.js 不再自带调色板，stroke/fill/sw 全部指向同一条 --ch-*',()=>{
+// 通道色这一族每条通道有十处落点：:root 的四行令牌（本色/ink/wash/lit）、两条谱线、
+// 以及 .ch- .stroke- .fill- .sw- 四条规则。少写任何一处都不会报错——折线会整条不画
+// （SVG stroke 默认 none）、折点变成黑点、图例色块和色点变成透明。
+// 通道名单一律从 app.js 的 usageChannelOrder 现读：新增通道时测试名单会自己变长，
+// 若在 style.css 漏了一处就立刻红。先前这里写死四条，autoclaw、trae 先后接入时
+// 这条测试一直是绿的，缺陷一直留在页面上。
+function channelList(js){
+  const m=js.match(/const usageChannelOrder\s*=\s*\[([^\]]*)\]/);
+  assert.ok(m,'app.js 里找不到 usageChannelOrder，通道名单没法现读（锚点写错了？）');
+  const list=m[1].split(',').map(s=>s.trim().replace(/^['"]|['"]$/g,'')).filter(Boolean);
+  assert.ok(list.includes('workbuddy'),'usageChannelOrder 解析结果异常：'+JSON.stringify(list));
+  return list;
+}
+// 对象字面量的键也现读：页面上有哪几颗探测按钮，真源是 app.js 的 probeChannelNames。
+function objectKeysFrom(js,name){
+  const m=js.match(new RegExp('const '+name+'\\s*=\\s*\\{([^}]*)\\}'));
+  assert.ok(m,'app.js 里找不到 const '+name+'，名单没法现读（锚点写错了？）');
+  const keys=m[1].split(',').map(pair=>pair.split(':')[0].trim().replace(/^['"]|['"]$/g,'')).filter(Boolean);
+  assert.ok(keys.length>0,'const '+name+' 解析出空名单');
+  return keys;
+}
+// 对比度现算，不再抄注释：WCAG 相对亮度与比值。
+function wcagLuminance(hex){
+  const [r,g,b]=[1,3,5].map(i=>parseInt(hex.slice(i,i+2),16)/255)
+    .map(v=>v<=0.03928?v/12.92:Math.pow((v+0.055)/1.055,2.4));
+  return 0.2126*r+0.7152*g+0.0722*b;
+}
+function contrastRatio(a,b){
+  const [hi,lo]=[wcagLuminance(a),wcagLuminance(b)].sort((x,y)=>y-x);
+  return (hi+0.05)/(lo+0.05);
+}
+function cssToken(css,name){
+  const m=css.match(new RegExp('--'+name+':(#[0-9a-f]{6})'));
+  assert.ok(m,'style.css 里读不到 --'+name+'（必须是六位小写十六进制）');
+  return m[1];
+}
+
+test('通道色只有一处真源：app.js 不再自带调色板，每条通道的十处落点全部指向同一条 --ch-*',()=>{
   const js=readFileSync(__dirname+'/web/app.js','utf8');
   const css=readFileSync(__dirname+'/web/style.css','utf8');
+  const channels=channelList(js);
+  // 先自证算尺：纯黑白必须正好 21，两个接近的浅灰必须够不到 4.5，否则下面的门禁是假绿。
+  assert.equal(Math.round(contrastRatio('#000000','#ffffff')*100)/100,21,'对比度算错了：纯黑白应当是 21');
+  assert.ok(contrastRatio('#eeeeee','#ffffff')<1.3,'对比度算错了：两个浅灰不该接近');
   // 旧的临时亮色一旦按通道名写回脚本，改令牌就不会改到图上的线，图例和折线会分家。
   // （modelColors 那五条是「模型名次」的调色板，与通道无关，允许留在脚本里。）
-  assert.ok(!/(workbuddy|zcode|qoder|opencode)\s*:\s*['"]#[0-9a-f]{3,8}['"]/i.test(js),'app.js 里还留着「通道名 → 十六进制」的私有调色板');
+  assert.ok(!new RegExp('('+channels.join('|')+')\\s*:\\s*[\'"]#[0-9a-f]{3,8}[\'"]','i').test(js),'app.js 里还留着「通道名 → 十六进制」的私有调色板');
   assert.ok(!js.includes('trendColors'),'trendColors 又回来了：折线色必须走 stroke-* 类');
-  for(const channel of ['workbuddy','zcode','qoder','opencode']){
-    const defs=css.match(new RegExp('--ch-'+channel+':#[0-9a-f]{6}','g'))||[];
-    assert.equal(defs.length,1,`--ch-${channel} 在 :root 里定义了 ${defs.length} 次，改色要改的地方不止一处`);
-    for(const selector of ['.stroke-'+channel,'.fill-'+channel,'.sw-'+channel]){
+  const sidebar=cssToken(css,'sidebar');
+  for(const prop of ['--spectrum','--spectrum-v']){
+    const decl=css.match(new RegExp('\\s+'+prop+':([^;]+);'));
+    assert.ok(decl,'style.css 里读不到 '+prop);
+    for(const channel of channels)assert.ok(decl[1].includes('var(--ch-'+channel+')'),prop+' 里少了 '+channel+' 这一束光，机架顶边会缺一截');
+  }
+  for(const channel of channels){
+    for(const suffix of ['','-ink','-wash','-lit']){
+      const defs=css.match(new RegExp('--ch-'+channel+suffix+':#[0-9a-f]{6}','g'))||[];
+      assert.equal(defs.length,1,`--ch-${channel}${suffix} 在 :root 里定义了 ${defs.length} 次，改色要改的地方不止一处`);
+    }
+    for(const selector of ['.ch-'+channel,'.stroke-'+channel,'.fill-'+channel,'.sw-'+channel]){
       const body=cssRuleBody(css,selector);
       assert.ok(body.includes('var(--ch-'+channel+')'),selector+' 没有从 --ch-'+channel+' 取色');
     }
-    // 文字版和图形版是两条令牌：本色在浅 wash 上只有 4.15:1，够不到正文的 4.5。
-    assert.ok(css.includes('--ch-'+channel+'-ink:'),`缺 --ch-${channel}-ink，通道名会把本色当文字用`);
+    // 文字版和图形版是两条令牌：本色只做描边和色点，够不够正文对比度都不许拿它当文字色。
+    assert.ok(contrastRatio(cssToken(css,'ch-'+channel+'-ink'),cssToken(css,'ch-'+channel+'-wash'))>=4.5,
+      `${channel} 的通道名（ink 落在自己的 wash 上）对比度不到 4.5:1`);
+    assert.ok(contrastRatio(cssToken(css,'ch-'+channel+'-lit'),sidebar)>=4.5,
+      `${channel} 的机架卡名（lit 落在 --sidebar 上）对比度不到 4.5:1`);
+  }
+});
+
+test('通道归类：usageChannelOrder 里每条通道都能从账本 uid 认出自己，也都有译名',()=>{
+  const channels=channelList(readFileSync(__dirname+'/web/app.js','utf8'));
+  const {ctx}=taskFixture(async()=>({ok:true,status:200,json:async()=>({}),headers:{get:()=>null}}));
+  for(const channel of channels){
+    // 归类漏一条不会报错，那一路用量会静默塌进核心账号池：总数看着对，通道列里却找不到它。
+    assert.equal(vm.runInContext(`usageChannelOf({uid:${JSON.stringify(channel)}})`,ctx),channel,
+      `usageChannelOf 不认 uid=${channel}，它的用量会被算进核心账号池`);
+    assert.ok(vm.runInContext(`typeof usageChannelNames[${JSON.stringify(channel)}]==='string'&&usageChannelNames[${JSON.stringify(channel)}].length>0`,ctx),
+      `usageChannelNames 里缺 ${channel}，机架卡和表格的通道名会显示 undefined`);
+  }
+});
+
+test('两条通道筛选下拉：选项正好等于 usageChannelOrder，新通道不许只加在脚本里',()=>{
+  const html=readFileSync(__dirname+'/web/index.html','utf8');
+  const channels=channelList(readFileSync(__dirname+'/web/app.js','utf8'));
+  for(const id of ['overview-usage-channel','usage-channel']){
+    const block=html.match(new RegExp('<select id="'+id+'">([\\s\\S]*?)</select>'));
+    assert.ok(block,'index.html 里找不到通道筛选下拉 '+id);
+    const values=(block[1].match(/<option value="([^"]+)"[^>]*>/g)||[]).map(s=>s.replace(/^<option value="|"[^>]*>$/g,''));
+    // 下拉是静态 HTML、名单在脚本里：新通道漏这一处，页面筛选就永远切不到它，且不会报错。
+    assert.deepEqual(values,['all',...channels],'下拉 '+id+' 的选项与通道名单不一致');
   }
 });
 

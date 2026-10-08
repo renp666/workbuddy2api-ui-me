@@ -246,6 +246,7 @@ func TestProbeRejectsConcurrentStart(t *testing.T) {
 func TestProbeSideChannelStatusHealth(t *testing.T) {
 	var mu sync.Mutex
 	var zcodeModel, zcodeAuth, qoderModel, qoderAuth string
+	var autoclawModel, autoclawAuth, traeModel, traeAuth string
 	zcodeTS := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
 		case "/v1/models":
@@ -276,6 +277,38 @@ func TestProbeSideChannelStatusHealth(t *testing.T) {
 		}
 	}))
 	t.Cleanup(qoderTS.Close)
+	autoclawTS := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/v1/models":
+			fmt.Fprint(w, `{"object":"list","data":[{"id":"a"}]}`)
+		case "/v1/chat/completions":
+			model, _ := readProbeBody(t, r)
+			mu.Lock()
+			autoclawModel, autoclawAuth = model, r.Header.Get("Authorization")
+			mu.Unlock()
+			sseOK(w, 8)
+		case "/healthz":
+			fmt.Fprint(w, `{"healthy":1,"total":1}`)
+		default:
+			fmt.Fprint(w, `{}`)
+		}
+	}))
+	t.Cleanup(autoclawTS.Close)
+	traeTS := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/v1/models":
+			fmt.Fprint(w, `{"object":"list","data":[{"id":"b"}]}`)
+		case "/v1/chat/completions":
+			model, _ := readProbeBody(t, r)
+			mu.Lock()
+			traeModel, traeAuth = model, r.Header.Get("Authorization")
+			mu.Unlock()
+			sseOK(w, 8)
+		default:
+			fmt.Fprint(w, `{}`)
+		}
+	}))
+	t.Cleanup(traeTS.Close)
 	coreTS := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		fmt.Fprint(w, `{"data":[]}`)
 	}))
@@ -287,13 +320,17 @@ func TestProbeSideChannelStatusHealth(t *testing.T) {
 	cfg.ZCodeKey = strings.Repeat("z", 32)
 	cfg.QoderURL = mustParseURL(t, qoderTS.URL)
 	cfg.QoderKey = strings.Repeat("q", 32)
+	cfg.AutoClawURL = mustParseURL(t, autoclawTS.URL)
+	cfg.AutoClawKey = strings.Repeat("a", 32)
+	cfg.TraeURL = mustParseURL(t, traeTS.URL)
+	cfg.TraeKey = strings.Repeat("t", 32)
 	h, err := NewServer(cfg)
 	if err != nil {
 		t.Fatal(err)
 	}
 
 	cookie, csrf := login(t, h)
-	rec := adminRequest(h, "POST", "/admin/probe", `{"channels":["glm","qoder"]}`, cookie, csrf)
+	rec := adminRequest(h, "POST", "/admin/probe", `{"channels":["glm","qoder","autoclaw","trae"]}`, cookie, csrf)
 	if rec.Code != 200 {
 		t.Fatalf("start: %d %s", rec.Code, rec.Body)
 	}
@@ -306,10 +343,18 @@ func TestProbeSideChannelStatusHealth(t *testing.T) {
 	if result, _ := qoder["qoder-y"].(map[string]any); result == nil || result["ok"] != true {
 		t.Fatalf("qoder result=%v", qoder["qoder-y"])
 	}
+	autoclaw := snapshotChannel(t, snap, "autoclaw")
+	if result, _ := autoclaw["autoclaw-a"].(map[string]any); result == nil || result["ok"] != true {
+		t.Fatalf("autoclaw result=%v", autoclaw["autoclaw-a"])
+	}
+	trae := snapshotChannel(t, snap, "trae")
+	if result, _ := trae["trae-b"].(map[string]any); result == nil || result["ok"] != true {
+		t.Fatalf("trae result=%v", trae["trae-b"])
+	}
 	mu.Lock()
-	zm, za, qm, qa := zcodeModel, zcodeAuth, qoderModel, qoderAuth
+	zm, za, qm, qa, am, aa, tm, ta := zcodeModel, zcodeAuth, qoderModel, qoderAuth, autoclawModel, autoclawAuth, traeModel, traeAuth
 	mu.Unlock()
-	// glm 原生名自带前缀，原样发送；qoder 公共前缀必须剥掉再发上游。
+	// glm 原生名自带前缀，原样发送；其余通道公共前缀必须剥掉再发上游。
 	if zm != "glm-x" {
 		t.Fatalf("zcode probe model=%q", zm)
 	}
@@ -321,6 +366,18 @@ func TestProbeSideChannelStatusHealth(t *testing.T) {
 	}
 	if qa != "Bearer "+cfg.QoderKey {
 		t.Fatalf("qoder probe auth=%q", qa)
+	}
+	if am != "a" {
+		t.Fatalf("autoclaw probe model=%q", am)
+	}
+	if aa != "Bearer "+cfg.AutoClawKey {
+		t.Fatalf("autoclaw probe auth=%q", aa)
+	}
+	if tm != "b" {
+		t.Fatalf("trae probe model=%q", tm)
+	}
+	if ta != "Bearer "+cfg.TraeKey {
+		t.Fatalf("trae probe auth=%q", ta)
 	}
 
 	// 旁路状态端点把结论以 health.modelResults（公共模型名为键）附带下发。
@@ -354,5 +411,44 @@ func TestProbeSideChannelStatusHealth(t *testing.T) {
 	}
 	if result := qstatus.Health.ModelResults["qoder-y"]; result == nil || result["ok"] != true || result["source"] != "probe" {
 		t.Fatalf("qoder health=%v", qstatus.Health.ModelResults)
+	}
+
+	// autoclaw 的 health 同时承载 /healthz 探活快照（healthy/total，前端卡片读它）
+	// 与探测结论 modelResults，两类信息必须共存，不能被探测覆盖掉。
+	rec = adminRequest(h, "GET", "/admin/autoclaw", "", cookie, csrf)
+	if rec.Code != 200 {
+		t.Fatalf("autoclaw status: %d %s", rec.Code, rec.Body)
+	}
+	var astatus struct {
+		Health struct {
+			Healthy      *int                         `json:"healthy"`
+			Total        *int                         `json:"total"`
+			ModelResults map[string]map[string]any    `json:"modelResults"`
+		} `json:"health"`
+	}
+	if json.Unmarshal(rec.Body.Bytes(), &astatus) != nil {
+		t.Fatalf("autoclaw status not JSON: %s", rec.Body)
+	}
+	if result := astatus.Health.ModelResults["autoclaw-a"]; result == nil || result["ok"] != true || result["source"] != "probe" {
+		t.Fatalf("autoclaw health.modelResults=%v", astatus.Health.ModelResults)
+	}
+	if astatus.Health.Healthy == nil || *astatus.Health.Healthy != 1 || astatus.Health.Total == nil || *astatus.Health.Total != 1 {
+		t.Fatalf("autoclaw health 探活快照被探测结论覆盖: healthy=%v total=%v", astatus.Health.Healthy, astatus.Health.Total)
+	}
+
+	rec = adminRequest(h, "GET", "/admin/trae", "", cookie, csrf)
+	if rec.Code != 200 {
+		t.Fatalf("trae status: %d %s", rec.Code, rec.Body)
+	}
+	var tstatus struct {
+		Health struct {
+			ModelResults map[string]map[string]any `json:"modelResults"`
+		} `json:"health"`
+	}
+	if json.Unmarshal(rec.Body.Bytes(), &tstatus) != nil {
+		t.Fatalf("trae status not JSON: %s", rec.Body)
+	}
+	if result := tstatus.Health.ModelResults["trae-b"]; result == nil || result["ok"] != true || result["source"] != "probe" {
+		t.Fatalf("trae health=%v", tstatus.Health.ModelResults)
 	}
 }

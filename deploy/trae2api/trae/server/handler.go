@@ -290,10 +290,13 @@ func (h *Handler) models(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// modelList 动态获取模型列表并包装成 OpenAI 格式；失败回退静态表。
+// modelList 动态获取模型列表并包装成 OpenAI 格式；动态表为权威来源，
+// 静态表中动态表没有的条目（如人工添加的 Agent 接入别名 no22）仍然保留；
+// 动态拉取失败时整体回退静态表。
 func (h *Handler) modelList() []map[string]any {
 	if infos := h.fetchDynamicModels(); len(infos) > 0 {
-		out := make([]map[string]any, 0, len(infos))
+		out := make([]map[string]any, 0, len(infos)+len(staticModels))
+		seen := make(map[string]bool, len(infos))
 		for _, mi := range infos {
 			entry := map[string]any{
 				"id":             mi.ID,
@@ -310,7 +313,13 @@ func (h *Handler) modelList() []map[string]any {
 			if v, _ := entry["context_length"].(int64); v == 0 {
 				entry["context_length"] = int64(131072)
 			}
+			seen[mi.ID] = true
 			out = append(out, entry)
+		}
+		for _, m := range staticModels {
+			if id, _ := m["id"].(string); id != "" && !seen[id] {
+				out = append(out, m)
+			}
 		}
 		return out
 	}

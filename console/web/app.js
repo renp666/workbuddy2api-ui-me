@@ -48,7 +48,7 @@ function signedOut() {
  autoclawModels=[];autoclawHistory=[];autoclawStatus=null;autoclawEnabled=false;autoclawBusy=false;autoclawLoginBusy=false;autoclawView='status';autoclawAccounts=[];clearTimeout(autoclawCodeTimer);autoclawCodeTimer=null;$('autoclaw-model').replaceChildren();clearMessages($('autoclaw-messages'));$('autoclaw-prompt').value='';$('autoclaw-usage').textContent='用量将在上游返回后显示';$('autoclaw-disabled').hidden=true;$('autoclaw-content').hidden=true;$('nav-autoclaw').classList.remove('nav-muted');$('autoclaw-health-wrap').hidden=true;$('autoclaw-health-body').replaceChildren();$('autoclaw-accounts-body').replaceChildren();$('autoclaw-phone').value='';$('autoclaw-code').value='';$('autoclaw-oauth-url').value='';$('autoclaw-login-hint').textContent='';$('autoclaw-global-hint').textContent='';const sc=$('autoclaw-sendcode');sc.disabled=false;sc.textContent='发送验证码';
  traeModels=[];traeHistory=[];traeStatus=null;traeEnabled=false;traeBusy=false;traeLoginBusy=false;traeView='status';traeAccounts=[];traeAuthURL='';clearTimeout(traePollTimer);traePollTimer=null;$('trae-model').replaceChildren();clearMessages($('trae-messages'));$('trae-prompt').value='';$('trae-usage').textContent='用量将在上游返回后显示';$('trae-disabled').hidden=true;$('trae-content').hidden=true;$('nav-trae').classList.remove('nav-muted');$('trae-health-wrap').hidden=true;$('trae-health-body').replaceChildren();$('trae-accounts-body').replaceChildren();$('trae-auth-row').hidden=true;$('trae-login-hint').textContent='';$('trae-import-url').value='';$('trae-import-hint').textContent='';$('trae-schedule-body').replaceChildren();$('trae-schedule-hint').textContent='';$('trae-usage-body').replaceChildren();
  routesState=null;routesBusy=false;routesEditing=null;modelSwitchOverrides=new Map();capState=null;capByKeys=new Map();capDim='coding';capCategory='';capFilter='';$('routes-disabled').hidden=true;$('routes-content').hidden=true;$('routes-alias-body').replaceChildren();$('routes-channels').replaceChildren();$('routes-model-options').replaceChildren();$('routes-example').textContent='';$('routes-alias-name').value='';$('routes-alias-model').value='';$('routes-alias-note').value='';$('routes-auto-fallback').value='';$('cap-filter').value='';
- probeSnapshot={running:false,done:0,total:0,channels:{}};probeTarget='';probeBusy=false;clearTimeout(probeTimer);probeTimer=undefined;for(const n of ['core','zcode','qoder','autoclaw','trae']){$('probe-'+n+'-progress').hidden=true;$('probe-'+n+'-progress').textContent='';}
+ probeSnapshot={running:false,done:0,total:0,channels:{}};probeTarget='';probeBusy=false;clearTimeout(probeTimer);probeTimer=undefined;for(const n of Object.keys(probeChannelNames)){$('probe-'+n+'-progress').hidden=true;$('probe-'+n+'-progress').textContent='';}
  overviewUsageItems=[];overviewGeneration++;
  pinState={cn:null,global:null};lastStatus=null;renderPinBanner();
 }
@@ -408,11 +408,13 @@ function switchOpCell(row){
 // ── 手工测速探测 ──
 // 探测仅由页面按钮触发（不点不耗额度）；结论缓存在服务端内存，重启即清空。
 // 通道键：core→"core"、zcode→"glm"、qoder→"qoder"、autoclaw→"autoclaw"、trae→"trae"（与后端 routeChannel 同一口径）。
+// 这张表同时是「页面上有哪几颗探测按钮」的唯一真源：下面的按钮禁用、进度行、事件绑定、
+// 退出登录复位都按它的键走，新通道只在这里加一行。
 const probeChannelNames={core:'core',zcode:'glm',qoder:'qoder',autoclaw:'autoclaw',trae:'trae'};
-function setProbeButtonsDisabled(disabled){for(const n of ['core','zcode','qoder','autoclaw','trae'])$('probe-'+n).disabled=disabled;}
+function setProbeButtonsDisabled(disabled){for(const n of Object.keys(probeChannelNames))$('probe-'+n).disabled=disabled;}
 function renderProbeProgress(){
  const running=!!probeSnapshot.running,total=Number(probeSnapshot.total)||0,done=Number(probeSnapshot.done)||0;
- for(const name of ['core','zcode','qoder','autoclaw','trae']){
+ for(const name of Object.keys(probeChannelNames)){
   const el=$('probe-'+name+'-progress');
   if(running&&name===probeTarget){el.hidden=false;el.textContent=`正在探测 ${done}/${total}…`;}
   else if(!running&&name===probeTarget&&total>0){el.hidden=false;el.textContent=`探测完成：${total} 个模型，结论已接入 gateway-auto 选路。`;}
@@ -425,13 +427,14 @@ function applyProbeResults(){
  if(ch.glm&&zcodeEnabled)void loadZcode();
  if(ch.qoder&&qoderEnabled)void loadQoder();
  if(ch.autoclaw&&autoclawEnabled&&autoclawStatus){
-  // autoclaw 状态接口只回 health:{healthy,total}（没有 modelResults），
-  // 探测结论由这里合并进模型表，与 core 的做法一致。
+  // autoclaw 状态接口的 health 同时含 /healthz 探活快照（healthy/total，卡片用）
+  // 与最近一次探测的 modelResults；这里用刚完成的探测结论覆盖 modelResults，
+  // 保留其余字段，与 core 的做法一致。
   renderModelTable('autoclaw',autoclawStatus.models,{...autoclawStatus.health,modelResults:ch.autoclaw});
  }
  if(ch.trae&&traeEnabled&&traeStatus){
-  // trae 状态接口的 health 是上游 /healthz 探活快照（不含 modelResults），
-  // 探测结论同样由这里合并进模型表。
+  // trae 状态接口的 health 只承载探测的 modelResults（无 healthy/total）；
+  // 这里用刚完成的探测结论覆盖，保留其余字段。
   renderModelTable('trae',traeStatus.models,{...traeStatus.health,modelResults:ch.trae});
  }
  if(page==='overview')void loadOverview();
@@ -451,7 +454,7 @@ async function startProbe(name){
  try{probeSnapshot=await jsonAPI('probe',{channels:[probeChannelNames[name]]});renderProbeProgress();probeTimer=setTimeout(pollProbe,2000);}
  catch(error){probeBusy=false;probeTarget='';setProbeButtonsDisabled(false);renderProbeProgress();notice(error.message);}
 }
-for(const name of ['core','zcode','qoder','autoclaw','trae'])$('probe-'+name).addEventListener('click',()=>startProbe(name));
+for(const name of Object.keys(probeChannelNames))$('probe-'+name).addEventListener('click',()=>startProbe(name));
 $('models-group-toggle').addEventListener('click',()=>{
  modelsGroupByAccount=!modelsGroupByAccount;
  const btn=$('models-group-toggle');
@@ -875,7 +878,7 @@ document.addEventListener?.('visibilitychange',()=>{if(document.hidden)stopTaskR
 const usageModeNames={stream:'流式',sync:'同步'};
 // 协议入口名由 core 白名单把关（chat/messages/responses），页面只负责译名。
 const usageAPINames={chat:'Chat',messages:'Messages',responses:'Responses'};
-// 通道归类：旁路通道用量由 console 以固定占位 uid 上报 core 账本（zcode/qoder/opencode），
+// 通道归类：旁路通道的用量由 console 以固定占位 uid（与通道同名）上报 core 账本，
 // 其余 uid 都是核心账号池的真实账号。分布表按此口径聚合，明细按当前筛选过滤。
 const usageChannelNames={workbuddy:'WorkBuddy',zcode:'GLM（Zcode）',qoder:'Qoder',opencode:'OpenCode',autoclaw:'AutoClaw',trae:'Trae'};
 const usageChannelOrder=['workbuddy','zcode','qoder','opencode','autoclaw','trae'];

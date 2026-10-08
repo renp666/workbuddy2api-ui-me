@@ -70,7 +70,7 @@ func (s *usageReportSink) waitFor(t *testing.T, n int) []map[string]any {
 }
 
 // usagePair 起一个带 core（含上报接收器）与旁路上游的 console；
-// channel 为 "zcode"、"qoder" 或 "opencode"，决定上游挂到哪个分流配置。
+// channel 为 "zcode"、"qoder"、"opencode"、"autoclaw" 或 "trae"，决定上游挂到哪个分流配置。
 func usagePair(t *testing.T, sink *usageReportSink, channel string, upstream http.HandlerFunc) http.Handler {
 	t.Helper()
 	core := httptest.NewServer(http.HandlerFunc(sink.handle))
@@ -85,6 +85,12 @@ func usagePair(t *testing.T, sink *usageReportSink, channel string, upstream htt
 	case "opencode":
 		cfg.OpenCodeURL = mustParseURL(t, proxy.URL)
 		cfg.OpenCodeKey = strings.Repeat("o", 32)
+	case "autoclaw":
+		cfg.AutoClawURL = mustParseURL(t, proxy.URL)
+		cfg.AutoClawKey = strings.Repeat("a", 32)
+	case "trae":
+		cfg.TraeURL = mustParseURL(t, proxy.URL)
+		cfg.TraeKey = strings.Repeat("t", 32)
 	default:
 		cfg.ZCodeURL = mustParseURL(t, proxy.URL)
 		cfg.ZCodeKey = strings.Repeat("z", 32)
@@ -251,6 +257,66 @@ func TestUsageReportOpenCodeKeepsPublicModelName(t *testing.T) {
 	}
 	if e["prompt_tokens"] != float64(8) || e["completion_tokens"] != float64(3) {
 		t.Fatalf("opencode tokens = %v", e)
+	}
+}
+
+func TestUsageReportAutoClawKeepsPublicModelName(t *testing.T) {
+	sink := &usageReportSink{}
+	h := usagePair(t, sink, "autoclaw", func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		// autoclaw 上游收到的是剥前缀后的模型名。
+		var env struct {
+			Model string `json:"model"`
+		}
+		_ = json.Unmarshal(body, &env)
+		if env.Model != "claude-sonnet" {
+			t.Errorf("upstream model = %q want stripped name", env.Model)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprint(w, `{"usage":{"prompt_tokens":5,"completion_tokens":1}}`)
+	})
+	w := postChat(h, "/v1/chat/completions", `{"model":"autoclaw-claude-sonnet","messages":[]}`)
+	if w.Code != 200 {
+		t.Fatalf("call: %d %s", w.Code, w.Body)
+	}
+	entries := sink.waitFor(t, 1)
+	e := entries[0]
+	// 上报里的模型名必须保留公共前缀，便于与 zcode/core 区分。
+	if e["uid"] != "autoclaw" || e["account"] != "AutoClaw 通道" || e["model"] != "autoclaw-claude-sonnet" {
+		t.Fatalf("autoclaw entry = %v", e)
+	}
+	if e["prompt_tokens"] != float64(5) || e["completion_tokens"] != float64(1) {
+		t.Fatalf("autoclaw tokens = %v", e)
+	}
+}
+
+func TestUsageReportTraeKeepsPublicModelName(t *testing.T) {
+	sink := &usageReportSink{}
+	h := usagePair(t, sink, "trae", func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		// trae 上游收到的是剥前缀后的模型名。
+		var env struct {
+			Model string `json:"model"`
+		}
+		_ = json.Unmarshal(body, &env)
+		if env.Model != "claude-4" {
+			t.Errorf("upstream model = %q want stripped name", env.Model)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprint(w, `{"usage":{"prompt_tokens":7,"completion_tokens":4}}`)
+	})
+	w := postChat(h, "/v1/chat/completions", `{"model":"trae-claude-4","messages":[]}`)
+	if w.Code != 200 {
+		t.Fatalf("call: %d %s", w.Code, w.Body)
+	}
+	entries := sink.waitFor(t, 1)
+	e := entries[0]
+	// 上报里的模型名必须保留公共前缀，便于与 zcode/core 区分。
+	if e["uid"] != "trae" || e["account"] != "Trae 通道" || e["model"] != "trae-claude-4" {
+		t.Fatalf("trae entry = %v", e)
+	}
+	if e["prompt_tokens"] != float64(7) || e["completion_tokens"] != float64(4) {
+		t.Fatalf("trae tokens = %v", e)
 	}
 }
 

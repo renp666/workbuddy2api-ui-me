@@ -155,6 +155,18 @@ func (h *server) adminAutoClawStatus(w http.ResponseWriter, r *http.Request) {
 			result["mode"] = mode
 		}
 	}
+	// 手工测速探测的结论以 health.modelResults 形态下发，前端模型表原样复用既有渲染。
+	// 与 trae 不同，autoclaw 的 health 已被 /healthz 探活快照占用（前端卡片读 healthy/total），
+	// 因此这里按 key 合并而不是覆盖，两类信息共存。
+	if probe := h.probeHealth(channelAutoClaw); probe != nil {
+		if health, ok := result["health"].(map[string]any); ok {
+			for k, v := range probe {
+				health[k] = v
+			}
+		} else {
+			result["health"] = probe
+		}
+	}
 	writeJSON(w, 200, result)
 }
 

@@ -6,6 +6,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -662,6 +663,57 @@ func TestModelSwitchOpenCodeExempt(t *testing.T) {
 	defer mu.Unlock()
 	if ocModel != "OC · Free" {
 		t.Fatalf("opencode model=%q", ocModel)
+	}
+}
+
+// sideExemptConsole 挂一个免费旁路通道上游，用于验证该通道不受积分开关约束。
+// 免费通道（opencode/autoclaw/trae）均豁免，这里用统一构造避免逐个用例重复。
+func sideExemptConsole(t *testing.T, channel routeChannel, urlField func(*Config, *url.URL), keyField func(*Config, string)) http.Handler {
+	t.Helper()
+	coreTS := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		fmt.Fprint(w, `{"core":true}`)
+	}))
+	t.Cleanup(coreTS.Close)
+	sideTS := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		fmt.Fprintf(w, `{"%s":true}`, channel)
+	}))
+	t.Cleanup(sideTS.Close)
+	cfg := testConfig(coreTS.URL)
+	cfg.RouteFile = filepath.Join(t.TempDir(), "routes.json")
+	urlField(&cfg, mustParseURL(t, sideTS.URL))
+	keyField(&cfg, strings.Repeat("k", 32))
+	h, err := NewServer(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return h
+}
+
+// TestModelSwitchAutoClawExempt 验证 autoclaw 免费通道完全不受开关约束。
+func TestModelSwitchAutoClawExempt(t *testing.T) {
+	h := sideExemptConsole(t, channelAutoClaw,
+		func(c *Config, u *url.URL) { c.AutoClawURL = u },
+		func(c *Config, k string) { c.AutoClawKey = k })
+	if got := saveRoutes(t, h, []routeEntry{{Alias: "ac", Channel: channelAutoClaw, Model: "claude-sonnet", Enabled: true}}, ""); got.Code != 200 {
+		t.Fatalf("save: %d %s", got.Code, got.Body)
+	}
+	rec := gateChat(h, "autoclaw-claude-sonnet")
+	if rec.Code != 200 || rec.Body.String() != `{"autoclaw":true}` {
+		t.Fatalf("autoclaw gated despite exemption: %d %s", rec.Code, rec.Body)
+	}
+}
+
+// TestModelSwitchTraeExempt 验证 trae 免费通道完全不受开关约束。
+func TestModelSwitchTraeExempt(t *testing.T) {
+	h := sideExemptConsole(t, channelTrae,
+		func(c *Config, u *url.URL) { c.TraeURL = u },
+		func(c *Config, k string) { c.TraeKey = k })
+	if got := saveRoutes(t, h, []routeEntry{{Alias: "tr", Channel: channelTrae, Model: "claude-4", Enabled: true}}, ""); got.Code != 200 {
+		t.Fatalf("save: %d %s", got.Code, got.Body)
+	}
+	rec := gateChat(h, "trae-claude-4")
+	if rec.Code != 200 || rec.Body.String() != `{"trae":true}` {
+		t.Fatalf("trae gated despite exemption: %d %s", rec.Code, rec.Body)
 	}
 }
 
