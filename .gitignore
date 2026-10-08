@@ -19,6 +19,7 @@ config.json
 
 # Build artifacts
 *.tmp
+*.exe
 __pycache__/
 .build/
 .upstream-update-backup/
@@ -48,6 +49,7 @@ SPEC.md
 /7-领取Zcode周末套餐.bat
 
 # Local tool artifacts
+/.video_agent/
 /.mimosa/
 /.impeccable/
 /spark-output/
