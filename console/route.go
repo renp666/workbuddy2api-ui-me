@@ -297,7 +297,7 @@ func validateModelSwitchList(name string, list []string) error {
 	for _, raw := range list {
 		model := strings.TrimSpace(raw)
 		if !validRouteName(model, 128, routeModelChars) {
-			return fmt.Errorf("%s 含非法模型名：只允许字母、数字、点、下划线、冒号、连字符、空格和中点，长度 1-128", name)
+			return fmt.Errorf("%s 含非法模型名：只允许字母、数字、点、下划线、冒号、连字符、空格、中点和斜杠，长度 1-128", name)
 		}
 		if seen[model] {
 			return fmt.Errorf("%s 含重复模型名 %q", name, model)
