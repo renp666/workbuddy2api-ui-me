@@ -1,11 +1,11 @@
 #!/usr/bin/env bash
-# Read-only channel diagnostic: are the gateway and all six channels serving right now?
+# Read-only channel diagnostic: are the gateway and all seven channels serving right now?
 # Touches no data, restarts nothing, prints no key.
 #
 # The sidecars share console's network namespace (network_mode: service:console), so their ports
 # are invisible to the host loopback and must be probed from inside that namespace. Node comes from
 # an image this project already builds; `sh` inside console has no /dev/tcp and would report every
-# port CLOSED. Port sources of truth: deploy/compose.{zcode,qoder,opencode,autoclaw,trae}.yml.
+# port CLOSED. Port sources of truth: deploy/compose.{zcode,qoder,opencode,autoclaw,trae,raccoon}.yml.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
@@ -39,6 +39,8 @@ docker run --rm --network "container:${console}" --entrypoint node "$probe_image
     ["autoclaw data 7865 /healthz", 7865, "/healthz",   (b) => { const m = b.match(/\{"healthy":(\d+),"total":(\d+)\}/); return m ? `healthy ${m[1]}/${m[2]}` : (b.match(/HTTP\/1\.[01] (\d+)/) || [,"?"])[1]; }],
     // trae /healthz answers plain-text "ok" (not JSON); any HTTP status proves the port serves.
     ["trae   data 7866 /healthz",  7866, "/healthz",   (b) => (b.match(/HTTP\/1\.[01] (\d+)/) || [,"?"])[1]],
+    // raccoon /healthz is plain-text "ok" like trae; any HTTP status proves the port serves.
+    ["raccoon data 7867 /healthz", 7867, "/healthz",   (b) => (b.match(/HTTP\/1\.[01] (\d+)/) || [,"?"])[1]],
   ];
   const deadline = Date.now() + Number(process.env.WB2A_PROBE_WAIT || 30) * 1000;
   const once = ([label, port, path, read]) => new Promise((resolve) => {
@@ -76,7 +78,7 @@ key = json.load(open(os.environ["WB2A_KEYS_FILE"]))["api_key"]
 req = urllib.request.Request("http://127.0.0.1:7863/v1/models",
                             headers={"Authorization": "Bearer " + key})
 ids = [m["id"] for m in json.load(urllib.request.urlopen(req, timeout=30))["data"]]
-realms = {"glm-": "zcode", "qoder-": "qoder", "opencode-": "opencode", "autoclaw-": "autoclaw", "trae-": "trae"}
+realms = {"glm-": "zcode", "qoder-": "qoder", "opencode-": "opencode", "autoclaw-": "autoclaw", "trae-": "trae", "raccoon-": "raccoon"}
 seen = {v: 0 for v in realms.values()}
 seen["workbuddy (core)"] = 0
 for i in ids:

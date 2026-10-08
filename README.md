@@ -74,7 +74,7 @@ curl -N http://127.0.0.1:7863/v1/messages \
   }'
 ```
 
-`max_tokens` 必须是正整数；删除 `stream` 或设为 `false` 可获取普通 JSON 响应。支持 user/assistant 多轮消息、字符串或纯文本内容块，以及可选 `system`；不支持工具、图像、文件、扩展思考、缓存、beta、采样参数等高级字段，未支持字段会明确报错。Anthropic 协议只覆盖 WorkBuddy 核心账号池的模型，GLM/Qoder/OpenCode/AutoClaw/Trae 旁路模型不适用。
+`max_tokens` 必须是正整数；删除 `stream` 或设为 `false` 可获取普通 JSON 响应。支持 user/assistant 多轮消息、字符串或纯文本内容块，以及可选 `system`；不支持工具、图像、文件、扩展思考、缓存、beta、采样参数等高级字段，未支持字段会明确报错。Anthropic 协议只覆盖 WorkBuddy 核心账号池的模型，GLM/Qoder/OpenCode/AutoClaw/Trae/小浣熊 旁路模型不适用。
 
 仅传递上游实际返回的用量，未知 token 数返回 `null`，不会估算或填 0。这与原生 API 的整数用量字段有差异，严格要求整数的客户端可能不兼容。已验证的 SDK 基线为 Python 3.12 + `anthropic==0.67.0`，不代表所有版本或客户端可用，也不代表完整支持 Claude Code；模型能力仍由 WorkBuddy / CodeBuddy 上游决定。
 
@@ -198,11 +198,25 @@ docker compose -f docker-compose.yml -f deploy/compose.trae.yml up -d
 
 Trae 页签是带控制链路的完整页签：「通道状态」展示容器可达性、模型数与账号数，「账号登录」完成 OAuth 登录与凭据导入，「账号管理」查看积分与凭据有效期、启停/删除/刷新单个账号、刷新全部积分与一键签到，「排程」展示容器的签到时刻、凭据刷新时段与上下次执行时间，并可立即触发签到或凭据刷新，「Trae 模型」与「对话测试」同其他旁路页签，「用量」展示容器侧按天的请求与 token 记录。未叠加该 overlay 时页签置灰并提示未启用。旁路调用会异步记入控制台「调用统计」，账号列显示「Trae 通道」。Trae 免费模型的可用性、限额和模型行为由 Trae 上游决定，本仓未对其做真实上游验收。
 
+## 可选：接入小浣熊免费模型
+
+本部署还可以并列挂一个 raccoon2api sidecar 容器（`deploy/raccoon2api/`，本仓参考 aimod-cc/agent2api 自建的纯 Go 源码），把小浣熊（xiaohuanxiong.com）的免费模型变成第七个模型来源。与前几条旁路相同，启用后仍是同一个 `:7863` 出口：控制台 `/v1/models` 会合并显示小浣熊模型（统一加 `raccoon-` 前缀并标注 `realm: raccoon`），客户端请求 `model` 以 `raccoon-` 开头时由 console 自动剥前缀转发给容器，其余模型仍走 WorkBuddy 账号池。
+
+小浣熊通道没有网页登录：桌面客户端的登录态依赖本机 DPAPI，容器内读不到，所以登录环节等价于**凭证导入**——在「凭证导入」子页粘贴从桌面端导出的凭证 JSON（容器里已有更新的凭据时返回 409，不会覆盖）。账号、积分与运行数据持久化在宿主 `runtime/raccoon/` 下；每日积分以账单核对为权威结果（失败降级为待核），通道无原生签到。
+
+```bash
+docker compose -f docker-compose.yml -f deploy/compose.raccoon.yml up -d
+```
+
+接口与密钥：控制台只为小浣熊模型生成 OpenAI 协议的调用示例，小浣熊模型不支持 Anthropic 协议的 `/v1/messages`。console 到容器的内部调用使用 `WB2A_RACCOON_KEY` 作为 Bearer 密钥（overlay 启动时由宿主环境变量传入）；留空则不校验——容器只监听 console 网络命名空间内的回环地址 `127.0.0.1:7867`，外部无法直连。
+
+小浣熊页签是带控制链路的完整页签：「通道状态」展示容器可达性、模型数与账号统计，「凭证导入」完成桌面端凭证 JSON 导入并支持账号启停/删除/刷新与积分查看，「模型」与「对话测试」同其他旁路页签。未叠加该 overlay 时页签置灰并提示未启用。旁路调用会异步记入控制台「调用统计」，账号列显示「Raccoon 通道」。小浣熊免费模型的可用性、限额和模型行为由上游决定，本仓未对其做真实上游验收。
+
 ## 配套 Web 控制台
 
 ### 对话测试
 
-选择 OpenAI 或 Anthropic 协议、模型并发送问题，直接检查模型响应与流式显示。Anthropic 模式可设置最大输出 tokens，默认 1024；切换协议会清空当前测试对话，生成中可停止。回答完成后用量行会显示本次服务请求的账号与平台（来自响应归属头），Zcode、Qoder、OpenCode、AutoClaw 与 Trae 页签的测试则分别标明 GLM、Qoder、OpenCode、AutoClaw 与 Trae 通道。真实部署中的测试会消耗账号额度；页面内的对话刷新后清空。
+选择 OpenAI 或 Anthropic 协议、模型并发送问题，直接检查模型响应与流式显示。Anthropic 模式可设置最大输出 tokens，默认 1024；切换协议会清空当前测试对话，生成中可停止。回答完成后用量行会显示本次服务请求的账号与平台（来自响应归属头），Zcode、Qoder、OpenCode、AutoClaw、Trae 与小浣熊页签的测试则分别标明 GLM、Qoder、OpenCode、AutoClaw、Trae 与小浣熊通道。真实部署中的测试会消耗账号额度；页面内的对话刷新后清空。
 
 ![对话测试页面：选择模型并查看流式回答](docs/superpowers/verification/2026-09-16-openai-chat-playground.jpg)
 
@@ -214,7 +228,7 @@ Trae 页签是带控制链路的完整页签：「通道状态」展示容器可
 
 ### 调用统计
 
-“调用统计”汇总六个通道（WorkBuddy 核心账号池与 GLM、Qoder、OpenCode、AutoClaw、Trae 旁路）的成功调用，可按通道和时间范围筛选。明细每行给出模型、协议入口（Chat / Messages / Responses）、token 与积分实测值，以及**来源网段**和**客户端自报标识**（User-Agent），用来回答“谁在用、用在哪”。上游或客户端没有给出的项保持空白（显示“—”），不会被补成 0 或某个默认值。
+“调用统计”汇总七个通道（WorkBuddy 核心账号池与 GLM、Qoder、OpenCode、AutoClaw、Trae、小浣熊旁路）的成功调用，可按通道和时间范围筛选。明细每行给出模型、协议入口（Chat / Messages / Responses）、token 与积分实测值，以及**来源网段**和**客户端自报标识**（User-Agent），用来回答“谁在用、用在哪”。上游或客户端没有给出的项保持空白（显示“—”），不会被补成 0 或某个默认值。
 
 指标卡下方另有一条鉴权失败提示：API Key 不对的请求不计入调用次数，只按来源网段汇总出现次数（形如“鉴权失败 3 次（本范围），来源：203.0.113.0/24 ×2、未知来源 ×1”），用于发现有人在猜密钥。来源地址只保留网段（IPv4 /24、IPv6 /64），完整地址不写盘；客户端标识由调用方自报，只作参考，不能当作身份凭据。
 
