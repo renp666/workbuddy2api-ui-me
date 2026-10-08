@@ -97,7 +97,7 @@ function taskFixture(fetch, cryptoImpl={randomUUID:()=> '11111111-2222-4333-8444
   }
   const get=id=>{if(!elements.has(id))elements.set(id,element());return elements.get(id);};
   const protocolButtons=['access-openai','access-anthropic','chat-openai','chat-anthropic'].map(id=>{const button=get(id);button.dataset.protocol=id.split('-')[1];return button;});
-  const railButtons=[['refresh','overview'],['zcode-refresh','zcode'],['qoder-refresh','qoder'],['opencode-refresh','opencode'],['ccr-refresh','ccr'],['autoclaw-refresh','autoclaw'],['trae-refresh','trae'],['usage-refresh','usage'],['routes-refresh','routes']].map(([id,view])=>{const button=get(id);button.dataset.refreshFor=view;return button;});
+  const railButtons=[['refresh','overview'],['zcode-refresh','zcode'],['qoder-refresh','qoder'],['opencode-refresh','opencode'],['ccr-refresh','ccr'],['autoclaw-refresh','autoclaw'],['trae-refresh','trae'],['raccoon-refresh','raccoon'],['usage-refresh','usage'],['routes-refresh','routes']].map(([id,view])=>{const button=get(id);button.dataset.refreshFor=view;return button;});
   const opened=[];
   const ctx=vm.createContext({document:{getElementById:get,querySelectorAll:selector=>selector==='[data-protocol]'?protocolButtons:selector==='[data-refresh-for]'?railButtons:[],createElement:element,hidden:false,handlers:{},addEventListener(name,fn){this.handlers[name]=fn;}},
     location:{origin:'http://console.test'},AbortController,TextDecoder,TextEncoder,Option:function(text,value){return {textContent:text,value};},
@@ -1661,6 +1661,168 @@ test('trae login start opens the authorize page and the poll loop lands on the a
   assert.equal(vm.runInContext('traeLoginBusy',ctx),false,'the login button stayed locked');
 });
 
+// 小浣熊通道：与 trae 同为标准 HTTP 状态码控制链路，但没有网页登录（桌面登录态依赖宿主
+// DPAPI），登录环节等价于凭证导入；sidecar 账号积分字段是 points（非 trae 的 credits），
+// 且只回报失败次数，成功列恒为「—」。
+function raccoonFixture(raccoonStatus){
+  const response=body=>({ok:true,status:200,json:async()=>body});
+  let statusGets=0;
+  const {ctx,get}=taskFixture(url=>{
+    if(url==='/admin/session')return new Promise(()=>{});
+    if(url==='/admin/status')return response({total:0,healthy:0,cooling:0,disabled:0,accounts:[]});
+    if(url==='/admin/models')return response({data:[]});
+    if(url==='/admin/raccoon'){statusGets++;return response(raccoonStatus);}
+    throw new Error('unexpected '+url);
+  });
+  get('realm').querySelector=()=>({disabled:false});
+  return {ctx,get,statusGets:()=>statusGets};
+}
+
+test('raccoon tab greys out and shows the disabled notice when the channel is off',async()=>{
+  const {ctx,get}=raccoonFixture({enabled:false});
+  await vm.runInContext("signedIn({csrf:'c',global_enabled:true,zcode_enabled:false,qoder_enabled:false,opencode_enabled:false,autoclaw_enabled:false,trae_enabled:false,raccoon_enabled:false})",ctx);
+  assert.equal(get('nav-raccoon').classList.toggled['nav-muted'],true,'disabled channel left the raccoon tab fully lit');
+  await vm.runInContext('loadRaccoon()',ctx);
+  assert.equal(get('raccoon-disabled').hidden,false,'disabled notice stayed hidden');
+  assert.equal(get('raccoon-content').hidden,true,'enabled content showed while disabled');
+});
+
+test('raccoon tab renders badge, health rows, accounts, models and select when reachable',async()=>{
+  const {ctx,get}=raccoonFixture({enabled:true,reachable:true,model_count:1,models:[{id:'raccoon-GLM · X',realm:'raccoon'}],
+    accounts:[{uid:'r1',nickname:'一号',points:120,cooling:false,disabled:false,enabled:true,err_count:1,expires_at:1799999999,expired_soon:false,has_auth:true},
+      {uid:'r2',nickname:'二号',points:0,cooling:true,reason:'触发频控',until:'2026-10-08T12:00:00Z',disabled:false,enabled:true,err_count:0},
+      {uid:'r3',nickname:'三号',points:0,disabled:true,enabled:false,err_count:0}]});
+  await vm.runInContext("signedIn({csrf:'c',global_enabled:true,zcode_enabled:false,qoder_enabled:false,opencode_enabled:false,autoclaw_enabled:false,trae_enabled:false,raccoon_enabled:true})",ctx);
+  assert.equal(get('nav-raccoon').classList.toggled['nav-muted'],false,'enabled channel greyed the raccoon tab');
+  await vm.runInContext('loadRaccoon()',ctx);
+  assert.equal(get('raccoon-disabled').hidden,true);
+  assert.equal(get('raccoon-content').hidden,false);
+  assert.equal(get('raccoon-status-badge').textContent,'在线');
+  assert.equal(get('raccoon-status-badge').className,'badge ok');
+  assert.match(get('raccoon-status-text').textContent,/raccoon2api 可达 · 1 个模型 · 3 个账号/);
+  assert.deepEqual(get('raccoon-health-body').children.map(tr=>tr.children[0].textContent),['模型数','账号数']);
+  assert.equal(get('raccoon-health-body').children[1].children[1].textContent,'3');
+  for(const id of ['raccoon-view-status','raccoon-view-import','raccoon-view-models','raccoon-view-chat'])
+    assert.equal(get(id).hidden,false,'reachable container must keep tab '+id+' offered');
+  assert.deepEqual(['raccoon-stat-total','raccoon-stat-usable','raccoon-stat-cooling','raccoon-stat-disabled'].map(id=>get(id).textContent),['3','1','1','1']);
+  const rows=get('raccoon-accounts-body').children;
+  assert.equal(rows.length,3,'account table row count');
+  assert.match(rows[0].children[0].textContent,/一号/);
+  assert.equal(rows[0].children[1].children[0].textContent,'可用');
+  assert.equal(rows[0].children[2].textContent,'120','points column must read the sidecar points field');
+  assert.equal(rows[0].children[3].textContent,'— / 1','sidecar has no success counter, success column stays dashed');
+  assert.match(rows[0].children[4].textContent,/20\d\d/,'有效期列应显示凭据到期时间');
+  assert.equal(rows[0].children[6].children[0].textContent,'停用');
+  assert.equal(rows[1].children[1].children[0].textContent,'冷却中');
+  assert.match(rows[1].children[5].textContent,/触发频控/);
+  // mock 的 textContent 不聚合子节点，small 里的恢复提示要单独看孩子。
+  assert.match(rows[1].children[5].children[0].textContent,/恢复/,'冷却行缺恢复时间提示');
+  assert.equal(rows[2].children[1].children[0].textContent,'已停用');
+  assert.equal(rows[2].children[6].children[0].textContent,'启用','disabled account must offer enable instead of disable');
+  assert.equal(get('raccoon-models-body').children.length,1,'model table row count');
+  assert.deepEqual(get('raccoon-model').children.map(option=>option.value),['raccoon-GLM · X']);
+});
+
+test('raccoon tab reports an unreachable container and keeps the import entry',async()=>{
+  const {ctx,get}=raccoonFixture({enabled:true,reachable:false,model_count:0,models:[],accounts:[]});
+  await vm.runInContext("signedIn({csrf:'c',global_enabled:true,zcode_enabled:false,qoder_enabled:false,opencode_enabled:false,autoclaw_enabled:false,trae_enabled:false,raccoon_enabled:true})",ctx);
+  await vm.runInContext('loadRaccoon()',ctx);
+  assert.equal(get('raccoon-content').hidden,false);
+  assert.equal(get('raccoon-status-badge').textContent,'不可达');
+  assert.equal(get('raccoon-status-badge').className,'badge bad');
+  assert.match(get('raccoon-status-text').textContent,/raccoon2api 容器不可达/);
+  assert.equal(get('raccoon-health-wrap').hidden,true,'health rows showed without a reachable container');
+  for(const id of ['raccoon-view-models','raccoon-view-chat'])
+    assert.equal(get(id).hidden,true,id+' tab offered while unreachable');
+  assert.equal(get('raccoon-view-import').hidden,false,'import tab is the troubleshooting entry and must stay');
+});
+
+test('raccoon import form posts parsed credentials and explains a 409 skip',async()=>{
+  const requests=[];
+  const {ctx,get}=raccoonFixture({enabled:true,reachable:true,model_count:0,models:[],accounts:[]});
+  ctx.fetch=async(url,options={})=>{
+    if(url==='/admin/raccoon/import'&&options.method==='POST'){
+      requests.push({url,body:options.body});
+      if(requests.length===1)return {ok:false,status:409,json:async()=>({action:'skipped_existing_newer'})};
+      return {ok:true,status:200,json:async()=>({uid:'r1',nickname:'一号',action:'created',needs_check:true})};
+    }
+    if(url==='/admin/raccoon')return {ok:true,status:200,json:async()=>({enabled:true,reachable:true,model_count:0,models:[],accounts:[]})};
+    if(url==='/admin/status')return {ok:true,status:200,json:async()=>({total:0,healthy:0,cooling:0,disabled:0,accounts:[]})};
+    if(url==='/admin/models')return {ok:true,status:200,json:async()=>({data:[]})};
+    if(url==='/admin/session')return new Promise(()=>{});
+    throw new Error('unexpected '+url);
+  };
+  await vm.runInContext("signedIn({csrf:'c',global_enabled:true,zcode_enabled:false,qoder_enabled:false,opencode_enabled:false,autoclaw_enabled:false,trae_enabled:false,raccoon_enabled:true})",ctx);
+  // 非法 JSON 在前端拦截，不发请求。
+  get('raccoon-import-json').value='{not json';
+  await get('raccoon-import-form').handlers.submit({preventDefault(){}});
+  assert.equal(requests.length,0,'invalid JSON must not reach the bridge');
+  assert.match(get('raccoon-import-hint').textContent,/不是合法的 JSON/);
+  // 合法 JSON 原样作为请求体：sidecar 的 auth.Parse 吃的是 auth.json 原样内容，不做包装。
+  get('raccoon-import-json').value='{"token":"abc"}';
+  await get('raccoon-import-form').handlers.submit({preventDefault(){}});
+  assert.equal(requests.length,1,'import issued no request');
+  assert.equal(requests[0].body,JSON.stringify({token:'abc'}),'import body must be the raw parsed credentials');
+  assert.match(get('raccoon-import-hint').textContent,/已有更新的凭证，未覆盖（409）/,'409 must surface the friendly skip message');
+  // 第二次提交成功，提示建议刷新核对。
+  await get('raccoon-import-form').handlers.submit({preventDefault(){}});
+  assert.equal(requests.length,2,'retry after 409 issued no request');
+  assert.match(get('raccoon-import-hint').textContent,/已导入 一号/);
+  assert.match(get('raccoon-import-hint').textContent,/建议.*刷新/,'needs_check hint missing');
+  assert.equal(vm.runInContext('raccoonView',ctx),'status','a successful import did not switch to the status tab');
+  assert.equal(vm.runInContext('raccoonBusy',ctx),false,'the import button stayed locked');
+});
+
+test('access model select merges raccoon models and routes raccoon go-chat to the raccoon tab',async()=>{
+  const {ctx,get}=raccoonFixture({enabled:true,reachable:true,model_count:1,models:[{id:'raccoon-GLM · X',realm:'raccoon'}],accounts:[]});
+  vm.runInContext("modelList=[{id:'cn:workbuddy',realm:'cn'}]",ctx);
+  await vm.runInContext('loadRaccoon()',ctx);
+  assert.deepEqual(get('access-model').children.map(o=>o.value),['cn:workbuddy','raccoon-GLM · X'],'raccoon model missing from access select');
+  assert.deepEqual(get('access-model').children.map(o=>o.textContent),['国内版 · cn:workbuddy','小浣熊 · raccoon-GLM · X']);
+  get('access-model').value='raccoon-GLM · X';vm.runInContext('renderAccess()',ctx);
+  assert.equal(get('copy-example').disabled,false,'raccoon example stayed disabled');
+  assert.match(get('api-example').textContent,/raccoon2api 桥接转发/);
+  vm.runInContext("protocol='anthropic'",ctx);
+  vm.runInContext('renderAccess()',ctx);
+  assert.match(get('api-example').textContent,/小浣熊 通道仅支持 OpenAI 协议/,'anthropic raccoon example not rejected');
+  vm.runInContext("protocol='openai'",ctx);
+  get('go-chat').handlers.click();
+  assert.equal(vm.runInContext('page',ctx),'raccoon','raccoon go-chat did not route to the raccoon tab');
+  assert.equal(get('raccoon-model').value,'raccoon-GLM · X','go-chat did not preselect the model');
+});
+
+test('raccoon dialog posts a raccoon model to the admin proxy and streams the answer',async()=>{
+  const requests=[];
+  const {ctx,get}=raccoonFixture({enabled:true,reachable:true,model_count:1,models:[{id:'raccoon-GLM · X',realm:'raccoon'}],accounts:[]});
+  ctx.fetch=async(url,options={})=>{
+    if(url==='/admin/raccoon/chat'){
+      requests.push({url,...options});
+      const chunks=[new TextEncoder().encode('data: '+JSON.stringify({choices:[{delta:{content:'Raccoon'} }]})+'\n\n'),new TextEncoder().encode('data: '+JSON.stringify({choices:[{delta:{content:' reply'} }],usage:{prompt_tokens:2,completion_tokens:3,total_tokens:5}})+'\n\n'),new TextEncoder().encode('data: [DONE]\n\n')];
+      let index=0;
+      return {ok:true,status:200,body:{getReader:()=>({read:async()=>index<chunks.length?{value:chunks[index++],done:false}:{done:true}})}};
+    }
+    if(url==='/admin/status')return {ok:true,status:200,json:async()=>({total:0,healthy:0,cooling:0,disabled:0,accounts:[]})};
+    if(url==='/admin/models')return {ok:true,status:200,json:async()=>({data:[]})};
+    if(url==='/admin/raccoon')return {ok:true,status:200,json:async()=>({enabled:true,reachable:true,model_count:1,models:[{id:'raccoon-GLM · X',realm:'raccoon'}],accounts:[]})};
+    if(url==='/admin/session')return new Promise(()=>{});
+    throw new Error('unexpected '+url);
+  };
+  await vm.runInContext("signedIn({csrf:'c',global_enabled:true,zcode_enabled:false,qoder_enabled:false,opencode_enabled:false,autoclaw_enabled:false,trae_enabled:false,raccoon_enabled:true})",ctx);
+  await vm.runInContext('loadRaccoon()',ctx);
+  get('raccoon-model').value='raccoon-GLM · X';
+  get('raccoon-prompt').value='你好';
+  await get('raccoon-form').handlers.submit({preventDefault(){}});
+  assert.equal(requests.length,1,'raccoon dialog issued no request');
+  const body=JSON.parse(requests[0].body);
+  assert.equal(body.model,'raccoon-GLM · X');
+  assert.deepEqual(body.messages,[{role:'user',content:'你好'}]);
+  assert.equal(body.stream,true);
+  assert.match(vm.runInContext('raccoonHistory[1].content',ctx),/Raccoon reply/);
+  assert.match(get('raccoon-usage').textContent,/输入 2 · 输出 3 · 总计 5/);
+  assert.match(get('raccoon-usage').textContent,/本次通道：小浣熊/);
+  assert.equal(vm.runInContext('activeRequest',ctx),undefined,'raccoon request left controls locked');
+});
+
 test('model table sorts by probe outcome first and ascending latency second',async()=>{
   // The catalog order is deliberately misleading: the healthy model is the slowest one, and the
   // fastest probe fails. Availability has to win over latency, latency only breaks ties inside a band.
@@ -2554,6 +2716,7 @@ function overviewFixture(items,zcodeStatus,extraStatuses) {
     if(url==='/admin/zcode')return response(zcodeStatus);
     if(url==='/admin/autoclaw'&&extras.autoclaw)return response(extras.autoclaw);
     if(url==='/admin/trae'&&extras.trae)return response(extras.trae);
+    if(url==='/admin/raccoon'&&extras.raccoon)return response(extras.raccoon);
     throw new Error('unexpected '+url);
   });
   get('realm').querySelector=()=>({disabled:false});
@@ -2568,21 +2731,24 @@ test('overview aggregates every enabled channel and filters the metric cards by 
     {ts:1003,uid:'opencode',account:'OpenCode 通道',model:'opencode-y',mode:'sync',prompt_tokens:3,completion_tokens:4,credit:2},
     {ts:1004,uid:'autoclaw',account:'AutoClaw 通道',model:'autoclaw-a',mode:'sync',prompt_tokens:6,completion_tokens:7,credit:0},
     {ts:1005,uid:'trae',account:'Trae 通道',model:'trae-b',mode:'stream',prompt_tokens:8,completion_tokens:9,credit:0},
+    {ts:1006,uid:'raccoon',account:'Raccoon 通道',model:'raccoon-c',mode:'sync',prompt_tokens:2,completion_tokens:3,credit:0},
   ];
   const {ctx,get}=overviewFixture(items,{enabled:true,reachable:true,model_count:3},{
     autoclaw:{enabled:true,reachable:true,model_count:2,health:{healthy:1,total:2},models:[{id:'autoclaw-a'},{id:'autoclaw-c'}]},
     trae:{enabled:true,reachable:true,model_count:2,accounts:[{uid:'t1',enabled:true},{uid:'t2',enabled:false}],models:[{id:'trae-b'},{id:'trae-d'}]},
+    raccoon:{enabled:true,reachable:true,model_count:1,accounts:[{uid:'r1',enabled:true,points:50}],models:[{id:'raccoon-c'}]},
   });
-  await vm.runInContext("signedIn({csrf:'c',global_enabled:true,zcode_enabled:true,qoder_enabled:true,opencode_enabled:true,autoclaw_enabled:true,trae_enabled:true})",ctx);
+  await vm.runInContext("signedIn({csrf:'c',global_enabled:true,zcode_enabled:true,qoder_enabled:true,opencode_enabled:true,autoclaw_enabled:true,trae_enabled:true,raccoon_enabled:true})",ctx);
   // 概览的旁路状态只读页签缓存：先访问一次各旁路页签，再刷新概览，验证「在线/N 模型」口径。
   await vm.runInContext('loadZcode()',ctx);
   await vm.runInContext('loadAutoClaw()',ctx);
   await vm.runInContext('loadTrae()',ctx);
+  await vm.runInContext('loadRaccoon()',ctx);
   await vm.runInContext('loadOverview()',ctx);
   await new Promise(r=>setImmediate(r));
   const rows=get('overview-channels-body').children;
   const text=td=>td.children.length?td.children[0].textContent:td.textContent;
-  assert.deepEqual(rows.map(tr=>tr.children[0].textContent),['WorkBuddy','GLM（Zcode）','Qoder','OpenCode','AutoClaw','Trae'],'channel overview rows missing or misordered');
+  assert.deepEqual(rows.map(tr=>tr.children[0].textContent),['WorkBuddy','GLM（Zcode）','Qoder','OpenCode','AutoClaw','Trae','小浣熊'],'channel overview rows missing or misordered');
   assert.deepEqual(rows[0].children.map(text),['WorkBuddy','运行中','1','1','100','200','1.5']);
   // 旁路状态来自页签缓存：未访问过的通道如实标「未加载」，不伪造在线。
   assert.deepEqual(rows[1].children.map(text),['GLM（Zcode）','在线','3','1','10','20','—'],'zcode missing credit must show dash, not 0');
@@ -2590,8 +2756,9 @@ test('overview aggregates every enabled channel and filters the metric cards by 
   assert.match(text(rows[3].children[1]),/不可达|未加载/);
   assert.deepEqual(rows[4].children.map(text),['AutoClaw','在线','2','1','6','7','0'],'autoclaw 通道行口径不符');
   assert.deepEqual(rows[5].children.map(text),['Trae','在线','2','1','8','9','0'],'trae 通道行口径不符');
-  assert.equal(get('overview-usage-calls').textContent,'6');
-  assert.equal(get('overview-usage-tokens').textContent,'372');
+  assert.deepEqual(rows[6].children.map(text),['小浣熊','在线','1','1','2','3','0'],'raccoon 通道行口径不符');
+  assert.equal(get('overview-usage-calls').textContent,'7');
+  assert.equal(get('overview-usage-tokens').textContent,'377');
   assert.equal(get('overview-usage-credit').textContent,'3.5');
   assert.match(get('overview-usage-note').textContent,/1 条记录未回报输入 token/);
   assert.match(get('overview-usage-note').textContent,/1 条记录未回报积分扣费/);
@@ -2600,7 +2767,7 @@ test('overview aggregates every enabled channel and filters the metric cards by 
   assert.equal(get('overview-usage-calls').textContent,'1');
   assert.equal(get('overview-usage-tokens').textContent,'30');
   assert.equal(get('overview-usage-credit').textContent,'—','all-missing credit must not read as zero');
-  assert.equal(get('overview-channels-body').children.length,6,'channel table must stay full while metrics are filtered');
+  assert.equal(get('overview-channels-body').children.length,7,'channel table must stay full while metrics are filtered');
 });
 
 test('overview hides channels the deployment never enabled',async()=>{
@@ -2696,7 +2863,7 @@ test('overview page, probe buttons and the speed column exist in the page shell'
   }
   assert.ok(!html.includes('id="probe-opencode"'),'opencode must not get a manual probe button');
   // 允许表头带 class（数值列要挂 class="num" 才能和单元格同侧对齐），只认列名本身。
-  assert.equal((html.match(/<th[^>]*>速度<\/th>/g)||[]).length,6,'every model table must carry the speed column');
+  assert.equal((html.match(/<th[^>]*>速度<\/th>/g)||[]).length,7,'every model table must carry the speed column');
   assert.match(html,/gateway-auto/,'routes page still advertises the bare auto name');
   // 改造后的界面契约：常驻无障碍播报区存在，逐节的营销小标题不再回来。
   assert.match(html,/id="announce"[^>]*aria-live="polite"/,'persistent live region missing');
@@ -2752,7 +2919,7 @@ test('changing page starts the new view at its own top', () => {
 test('页面级刷新按钮吸顶，落在网关状态左侧且只有当前页那一个可见', () => {
   const html=readFileSync(__dirname+'/web/index.html','utf8');
   const rail=html.match(/<header class="topbar">[\s\S]*?<\/header>/)[0];
-  const ids=['refresh','zcode-refresh','qoder-refresh','opencode-refresh','ccr-refresh','autoclaw-refresh','trae-refresh','usage-refresh','routes-refresh'];
+  const ids=['refresh','zcode-refresh','qoder-refresh','opencode-refresh','ccr-refresh','autoclaw-refresh','trae-refresh','raccoon-refresh','usage-refresh','routes-refresh'];
   const stateAt=rail.indexOf('id="service-state"');
   assert.ok(stateAt>0,'顶栏里找不到网关状态，无从判断左右');
   for(const id of ids){
@@ -2765,7 +2932,7 @@ test('页面级刷新按钮吸顶，落在网关状态左侧且只有当前页�
 
   const {ctx,get}=taskFixture(async()=>({ok:true,status:200,json:async()=>({}),headers:{get:()=>null}}));
   const visible=()=>ids.filter(id=>get(id).hidden===false);
-  for(const [view,id] of [['overview','refresh'],['zcode','zcode-refresh'],['qoder','qoder-refresh'],['opencode','opencode-refresh'],['ccr','ccr-refresh'],['autoclaw','autoclaw-refresh'],['trae','trae-refresh'],['usage','usage-refresh'],['routes','routes-refresh']]){
+  for(const [view,id] of [['overview','refresh'],['zcode','zcode-refresh'],['qoder','qoder-refresh'],['opencode','opencode-refresh'],['ccr','ccr-refresh'],['autoclaw','autoclaw-refresh'],['trae','trae-refresh'],['raccoon','raccoon-refresh'],['usage','usage-refresh'],['routes','routes-refresh']]){
     vm.runInContext(`showPage('${view}')`,ctx);
     assert.deepEqual(visible(),[id],`切到 ${view} 页时顶栏可见的刷新按钮不是唯一那一个`);
   }
@@ -2914,6 +3081,27 @@ test('通道归类：usageChannelOrder 里每条通道都能从账本 uid 认出
     assert.ok(vm.runInContext(`typeof usageChannelNames[${JSON.stringify(channel)}]==='string'&&usageChannelNames[${JSON.stringify(channel)}].length>0`,ctx),
       `usageChannelNames 里缺 ${channel}，机架卡和表格的通道名会显示 undefined`);
   }
+  // 客户端列的通道标签与通道名单同序同集合：漏一条，那一类旁路的客户端就永远不加前缀。
+  assert.deepEqual(objectKeysFrom(readFileSync(__dirname+'/web/app.js','utf8'),'usageChannelTags'),channels,
+    'usageChannelTags 的键与 usageChannelOrder 不同序（客户端列会漏前缀或留下孤儿标签）');
+});
+
+test('调用明细的客户端列：旁路通道前置通道标签认是谁报的，核心原样，空值不加前缀',async()=>{
+  const items=[
+    {ts:1000,uid:'u1',account:'alice',model:'cn:m',mode:'sync',prompt_tokens:1,completion_tokens:1,credit:0,client:'pi/0.78.2'},
+    {ts:1001,uid:'trae',account:'Trae 通道',model:'trae-doubao',mode:'sync',prompt_tokens:1,completion_tokens:1,credit:0,client:'Hermes 0.18.0'},
+    {ts:1002,uid:'zcode',account:'GLM 通道',model:'glm-5.2',mode:'sync',prompt_tokens:1,completion_tokens:1,credit:0,client:'WorkBuddy/2.8.0'},
+    {ts:1003,uid:'qoder',account:'Qoder 通道',model:'qoder-x',mode:'sync',prompt_tokens:1,completion_tokens:1,credit:0},
+  ];
+  const usage=taskFixture(async()=>({ok:true,status:200,json:async()=>({range:'today',items,summary:{}})}));
+  await vm.runInContext('loadUsage()',usage.ctx);
+  const rows=usage.get('usage-body').children;
+  const clientOf=tr=>tr.children[10].textContent;
+  // 明细最新在上：qoder（无 client）→ zcode → trae → 核心。
+  assert.deepEqual(rows.map(clientOf),['—','GLM · WorkBuddy/2.8.0','Trae · Hermes 0.18.0','pi/0.78.2'],
+    '客户端列没按通道加标签：旁路报的串看不出是谁，核心的 UA 反而被改了写');
+  // 色点/类名不受影响：仍然只挂通道名那一格。
+  assert.equal(rows[2].children[1].className,'ch-name ch-trae','客户端列的改动串到了通道列');
 });
 
 test('两条通道筛选下拉：选项正好等于 usageChannelOrder，新通道不许只加在脚本里',()=>{

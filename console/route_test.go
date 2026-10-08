@@ -667,7 +667,7 @@ func TestModelSwitchOpenCodeExempt(t *testing.T) {
 }
 
 // sideExemptConsole 挂一个免费旁路通道上游，用于验证该通道不受积分开关约束。
-// 免费通道（opencode/autoclaw/trae）均豁免，这里用统一构造避免逐个用例重复。
+// 免费通道（opencode/autoclaw/trae/raccoon）均豁免，这里用统一构造避免逐个用例重复。
 func sideExemptConsole(t *testing.T, channel routeChannel, urlField func(*Config, *url.URL), keyField func(*Config, string)) http.Handler {
 	t.Helper()
 	coreTS := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -714,6 +714,20 @@ func TestModelSwitchTraeExempt(t *testing.T) {
 	rec := gateChat(h, "trae-claude-4")
 	if rec.Code != 200 || rec.Body.String() != `{"trae":true}` {
 		t.Fatalf("trae gated despite exemption: %d %s", rec.Code, rec.Body)
+	}
+}
+
+// TestModelSwitchRaccoonExempt 验证 raccoon 免费通道完全不受开关约束。
+func TestModelSwitchRaccoonExempt(t *testing.T) {
+	h := sideExemptConsole(t, channelRaccoon,
+		func(c *Config, u *url.URL) { c.RaccoonURL = u },
+		func(c *Config, k string) { c.RaccoonKey = k })
+	if got := saveRoutes(t, h, []routeEntry{{Alias: "rc", Channel: channelRaccoon, Model: "glm-5.3", Enabled: true}}, ""); got.Code != 200 {
+		t.Fatalf("save: %d %s", got.Code, got.Body)
+	}
+	rec := gateChat(h, "raccoon-glm-5.3")
+	if rec.Code != 200 || rec.Body.String() != `{"raccoon":true}` {
+		t.Fatalf("raccoon gated despite exemption: %d %s", rec.Code, rec.Body)
 	}
 }
 

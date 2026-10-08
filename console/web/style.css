@@ -27,16 +27,16 @@
     --ch 是本色（描边/色点/色带），--ch-ink 是浅色底上的文字版，--ch-wash 是极浅底。
     文字版一律 ≥4.5:1（ink 落在各自 wash 上）；这条不靠注释担保，由 web_test.cjs
     从下面的色值现算对比度逐条把关。本色只做图形不做正文。 */
- --ch-workbuddy:#4f52d6;--ch-zcode:#0a7f96;--ch-qoder:#7a3fc4;--ch-opencode:#c4356f;--ch-autoclaw:#8a5a00;--ch-trae:#3f7a1e;
- --ch-workbuddy-ink:#3d40a8;--ch-zcode-ink:#076b80;--ch-qoder-ink:#6a36ab;--ch-opencode-ink:#b02f63;--ch-autoclaw-ink:#6e4700;--ch-trae-ink:#326219;
- --ch-workbuddy-wash:#eef0fa;--ch-zcode-wash:#e6f4f7;--ch-qoder-wash:#f2ecfb;--ch-opencode-wash:#fbeaf1;--ch-autoclaw-wash:#faf3e2;--ch-trae-wash:#edf4e7;
+ --ch-workbuddy:#4f52d6;--ch-zcode:#0a7f96;--ch-qoder:#7a3fc4;--ch-opencode:#c4356f;--ch-autoclaw:#8a5a00;--ch-trae:#3f7a1e;--ch-raccoon:#a14e2c;
+ --ch-workbuddy-ink:#3d40a8;--ch-zcode-ink:#076b80;--ch-qoder-ink:#6a36ab;--ch-opencode-ink:#b02f63;--ch-autoclaw-ink:#6e4700;--ch-trae-ink:#326219;--ch-raccoon-ink:#86401f;
+ --ch-workbuddy-wash:#eef0fa;--ch-zcode-wash:#e6f4f7;--ch-qoder-wash:#f2ecfb;--ch-opencode-wash:#fbeaf1;--ch-autoclaw-wash:#faf3e2;--ch-trae-wash:#edf4e7;--ch-raccoon-wash:#f8efe8;
  /* --ch-lit 是暗底（机架面 --sidebar）上的文字版，同样由那条测试实测过 4.5:1。 */
- --ch-workbuddy-lit:#8f92ff;--ch-zcode-lit:#4fd6e8;--ch-qoder-lit:#b78cf5;--ch-opencode-lit:#ff8fb8;--ch-autoclaw-lit:#e8b45a;--ch-trae-lit:#9ad86a;
- /* 谱线按色相排（靛→紫罗兰→琥珀→草→青→玫红），不是 usageChannelOrder 的通道顺序：
+ --ch-workbuddy-lit:#8f92ff;--ch-zcode-lit:#4fd6e8;--ch-qoder-lit:#b78cf5;--ch-opencode-lit:#ff8fb8;--ch-autoclaw-lit:#e8b45a;--ch-trae-lit:#9ad86a;--ch-raccoon-lit:#e89a6a;
+ /* 谱线按色相排（靛→紫罗兰→琥珀→赭→草→青→玫红），不是 usageChannelOrder 的通道顺序：
     隔色相邻会断成几段色条，顺色相才读成一道连续的光。列表顺序仍以通道为准。
     新通道要同时补进这两条谱线，缺一处谱线就少一束，测试按通道全量反查。 */
- --spectrum:linear-gradient(90deg,var(--ch-workbuddy) 0%,var(--ch-qoder) 27%,var(--ch-autoclaw) 45%,var(--ch-trae) 58%,var(--ch-zcode) 72%,var(--ch-opencode) 100%);
- --spectrum-v:linear-gradient(180deg,var(--ch-workbuddy) 0%,var(--ch-qoder) 27%,var(--ch-autoclaw) 45%,var(--ch-trae) 58%,var(--ch-zcode) 72%,var(--ch-opencode) 100%);
+ --spectrum:linear-gradient(90deg,var(--ch-workbuddy) 0%,var(--ch-qoder) 24%,var(--ch-autoclaw) 40%,var(--ch-raccoon) 52%,var(--ch-trae) 63%,var(--ch-zcode) 76%,var(--ch-opencode) 100%);
+ --spectrum-v:linear-gradient(180deg,var(--ch-workbuddy) 0%,var(--ch-qoder) 24%,var(--ch-autoclaw) 40%,var(--ch-raccoon) 52%,var(--ch-trae) 63%,var(--ch-zcode) 76%,var(--ch-opencode) 100%);
  --sidebar:#0f1120;
  --sidebar-hi:#262b50;
  --sidebar-ink:#d3d6ee;
@@ -101,6 +101,7 @@ code{font-family:var(--font-mono);font-size:.92em}
 .ch-opencode{--ch:var(--ch-opencode);--ch-ink:var(--ch-opencode-ink);--ch-wash:var(--ch-opencode-wash);--ch-lit:var(--ch-opencode-lit)}
 .ch-autoclaw{--ch:var(--ch-autoclaw);--ch-ink:var(--ch-autoclaw-ink);--ch-wash:var(--ch-autoclaw-wash);--ch-lit:var(--ch-autoclaw-lit)}
 .ch-trae{--ch:var(--ch-trae);--ch-ink:var(--ch-trae-ink);--ch-wash:var(--ch-trae-wash);--ch-lit:var(--ch-trae-lit)}
+.ch-raccoon{--ch:var(--ch-raccoon);--ch-ink:var(--ch-raccoon-ink);--ch-wash:var(--ch-raccoon-wash);--ch-lit:var(--ch-raccoon-lit)}
 /* 通道名单元格：色点由 ::before 画，不另起 <span>——文字仍是这个单元格的唯一子节点，
    读屏念出来也只有通道名，不会多出一段无意义的点。 */
 .ch-name{color:var(--ch-ink);font-weight:650;white-space:nowrap}
@@ -189,6 +190,7 @@ code{font-family:var(--font-mono);font-size:.92em}
 .stroke-opencode{stroke:var(--ch-opencode)}
 .stroke-autoclaw{stroke:var(--ch-autoclaw)}
 .stroke-trae{stroke:var(--ch-trae)}
+.stroke-raccoon{stroke:var(--ch-raccoon)}
 /* viewBox 会被 .trend-svg 的 width:100% 等比放大，stroke-width:2 跟着一起变粗，
    宽屏上线糊成一片。non-scaling-stroke 把线宽钉回 2 个 CSS 像素，与缩放无关。 */
 .trend-line{vector-effect:non-scaling-stroke}
@@ -199,6 +201,7 @@ code{font-family:var(--font-mono);font-size:.92em}
 .fill-opencode{fill:var(--ch-opencode)}
 .fill-autoclaw{fill:var(--ch-autoclaw)}
 .fill-trae{fill:var(--ch-trae)}
+.fill-raccoon{fill:var(--ch-raccoon)}
 
 /* ---------- 页面骨架 ---------- */
 .page{max-width:1360px;margin:auto;padding:26px 32px 34px}
@@ -257,6 +260,7 @@ code{font-family:var(--font-mono);font-size:.92em}
 .sw-opencode{background:var(--ch-opencode)}
 .sw-autoclaw{background:var(--ch-autoclaw)}
 .sw-trae{background:var(--ch-trae)}
+.sw-raccoon{background:var(--ch-raccoon)}
 
 /* ---------- 调用统计：Token 热力图 / 每日趋势 / 模型占比 ---------- */
 /* hm1-4 的紫阶与 sw-r0..r4 / sw-other 的取色，和 app.js 里的 modelColors、

@@ -102,7 +102,7 @@ func TestProbeAdminAuthAndValidation(t *testing.T) {
 		t.Fatalf("missing csrf: %d", rec.Code)
 	}
 	rec := adminRequest(h, "POST", "/admin/probe", `{"channels":["opencode"]}`, cookie, csrf)
-	if rec.Code != 400 || !strings.Contains(rec.Body.String(), "只能是 core、glm、qoder、autoclaw 或 trae") {
+	if rec.Code != 400 || !strings.Contains(rec.Body.String(), "只能是 core、glm、qoder、autoclaw、trae 或 raccoon") {
 		t.Fatalf("bad channel: %d %s", rec.Code, rec.Body)
 	}
 }
@@ -246,7 +246,7 @@ func TestProbeRejectsConcurrentStart(t *testing.T) {
 func TestProbeSideChannelStatusHealth(t *testing.T) {
 	var mu sync.Mutex
 	var zcodeModel, zcodeAuth, qoderModel, qoderAuth string
-	var autoclawModel, autoclawAuth, traeModel, traeAuth string
+	var autoclawModel, autoclawAuth, traeModel, traeAuth, raccoonModel, raccoonAuth string
 	zcodeTS := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
 		case "/v1/models":
@@ -309,6 +309,21 @@ func TestProbeSideChannelStatusHealth(t *testing.T) {
 		}
 	}))
 	t.Cleanup(traeTS.Close)
+	raccoonTS := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/v1/models":
+			fmt.Fprint(w, `{"object":"list","data":[{"id":"c"}]}`)
+		case "/v1/chat/completions":
+			model, _ := readProbeBody(t, r)
+			mu.Lock()
+			raccoonModel, raccoonAuth = model, r.Header.Get("Authorization")
+			mu.Unlock()
+			sseOK(w, 8)
+		default:
+			fmt.Fprint(w, `{}`)
+		}
+	}))
+	t.Cleanup(raccoonTS.Close)
 	coreTS := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		fmt.Fprint(w, `{"data":[]}`)
 	}))
@@ -324,13 +339,15 @@ func TestProbeSideChannelStatusHealth(t *testing.T) {
 	cfg.AutoClawKey = strings.Repeat("a", 32)
 	cfg.TraeURL = mustParseURL(t, traeTS.URL)
 	cfg.TraeKey = strings.Repeat("t", 32)
+	cfg.RaccoonURL = mustParseURL(t, raccoonTS.URL)
+	cfg.RaccoonKey = strings.Repeat("r", 32)
 	h, err := NewServer(cfg)
 	if err != nil {
 		t.Fatal(err)
 	}
 
 	cookie, csrf := login(t, h)
-	rec := adminRequest(h, "POST", "/admin/probe", `{"channels":["glm","qoder","autoclaw","trae"]}`, cookie, csrf)
+	rec := adminRequest(h, "POST", "/admin/probe", `{"channels":["glm","qoder","autoclaw","trae","raccoon"]}`, cookie, csrf)
 	if rec.Code != 200 {
 		t.Fatalf("start: %d %s", rec.Code, rec.Body)
 	}
@@ -351,8 +368,13 @@ func TestProbeSideChannelStatusHealth(t *testing.T) {
 	if result, _ := trae["trae-b"].(map[string]any); result == nil || result["ok"] != true {
 		t.Fatalf("trae result=%v", trae["trae-b"])
 	}
+	raccoon := snapshotChannel(t, snap, "raccoon")
+	if result, _ := raccoon["raccoon-c"].(map[string]any); result == nil || result["ok"] != true {
+		t.Fatalf("raccoon result=%v", raccoon["raccoon-c"])
+	}
 	mu.Lock()
 	zm, za, qm, qa, am, aa, tm, ta := zcodeModel, zcodeAuth, qoderModel, qoderAuth, autoclawModel, autoclawAuth, traeModel, traeAuth
+	rm, ra := raccoonModel, raccoonAuth
 	mu.Unlock()
 	// glm 原生名自带前缀，原样发送；其余通道公共前缀必须剥掉再发上游。
 	if zm != "glm-x" {
@@ -378,6 +400,12 @@ func TestProbeSideChannelStatusHealth(t *testing.T) {
 	}
 	if ta != "Bearer "+cfg.TraeKey {
 		t.Fatalf("trae probe auth=%q", ta)
+	}
+	if rm != "c" {
+		t.Fatalf("raccoon probe model=%q", rm)
+	}
+	if ra != "Bearer "+cfg.RaccoonKey {
+		t.Fatalf("raccoon probe auth=%q", ra)
 	}
 
 	// 旁路状态端点把结论以 health.modelResults（公共模型名为键）附带下发。
@@ -450,5 +478,21 @@ func TestProbeSideChannelStatusHealth(t *testing.T) {
 	}
 	if result := tstatus.Health.ModelResults["trae-b"]; result == nil || result["ok"] != true || result["source"] != "probe" {
 		t.Fatalf("trae health=%v", tstatus.Health.ModelResults)
+	}
+
+	rec = adminRequest(h, "GET", "/admin/raccoon", "", cookie, csrf)
+	if rec.Code != 200 {
+		t.Fatalf("raccoon status: %d %s", rec.Code, rec.Body)
+	}
+	var rstatus struct {
+		Health struct {
+			ModelResults map[string]map[string]any `json:"modelResults"`
+		} `json:"health"`
+	}
+	if json.Unmarshal(rec.Body.Bytes(), &rstatus) != nil {
+		t.Fatalf("raccoon status not JSON: %s", rec.Body)
+	}
+	if result := rstatus.Health.ModelResults["raccoon-c"]; result == nil || result["ok"] != true || result["source"] != "probe" {
+		t.Fatalf("raccoon health=%v", rstatus.Health.ModelResults)
 	}
 }

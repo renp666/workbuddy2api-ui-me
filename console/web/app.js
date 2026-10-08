@@ -13,6 +13,7 @@ let opencodeModels = [], opencodeHistory = [], opencodeStatus = null, opencodeBu
 let ccrStatus = null, ccrEnabled = false, ccrBusy = false;
 let autoclawModels = [], autoclawHistory = [], autoclawStatus = null, autoclawBusy = false, autoclawView = 'status', autoclawEnabled = false, autoclawAccounts = [], autoclawLoginBusy = false, autoclawCodeTimer = null;
 let traeModels = [], traeHistory = [], traeStatus = null, traeBusy = false, traeView = 'status', traeEnabled = false, traeAccounts = [], traeLoginBusy = false, traePollTimer = null, traeAuthURL = '';
+let raccoonModels = [], raccoonHistory = [], raccoonStatus = null, raccoonBusy = false, raccoonView = 'status', raccoonEnabled = false, raccoonAccounts = [];
 let routesState = null, routesBusy = false, routesEditing = null;
 let probeSnapshot = {running:false,done:0,total:0,channels:{}}, probeTarget = '', probeTimer, probeBusy = false;
 // modelsGroupByAccount：core 模型表是否按可用账号分层展示（默认开）。
@@ -47,6 +48,7 @@ function signedOut() {
  opencodeModels=[];opencodeHistory=[];opencodeStatus=null;opencodeEnabled=false;opencodeBusy=false;opencodeView='status';$('opencode-model').replaceChildren();clearMessages($('opencode-messages'));$('opencode-prompt').value='';$('opencode-usage').textContent='用量将在上游返回后显示';$('opencode-disabled').hidden=true;$('opencode-content').hidden=true;$('nav-opencode').classList.remove('nav-muted');$('opencode-health-wrap').hidden=true;$('opencode-health-body').replaceChildren();ccrStatus=null;ccrEnabled=false;ccrBusy=false;$('ccr-disabled').hidden=true;$('ccr-content').hidden=true;$('nav-ccr').classList.remove('nav-muted');
  autoclawModels=[];autoclawHistory=[];autoclawStatus=null;autoclawEnabled=false;autoclawBusy=false;autoclawLoginBusy=false;autoclawView='status';autoclawAccounts=[];clearTimeout(autoclawCodeTimer);autoclawCodeTimer=null;$('autoclaw-model').replaceChildren();clearMessages($('autoclaw-messages'));$('autoclaw-prompt').value='';$('autoclaw-usage').textContent='用量将在上游返回后显示';$('autoclaw-disabled').hidden=true;$('autoclaw-content').hidden=true;$('nav-autoclaw').classList.remove('nav-muted');$('autoclaw-health-wrap').hidden=true;$('autoclaw-health-body').replaceChildren();$('autoclaw-accounts-body').replaceChildren();$('autoclaw-phone').value='';$('autoclaw-code').value='';$('autoclaw-oauth-url').value='';$('autoclaw-login-hint').textContent='';$('autoclaw-global-hint').textContent='';const sc=$('autoclaw-sendcode');sc.disabled=false;sc.textContent='发送验证码';
  traeModels=[];traeHistory=[];traeStatus=null;traeEnabled=false;traeBusy=false;traeLoginBusy=false;traeView='status';traeAccounts=[];traeAuthURL='';clearTimeout(traePollTimer);traePollTimer=null;$('trae-model').replaceChildren();clearMessages($('trae-messages'));$('trae-prompt').value='';$('trae-usage').textContent='用量将在上游返回后显示';$('trae-disabled').hidden=true;$('trae-content').hidden=true;$('nav-trae').classList.remove('nav-muted');$('trae-health-wrap').hidden=true;$('trae-health-body').replaceChildren();$('trae-accounts-body').replaceChildren();$('trae-auth-row').hidden=true;$('trae-login-hint').textContent='';$('trae-import-url').value='';$('trae-import-hint').textContent='';$('trae-schedule-body').replaceChildren();$('trae-schedule-hint').textContent='';$('trae-usage-body').replaceChildren();
+ raccoonModels=[];raccoonHistory=[];raccoonStatus=null;raccoonEnabled=false;raccoonBusy=false;raccoonView='status';raccoonAccounts=[];$('raccoon-model').replaceChildren();clearMessages($('raccoon-messages'));$('raccoon-prompt').value='';$('raccoon-usage').textContent='用量将在上游返回后显示';$('raccoon-disabled').hidden=true;$('raccoon-content').hidden=true;$('nav-raccoon').classList.remove('nav-muted');$('raccoon-health-wrap').hidden=true;$('raccoon-health-body').replaceChildren();$('raccoon-accounts-body').replaceChildren();$('raccoon-import-json').value='';$('raccoon-import-hint').textContent='';
  routesState=null;routesBusy=false;routesEditing=null;modelSwitchOverrides=new Map();capState=null;capByKeys=new Map();capDim='coding';capCategory='';capFilter='';$('routes-disabled').hidden=true;$('routes-content').hidden=true;$('routes-alias-body').replaceChildren();$('routes-channels').replaceChildren();$('routes-model-options').replaceChildren();$('routes-example').textContent='';$('routes-alias-name').value='';$('routes-alias-model').value='';$('routes-alias-note').value='';$('routes-auto-fallback').value='';$('cap-filter').value='';
  probeSnapshot={running:false,done:0,total:0,channels:{}};probeTarget='';probeBusy=false;clearTimeout(probeTimer);probeTimer=undefined;for(const n of Object.keys(probeChannelNames)){$('probe-'+n+'-progress').hidden=true;$('probe-'+n+'-progress').textContent='';}
  overviewUsageItems=[];overviewGeneration++;
@@ -65,10 +67,11 @@ async function signedIn(session) {
  ccrEnabled = !!session.ccr_enabled; $('nav-ccr').classList.toggle('nav-muted', !ccrEnabled);
  autoclawEnabled = !!session.autoclaw_enabled; $('nav-autoclaw').classList.toggle('nav-muted', !autoclawEnabled);
  traeEnabled = !!session.trae_enabled; $('nav-trae').classList.toggle('nav-muted', !traeEnabled);
+ raccoonEnabled = !!session.raccoon_enabled; $('nav-raccoon').classList.toggle('nav-muted', !raccoonEnabled);
  await refreshStatus(); await refreshModels(); await loadPins();
  void loadModelHeat(); void loadModelSwitch(); void loadGlobalHeat(); void loadOverview(true); void restoreProbe();
 }
-const pageNames = {overview:'运行概览',workbuddy:'WorkBuddy 通道',zcode:'Zcode 通道',qoder:'Qoder 通道',opencode:'OpenCode 通道',ccr:'CCR 网关',autoclaw:'AutoClaw 通道',trae:'Trae 通道',usage:'调用统计',routes:'Agent 接入',access:'API 接入'};
+const pageNames = {overview:'运行概览',workbuddy:'WorkBuddy 通道',zcode:'Zcode 通道',qoder:'Qoder 通道',opencode:'OpenCode 通道',ccr:'CCR 网关',autoclaw:'AutoClaw 通道',trae:'Trae 通道',raccoon:'小浣熊通道',usage:'调用统计',routes:'Agent 接入',access:'API 接入'};
 const workbuddyNames = {accounts:'账号管理',tasks:'自动任务',models:'模型列表',chat:'对话测试'};
 function setWorkBuddyView(view) {
  workbuddyView = view;
@@ -106,6 +109,7 @@ function showPage(value) {
  if (page === 'ccr') loadCCR();
  if (page === 'autoclaw') loadAutoClaw();
  if (page === 'trae') loadTrae();
+ if (page === 'raccoon') loadRaccoon();
  if (page === 'routes') loadRoutes();
  // The access tab lists GLM and Qoder channel models too; fetch statuses once lazily
  // so its select is complete even when the operator never opens those tabs.
@@ -114,6 +118,7 @@ function showPage(value) {
  if (page === 'access' && opencodeEnabled && !opencodeStatus) loadOpenCode();
  if (page === 'access' && autoclawEnabled && !autoclawStatus) loadAutoClaw();
  if (page === 'access' && traeEnabled && !traeStatus) loadTrae();
+ if (page === 'access' && raccoonEnabled && !raccoonStatus) loadRaccoon();
 }
 document.querySelectorAll('[data-view]').forEach(button => button.addEventListener('click', () => {
  showPage(button.dataset.view);
@@ -172,11 +177,12 @@ const modelChannels={zcode:{body:'zcode-models-body',empty:'zcode-models-empty',
  opencode:{body:'opencode-models-body',empty:'opencode-models-empty',namePrefix:'opencode-OC · '},
  autoclaw:{body:'autoclaw-models-body',empty:'autoclaw-models-empty',namePrefix:'AutoClaw · '},
  trae:{body:'trae-models-body',empty:'trae-models-empty',namePrefix:'Trae · '},
+ raccoon:{body:'raccoon-models-body',empty:'raccoon-models-empty',namePrefix:'小浣熊 · '},
  core:{body:'core-models-body',empty:'core-models-empty',namePrefix:''}};
 const modelFailureLabels={timeout:'探测超时',access:'地区限制',error:'调用失败',model_error:'模型错误',auth:'未授权',rate_limit:'限流',empty:'空返回'};
 const modelProbeSources={probe:'探测',request:'真实请求'};
 // 公共模型名带通道前缀（opencode-OC · X / glm-X / opencode/x）与 realm 前缀（cn:/global:），去掉后作为跨源对齐键。
-function modelKey(id){return String(id||'').replace(/^opencode-OC · /,'').replace(/^OC · /,'').replace(/^opencode\//,'').replace(/^(?:cn|global):/,'').replace(/^glm-/,'').replace(/^qoder-/,'').replace(/^autoclaw-/,'').replace(/^trae-/,'').toLowerCase().replace(/[^a-z0-9\u4e00-\u9fa5]+/g,'');}
+function modelKey(id){return String(id||'').replace(/^opencode-OC · /,'').replace(/^OC · /,'').replace(/^opencode\//,'').replace(/^(?:cn|global):/,'').replace(/^glm-/,'').replace(/^qoder-/,'').replace(/^autoclaw-/,'').replace(/^trae-/,'').replace(/^raccoon-/,'').toLowerCase().replace(/[^a-z0-9\u4e00-\u9fa5]+/g,'');}
 function badgeCell(text,tone){const td=document.createElement('td');const tag=document.createElement('span');tag.className='badge'+(tone?' '+tone:'');tag.textContent=text;td.append(tag);return td;}
 function chipsCell(labels,small){const td=document.createElement('td');if(labels.length){const row=document.createElement('span');row.className='badge-row';for(const label of labels){const tag=document.createElement('span');tag.className='badge';tag.textContent=label;row.append(tag);}td.append(row);}else td.textContent='—';if(small){const note=document.createElement('small');note.textContent=small;td.append(note);}return td;}
 // 五档语义：ok=探测确认能调，warn=能调但打了折（仅对话），bad=探测确认调不通，
@@ -297,7 +303,7 @@ function channelModelRows(channel,list,health){
  const caps=new Map();
  if(health&&Array.isArray(health.models))for(const item of health.models){if(item&&item.name)caps.set(modelKey(item.name),item);}
  const rows=new Map();
- const switchable=channel!=='opencode'&&channel!=='autoclaw'&&channel!=='trae';
+ const switchable=channel!=='opencode'&&channel!=='autoclaw'&&channel!=='trae'&&channel!=='raccoon';
  const ensure=label=>{const identity=channel==='core'?String(label||''):modelKey(label);if(!identity)return null;const key=modelKey(label);if(!rows.has(identity))rows.set(identity,{key,label:String(label),id:String(label),cap:null,result:null,efforts:null,credits:null,creditValue:null,accounts:null});return rows.get(identity);};
  for(const item of(Array.isArray(list)?list:[])){
   if(!item||!item.id)continue;
@@ -348,7 +354,7 @@ function renderModelTable(channel,list,health){
  modelHeatSources[channel]={list,health};
  const body=$(config.body);body.replaceChildren();
  const rows=channelModelRows(channel,list,health);
- const cols=(channel==='opencode'||channel==='autoclaw'||channel==='trae')?8:10;
+ const cols=(channel==='opencode'||channel==='autoclaw'||channel==='trae'||channel==='raccoon')?8:10;
  const appendRow=row=>{
   const tr=document.createElement('tr');
   // 只有异常行抬底色：可用/未知是常态，整表染色等于没染色，失败行反而被淹掉。
@@ -407,10 +413,10 @@ function switchOpCell(row){
 }
 // ── 手工测速探测 ──
 // 探测仅由页面按钮触发（不点不耗额度）；结论缓存在服务端内存，重启即清空。
-// 通道键：core→"core"、zcode→"glm"、qoder→"qoder"、autoclaw→"autoclaw"、trae→"trae"（与后端 routeChannel 同一口径）。
+// 通道键：core→"core"、zcode→"glm"、qoder→"qoder"、autoclaw→"autoclaw"、trae→"trae"、raccoon→"raccoon"（与后端 routeChannel 同一口径）。
 // 这张表同时是「页面上有哪几颗探测按钮」的唯一真源：下面的按钮禁用、进度行、事件绑定、
 // 退出登录复位都按它的键走，新通道只在这里加一行。
-const probeChannelNames={core:'core',zcode:'glm',qoder:'qoder',autoclaw:'autoclaw',trae:'trae'};
+const probeChannelNames={core:'core',zcode:'glm',qoder:'qoder',autoclaw:'autoclaw',trae:'trae',raccoon:'raccoon'};
 function setProbeButtonsDisabled(disabled){for(const n of Object.keys(probeChannelNames))$('probe-'+n).disabled=disabled;}
 function renderProbeProgress(){
  const running=!!probeSnapshot.running,total=Number(probeSnapshot.total)||0,done=Number(probeSnapshot.done)||0;
@@ -436,6 +442,9 @@ function applyProbeResults(){
   // trae 状态接口的 health 只承载探测的 modelResults（无 healthy/total）；
   // 这里用刚完成的探测结论覆盖，保留其余字段。
   renderModelTable('trae',traeStatus.models,{...traeStatus.health,modelResults:ch.trae});
+ }
+ if(ch.raccoon&&raccoonEnabled&&raccoonStatus){
+  renderModelTable('raccoon',raccoonStatus.models,{...raccoonStatus.health,modelResults:ch.raccoon});
  }
  if(page==='overview')void loadOverview();
 }
@@ -480,14 +489,14 @@ function overviewChannelStatus(channel){
   if(!lastStatus)return{label:'未知',tone:'unknown'};
   return lastStatus.total?{label:'运行中',tone:'ok'}:{label:'等待账号',tone:'idle'};
  }
- const st=channel==='zcode'?zcodeStatus:channel==='qoder'?qoderStatus:channel==='autoclaw'?autoclawStatus:channel==='trae'?traeStatus:opencodeStatus;
+ const st=channel==='zcode'?zcodeStatus:channel==='qoder'?qoderStatus:channel==='autoclaw'?autoclawStatus:channel==='trae'?traeStatus:channel==='raccoon'?raccoonStatus:opencodeStatus;
  if(!st)return{label:'未加载',tone:'unknown'};
  if(!st.enabled)return{label:'未启用',tone:'idle'};
  return st.reachable?{label:'在线',tone:'ok'}:{label:'不可达',tone:'bad'};
 }
 function overviewChannelModelCount(channel){
  if(channel==='workbuddy')return modelList.length;
- const st=channel==='zcode'?zcodeStatus:channel==='qoder'?qoderStatus:channel==='autoclaw'?autoclawStatus:channel==='trae'?traeStatus:opencodeStatus;
+ const st=channel==='zcode'?zcodeStatus:channel==='qoder'?qoderStatus:channel==='autoclaw'?autoclawStatus:channel==='trae'?traeStatus:channel==='raccoon'?raccoonStatus:opencodeStatus;
  if(!st||!st.enabled)return null;
  return Number(st.model_count)||0;
 }
@@ -496,7 +505,7 @@ function renderOverview(){
  const byChannel=new Map();
  for(const e of overviewUsageItems){const c=usageChannelOf(e);if(!byChannel.has(c))byChannel.set(c,[]);byChannel.get(c).push(e);}
  for(const c of usageChannelOrder){
-  const enabled=c==='workbuddy'||(c==='zcode'&&zcodeEnabled)||(c==='qoder'&&qoderEnabled)||(c==='opencode'&&opencodeEnabled)||(c==='autoclaw'&&autoclawEnabled)||(c==='trae'&&traeEnabled);
+  const enabled=c==='workbuddy'||(c==='zcode'&&zcodeEnabled)||(c==='qoder'&&qoderEnabled)||(c==='opencode'&&opencodeEnabled)||(c==='autoclaw'&&autoclawEnabled)||(c==='trae'&&traeEnabled)||(c==='raccoon'&&raccoonEnabled);
   if(!enabled)continue;
   const s=summarizeUsage(byChannel.get(c)||[]);
   const status=overviewChannelStatus(c);
@@ -531,12 +540,13 @@ function cardStats(c){
  }
  const count=overviewChannelModelCount(c);
  const out=[['模型',count===null?'—':String(count)]];
- const st=c==='zcode'?zcodeStatus:c==='qoder'?qoderStatus:c==='autoclaw'?autoclawStatus:c==='trae'?traeStatus:opencodeStatus;
+ const st=c==='zcode'?zcodeStatus:c==='qoder'?qoderStatus:c==='autoclaw'?autoclawStatus:c==='trae'?traeStatus:c==='raccoon'?raccoonStatus:opencodeStatus;
  if(c==='zcode'&&st&&st.enabled)out.push(['套餐',st.plan==='coding-plan'?'Coding':st.plan==='start-plan'?'Start':'—']);
  if(c==='qoder'&&st&&st.enabled)out.push(['凭据',st.control?(st.logged_in?'已登录':'未登录'):'PAT']);
  if(c==='opencode'&&st&&st.enabled)out.push(['阶段',st.health&&st.health.phase?st.health.phase:'—']);
  if(c==='autoclaw'&&st&&st.enabled)out.push(['账号',st.health?`${st.health.healthy} / ${st.health.total}`:'—']);
  if(c==='trae'&&st&&st.enabled)out.push(['账号',Array.isArray(st.accounts)?`${st.accounts.filter(a=>a.enabled&&!a.disabled&&!a.cooling).length} / ${st.accounts.length}`:'—']);
+ if(c==='raccoon'&&st&&st.enabled)out.push(['账号',Array.isArray(st.accounts)?`${st.accounts.filter(a=>a.enabled&&!a.disabled&&!a.cooling).length} / ${st.accounts.length}`:'—']);
  return out;
 }
 function cardActions(c){
@@ -548,7 +558,7 @@ function cardActions(c){
 function cardStatus(c){
  const base=overviewChannelStatus(c);
  if(c==='workbuddy')return base;
- const st=c==='zcode'?zcodeStatus:c==='qoder'?qoderStatus:c==='autoclaw'?autoclawStatus:c==='trae'?traeStatus:opencodeStatus;
+ const st=c==='zcode'?zcodeStatus:c==='qoder'?qoderStatus:c==='autoclaw'?autoclawStatus:c==='trae'?traeStatus:c==='raccoon'?raccoonStatus:opencodeStatus;
  if(!st||!st.enabled||!st.control)return base;
  if(!st.logged_in)return{label:'未登录',tone:'warn'};
  if(c==='zcode'&&!st.proxy_running)return{label:'未启用',tone:'idle'};
@@ -557,7 +567,7 @@ function cardStatus(c){
 function renderCards(){
  const wrap=$('overview-cards');if(!wrap)return;wrap.replaceChildren();
  for(const c of usageChannelOrder){
-  const enabled=c==='workbuddy'||(c==='zcode'&&zcodeEnabled)||(c==='qoder'&&qoderEnabled)||(c==='opencode'&&opencodeEnabled)||(c==='autoclaw'&&autoclawEnabled)||(c==='trae'&&traeEnabled);
+  const enabled=c==='workbuddy'||(c==='zcode'&&zcodeEnabled)||(c==='qoder'&&qoderEnabled)||(c==='opencode'&&opencodeEnabled)||(c==='autoclaw'&&autoclawEnabled)||(c==='trae'&&traeEnabled)||(c==='raccoon'&&raccoonEnabled);
   if(!enabled)continue;
   const status=cardStatus(c);
   // 机架上的每个仓位顶着自己的通道色，状态徽章走暗底那一套深底亮字；
@@ -729,8 +739,8 @@ document.addEventListener?.('click', e => {
  if (switchBtn) return modelSwitchAction(switchBtn);
 });
 async function refreshStatus() { try { renderAccounts(await jsonAPI('status')); } catch(e) { notice(e.message); } }
-function realmLabel(realm) { return realm === 'global' ? '国际版' : realm === 'cn' ? '国内版' : realm === 'glm' ? 'GLM·智谱' : realm === 'qoder' ? 'Qoder' : realm === 'opencode' ? 'OpenCode' : realm === 'autoclaw' ? 'AutoClaw' : realm === 'trae' ? 'Trae' : ''; }
-function modelRealm(model) { return model.realm || (model.id.startsWith('global:') ? 'global' : model.id.startsWith('glm-') ? 'glm' : model.id.startsWith('qoder-') ? 'qoder' : model.id.startsWith('opencode-') ? 'opencode' : model.id.startsWith('autoclaw-') ? 'autoclaw' : model.id.startsWith('trae-') ? 'trae' : 'cn'); }
+function realmLabel(realm) { return realm === 'global' ? '国际版' : realm === 'cn' ? '国内版' : realm === 'glm' ? 'GLM·智谱' : realm === 'qoder' ? 'Qoder' : realm === 'opencode' ? 'OpenCode' : realm === 'autoclaw' ? 'AutoClaw' : realm === 'trae' ? 'Trae' : realm === 'raccoon' ? '小浣熊' : ''; }
+function modelRealm(model) { return model.realm || (model.id.startsWith('global:') ? 'global' : model.id.startsWith('glm-') ? 'glm' : model.id.startsWith('qoder-') ? 'qoder' : model.id.startsWith('opencode-') ? 'opencode' : model.id.startsWith('autoclaw-') ? 'autoclaw' : model.id.startsWith('trae-') ? 'trae' : model.id.startsWith('raccoon-') ? 'raccoon' : 'cn'); }
 function modelOption(model) { const label = realmLabel(modelRealm(model)); const n = Array.isArray(model.accounts) ? model.accounts.length : 0; return `${label ? `${label} · ` : ''}${model.id}${n > 1 ? ` · ${n}账号` : ''}`; }
 // accessModelOptions feeds the API-access select: core models plus the GLM
 // channel models (the public /v1/models merges them, but /admin/models only
@@ -742,6 +752,7 @@ function accessModelOptions() {
  for (const id of opencodeModels) if (id && !items.some(m => m.id === id)) items.push({id, realm: 'opencode'});
  for (const id of autoclawModels) if (id && !items.some(m => m.id === id)) items.push({id, realm: 'autoclaw'});
  for (const id of traeModels) if (id && !items.some(m => m.id === id)) items.push({id, realm: 'trae'});
+ for (const id of raccoonModels) if (id && !items.some(m => m.id === id)) items.push({id, realm: 'raccoon'});
  return items;
 }
 function renderAccessModelSelect() {
@@ -880,9 +891,15 @@ const usageModeNames={stream:'流式',sync:'同步'};
 const usageAPINames={chat:'Chat',messages:'Messages',responses:'Responses'};
 // 通道归类：旁路通道的用量由 console 以固定占位 uid（与通道同名）上报 core 账本，
 // 其余 uid 都是核心账号池的真实账号。分布表按此口径聚合，明细按当前筛选过滤。
-const usageChannelNames={workbuddy:'WorkBuddy',zcode:'GLM（Zcode）',qoder:'Qoder',opencode:'OpenCode',autoclaw:'AutoClaw',trae:'Trae'};
-const usageChannelOrder=['workbuddy','zcode','qoder','opencode','autoclaw','trae'];
-function usageChannelOf(entry){const uid=entry.uid||'';return uid==='zcode'||uid==='qoder'||uid==='opencode'||uid==='autoclaw'||uid==='trae'?uid:'workbuddy';}
+const usageChannelNames={workbuddy:'WorkBuddy',zcode:'GLM（Zcode）',qoder:'Qoder',opencode:'OpenCode',autoclaw:'AutoClaw',trae:'Trae',raccoon:'小浣熊'};
+const usageChannelOrder=['workbuddy','zcode','qoder','opencode','autoclaw','trae','raccoon'];
+// 客户端列的通道标签：旁路那一路的 client 是上游 sidecar 自己报的（Trae 报「Hermes 0.18.0」、
+// GLM 报「WorkBuddy/2.8.0」），光看串认不出是谁；核心那一路本来就是客户端 UA，不加前缀。
+// workbuddy 的标签留空即「原样显示」，键的顺序与 usageChannelOrder 一致（有判据按同序反查）。
+const usageChannelTags={workbuddy:'',zcode:'GLM',qoder:'Qoder',opencode:'OpenCode',autoclaw:'AutoClaw',trae:'Trae',raccoon:'小浣熊'};
+function usageChannelOf(entry){const uid=entry.uid||'';return uid==='zcode'||uid==='qoder'||uid==='opencode'||uid==='autoclaw'||uid==='trae'||uid==='raccoon'?uid:'workbuddy';}
+// clientLabel 只在 client 非空时前置标签；空值仍由调用点显示「—」，不编出「GLM · —」。
+function clientLabel(raw,channel){const tag=usageChannelTags[channel];return raw?(tag?tag+' · '+raw:raw):'';}
 // 一束色认一条通道。routes 那侧的键是 core/glm，账本这侧是 workbuddy/zcode，
 // 指的是同一束光；翻译只写这一处，别在调用点各摆一份映射。
 // 通道类挂在单元格上，整行都是同一束光时（通道总览、通道分布）再挂到 <tr>，
@@ -957,7 +974,7 @@ function renderUsageDetail(){
  for(const e of usageDetailRows.slice(start,start+usagePageSize)){
   const channel=usageChannelOf(e);
   const tr=document.createElement('tr');tr.className='ch-'+channel;
-  tr.append(cell(formatTaskTime(e.ts*1000)),channelCell(usageChannelNames[channel],channel),cell(e.account||e.uid||'—'),cell(e.model||'—'),cell(usageAPINames[e.api]||'—'),cell(usageModeNames[e.mode]||e.mode||'—'),numCell(formatUsageTokens(e.prompt_tokens)),numCell(formatUsageTokens(e.completion_tokens)),numCell(formatUsageCredit(e.credit)),cell(e.src||'—'),cell(e.client||'—'));
+  tr.append(cell(formatTaskTime(e.ts*1000)),channelCell(usageChannelNames[channel],channel),cell(e.account||e.uid||'—'),cell(e.model||'—'),cell(usageAPINames[e.api]||'—'),cell(usageModeNames[e.mode]||e.mode||'—'),numCell(formatUsageTokens(e.prompt_tokens)),numCell(formatUsageTokens(e.completion_tokens)),numCell(formatUsageCredit(e.credit)),cell(e.src||'—'),cell(clientLabel(e.client,channel)||'—'));
   body.append(tr);
  }
  renderUsagePager(pages);
@@ -1756,7 +1773,8 @@ function renderAccess(){
  const isOpenCode=model.startsWith('opencode-');
  const isAutoClaw=model.startsWith('autoclaw-');
  const isTrae=model.startsWith('trae-');
- if(anthropic&&(isGlm||isQoder||isOpenCode||isAutoClaw||isTrae)){$('copy-example').disabled=true;$('api-example').textContent=(isGlm?'GLM':isQoder?'Qoder':isOpenCode?'OpenCode':isAutoClaw?'AutoClaw':'Trae')+' 通道仅支持 OpenAI 协议（/v1/chat/completions），请切换协议后复制示例。';return;}
+ const isRaccoon=model.startsWith('raccoon-');
+ if(anthropic&&(isGlm||isQoder||isOpenCode||isAutoClaw||isTrae||isRaccoon)){$('copy-example').disabled=true;$('api-example').textContent=(isGlm?'GLM':isQoder?'Qoder':isOpenCode?'OpenCode':isAutoClaw?'AutoClaw':isTrae?'Trae':'小浣熊')+' 通道仅支持 OpenAI 协议（/v1/chat/completions），请切换协议后复制示例。';return;}
  const body={model,...(anthropic?{max_tokens:1024}:{}),messages:[{role:'user',content:'你好'}],stream:true};
  const auth=anthropic?'  -H "x-api-key: <你的 API Key>" \\\n  -H "anthropic-version: 2023-06-01"':'  -H "Authorization: Bearer <你的 API Key>"';
  const json=JSON.stringify(body,null,2).replace(/'/g,"'\\''");
@@ -1766,6 +1784,7 @@ function renderAccess(){
  else if(isOpenCode) prefix='# OpenCode 免费模型经 OW Bridge sidecar 转发（按 opencode- 前缀分流）\ncurl ';
  else if(isAutoClaw) prefix='# AutoClaw 模型经 autoclaw2api 桥接转发（按 autoclaw- 前缀分流），账号为容器内登录态\ncurl ';
  else if(isTrae) prefix='# Trae 模型经 trae2api 桥接转发（按 trae- 前缀分流），账号为容器内登录态\ncurl ';
+ else if(isRaccoon) prefix='# 小浣熊模型经 raccoon2api 桥接转发（按 raccoon- 前缀分流），账号为导入的桌面端凭证\ncurl ';
  else if(!anthropic) prefix='# 成功响应头 X-Account / X-Account-Realm 标明本次服务的账号与平台\ncurl ';
  else prefix='curl ';
  $('api-example').textContent=prefix+$('api-endpoint').value+` \\\n${auth} \\\n  -H "Content-Type: application/json" \\\n  -d '${json}'`;
@@ -1773,7 +1792,7 @@ function renderAccess(){
 document.querySelectorAll('[data-protocol]').forEach(button=>button.addEventListener('click',()=>setProtocol(button.dataset.protocol)));
 $('access-model').addEventListener('change',renderAccess);
 $('copy-example').addEventListener('click',async()=>{if($('copy-example').disabled)return;try{await navigator.clipboard.writeText($('api-example').textContent);notice('调用示例已复制，请替换 API Key 占位符');}catch{notice('浏览器不允许自动复制，请手动复制下方示例');}});
-$('go-chat').addEventListener('click',()=>{if(activeRequest||$('go-chat').disabled)return;const model=$('access-model').value;if(model.startsWith('glm-')){if(zcodeModels.includes(model))$('zcode-model').value=model;showPage('zcode');return;}if(model.startsWith('qoder-')){if(qoderModels.includes(model))$('qoder-model').value=model;showPage('qoder');return;}if(model.startsWith('opencode-')){if(opencodeModels.includes(model))$('opencode-model').value=model;showPage('opencode');return;}if(model.startsWith('autoclaw-')){if(autoclawModels.includes(model))$('autoclaw-model').value=model;showPage('autoclaw');return;}if(model.startsWith('trae-')){if(traeModels.includes(model))$('trae-model').value=model;showPage('trae');return;}$('model').value=model;updateEfforts();setWorkBuddyView('chat');showPage('workbuddy');});
+$('go-chat').addEventListener('click',()=>{if(activeRequest||$('go-chat').disabled)return;const model=$('access-model').value;if(model.startsWith('glm-')){if(zcodeModels.includes(model))$('zcode-model').value=model;showPage('zcode');return;}if(model.startsWith('qoder-')){if(qoderModels.includes(model))$('qoder-model').value=model;showPage('qoder');return;}if(model.startsWith('opencode-')){if(opencodeModels.includes(model))$('opencode-model').value=model;showPage('opencode');return;}if(model.startsWith('autoclaw-')){if(autoclawModels.includes(model))$('autoclaw-model').value=model;showPage('autoclaw');return;}if(model.startsWith('trae-')){if(traeModels.includes(model))$('trae-model').value=model;showPage('trae');return;}if(model.startsWith('raccoon-')){if(raccoonModels.includes(model))$('raccoon-model').value=model;showPage('raccoon');return;}$('model').value=model;updateEfforts();setWorkBuddyView('chat');showPage('workbuddy');});
 function chatControls(){
  for(const id of ['model','access-model','clear-chat','send-chat','max-tokens'])$(id).disabled=!!activeRequest;
  $('stop-chat').hidden=!activeRequest;
@@ -1792,7 +1811,7 @@ function accountNote(response) {
  const platform = realm === 'global' ? '国际版' : realm === 'cn' ? '国内版' : realm;
  return ` · 本次账号：${account || '—'}${platform ? `（${platform}）` : ''}`;
 }
-for(const [inputId,formId] of [['prompt','chat-form'],['zcode-prompt','zcode-form'],['qoder-prompt','qoder-form'],['opencode-prompt','opencode-form'],['autoclaw-prompt','autoclaw-form'],['trae-prompt','trae-form']])$(inputId).addEventListener('keydown',event=>{
+for(const [inputId,formId] of [['prompt','chat-form'],['zcode-prompt','zcode-form'],['qoder-prompt','qoder-form'],['opencode-prompt','opencode-form'],['autoclaw-prompt','autoclaw-form'],['trae-prompt','trae-form'],['raccoon-prompt','raccoon-form']])$(inputId).addEventListener('keydown',event=>{
  if(event.key!=='Enter'||event.shiftKey||event.isComposing)return;
  event.preventDefault();$(formId).requestSubmit();
 });
@@ -1997,7 +2016,7 @@ function capPool(){
   for(const model of channel.models||[]){
    const cost=capCost(model,channel.channel,costs);
    out.push({channel:channel.channel,model,row:capByKeys.get(modelKey(model))||null,cost,
-    gate:modelSwitchEffective({id:model,switchable:channel.channel!=='opencode'&&channel.channel!=='autoclaw'&&channel.channel!=='trae',creditValue:cost.known?cost.value:null})});
+    gate:modelSwitchEffective({id:model,switchable:channel.channel!=='opencode'&&channel.channel!=='autoclaw'&&channel.channel!=='trae'&&channel.channel!=='raccoon',creditValue:cost.known?cost.value:null})});
   }
  }
  return out;
@@ -2735,6 +2754,176 @@ $('trae-form').addEventListener('submit',async event=>{
   $('trae-usage').textContent=(usage?`输入 ${usage.prompt_tokens??'—'} · 输出 ${usage.completion_tokens??'—'} · 总计 ${usage.total_tokens??'—'} tokens`:'上游未返回用量')+' · 本次通道：Trae';
  }catch(e){if(generation===sessionGeneration){const msg=e.name==='AbortError'?'已停止生成':e.message;answer.content.textContent=(content?content+'\n\n':'')+msg;$('trae-usage').textContent=msg;}}
  finally{controller.abort();activeRequest=undefined;traeControls();}
+});
+
+// ── 小浣熊通道（raccoon2api 旁路，raccoon- 前缀）──
+// 状态接口把容器 /status 与 /admin/api/accounts 按 uid 合并后下发；控制链路用标准 HTTP
+// 状态码表达业务结果（400 参数错、409 已有更新凭证原样透传），jsonAPI 的 !ok 分支已能
+// 抛错。小浣熊没有网页登录（桌面登录态依赖宿主 DPAPI），登录环节等价于凭证导入。
+async function loadRaccoon(){
+ if(!csrf)return;
+ try{renderRaccoon(await jsonAPI('raccoon'));}
+ catch(error){notice(error.message);}
+}
+function renderRaccoon(status){
+ raccoonStatus=status;
+ const enabled=!!status.enabled;
+ $('raccoon-disabled').hidden=enabled;
+ $('raccoon-content').hidden=!enabled;
+ if(!enabled)return;
+ const reachable=!!status.reachable;
+ const accounts=Array.isArray(status.accounts)?status.accounts:[];
+ const badge=$('raccoon-status-badge');
+ let tone='bad',label='不可达',text='raccoon2api 容器不可达：请确认 overlay 已随 compose 启动；若容器在运行，通常是 console 刚被重启、旁路网络失联，重启旁路容器即可恢复。';
+ if(reachable){
+  if(!accounts.length){tone='warn';label='无账号';text='容器可达，但还没有导入凭证：到「凭证导入」子页粘贴桌面端导出的凭证 JSON。';}
+  else{tone='ok';label='在线';text=`raccoon2api 可达 · ${status.model_count||0} 个模型 · ${accounts.length} 个账号`;}
+ }
+ badge.textContent=label;badge.className='badge '+tone;
+ $('raccoon-status-text').textContent=text;
+ // 容器不可达时 /status 不存在，凭据与账号数一律留空而不是编造。
+ const rows=[];
+ if(reachable){rows.push(['模型数',String(status.model_count||0)]);rows.push(['账号数',String(accounts.length)]);}
+ const detail=$('raccoon-health-body');detail.replaceChildren();
+ for(const [k,v] of rows){const tr=document.createElement('tr');tr.append(cell(String(k)),cell(String(v)));detail.append(tr);}
+ $('raccoon-health-wrap').hidden=!rows.length;
+ // 导入子页在容器不可达时也保留（那是排障入口），其余数据子页只在可达时开放。
+ const dataTab=reachable;
+ if(raccoonView!=='status'&&raccoonView!=='import'&&!dataTab)raccoonView='status';
+ for(const view of ['models','chat'])$('raccoon-view-'+view).hidden=!dataTab;
+ for(const view of ['status','import','models','chat']){
+  $('raccoon-view-'+view).classList.toggle('active',view===raccoonView);
+  $('raccoon-pane-'+view).hidden=view!==raccoonView;
+ }
+ raccoonModels=(status.models||[]).map(item=>item.id).filter(Boolean);
+ renderAccessModelSelect();renderAccess();
+ const previous=$('raccoon-model').value;
+ $('raccoon-model').replaceChildren();
+ for(const id of raccoonModels)$('raccoon-model').append(new Option(id,id));
+ if(raccoonModels.includes(previous))$('raccoon-model').value=previous;
+ renderModelTable('raccoon',status.models,status.health||null);
+ renderRaccoonAccounts(accounts);
+ $('raccoon-model').disabled=!raccoonModels.length||!!activeRequest;
+ $('raccoon-send').disabled=!raccoonModels.length||!!activeRequest;
+ raccoonControls();raccoonActionControls();
+}
+function raccoonControls(){
+ for(const id of ['raccoon-model','raccoon-prompt','raccoon-send'])$(id).disabled=!!activeRequest;
+ $('raccoon-stop').hidden=!activeRequest;
+}
+function raccoonActionControls(){
+ for(const id of ['raccoon-refresh','raccoon-credits-refresh'])$(id).disabled=raccoonBusy;
+}
+function raccoonRecoveryHint(a){
+ if(!a.cooling||!a.until)return '';
+ const until=new Date(a.until);
+ if(Number.isNaN(until.getTime()))return '';
+ return '约 '+until.toLocaleString('zh-CN',{timeZone:'Asia/Shanghai',hour12:false})+' 恢复';
+}
+function renderRaccoonAccounts(list){
+ raccoonAccounts=Array.isArray(list)?list:[];
+ const usable=raccoonAccounts.filter(a=>!a.disabled&&!a.cooling).length;
+ const cooling=raccoonAccounts.filter(a=>a.cooling&&!a.disabled).length;
+ const disabled=raccoonAccounts.filter(a=>a.disabled).length;
+ $('raccoon-stat-total').textContent=String(raccoonAccounts.length);
+ $('raccoon-stat-usable').textContent=String(usable);
+ $('raccoon-stat-cooling').textContent=String(cooling);
+ $('raccoon-stat-disabled').textContent=String(disabled);
+ const body=$('raccoon-accounts-body');body.replaceChildren();
+ for(const a of raccoonAccounts){
+  const tr=document.createElement('tr');
+  const state=a.disabled?'已停用':a.cooling?'冷却中':'可用';
+  const tone=a.disabled?'idle':a.cooling?'warn':'ok';
+  const status=cell('');const b=document.createElement('span');b.className='badge '+tone;b.textContent=state;status.append(b);
+  const expires=a.expires_at?new Date(Number(a.expires_at)*1000).toLocaleString('zh-CN',{timeZone:'Asia/Shanghai',hour12:false}):'—';
+  const ta=(label,action,cls)=>{const btn=document.createElement('button');btn.className=cls;btn.textContent=label;btn.dataset.raact=action;btn.dataset.uid=a.uid;return btn;};
+  const op=document.createElement('td');
+  if(a.disabled)op.append(ta('启用','enable','secondary'),' ',ta('删除','delete','quiet'));
+  else op.append(ta('停用','disable','secondary'),' ',ta('刷新','refresh','quiet'),' ',ta('删除','delete','quiet'));
+  // sidecar 只回报失败次数，没有成功计数；成功列留「—」而不是拿 0 充数。
+  tr.append(cell(a.nickname||a.uid,a.uid),status,numCell(a.points==null?'—':String(a.points)),numCell('— / '+(a.err_count||0)),cell(expires,a.expired_soon?'Token 即将过期':''),cell(a.reason||'—',raccoonRecoveryHint(a)),op);
+  body.append(tr);
+ }
+ $('raccoon-accounts-empty').hidden=raccoonAccounts.length>0;
+}
+async function raccoonAccountAction(action,uid){
+ if(raccoonBusy)return;
+ const generation=sessionGeneration;
+ if(action==='delete'&&!confirm(`确定删除账号 ${uid}？凭据将从容器中移除，需要重新导入才能恢复。`))return;
+ raccoonBusy=true;raccoonActionControls();notice('');
+ try{
+  if(action==='enable'||action==='disable')await jsonAPI('raccoon/accounts/patch',{uid,enabled:action==='enable'});
+  else if(action==='delete'){await jsonAPI('raccoon/accounts/delete',{uid});if(generation===sessionGeneration)notice('账号已删除');}
+  else if(action==='refresh')await jsonAPI('raccoon/accounts/refresh',{uid});
+  if(generation!==sessionGeneration)return;
+  await loadRaccoon();
+ }catch(error){if(generation===sessionGeneration)notice(error.message);}
+ finally{if(generation===sessionGeneration){raccoonBusy=false;raccoonActionControls();}}
+}
+$('raccoon-accounts-body').addEventListener('click',event=>{
+ const btn=event.target.closest('button[data-raact]');if(!btn||btn.disabled)return;
+ raccoonAccountAction(btn.dataset.raact,btn.dataset.uid);
+});
+for(const view of ['status','import','models','chat'])$('raccoon-view-'+view).addEventListener('click',()=>{raccoonView=view;if(raccoonStatus)renderRaccoon(raccoonStatus);});
+$('raccoon-refresh').addEventListener('click',async()=>{
+ if(raccoonBusy)return;const generation=sessionGeneration;raccoonBusy=true;raccoonActionControls();
+ try{await loadRaccoon();}finally{if(generation===sessionGeneration){raccoonBusy=false;raccoonActionControls();}}
+});
+$('raccoon-credits-refresh').addEventListener('click',async()=>{
+ if(raccoonBusy)return;const generation=sessionGeneration;raccoonBusy=true;raccoonActionControls();notice('');
+ try{
+  const result=await jsonAPI('raccoon/credits');
+  if(generation!==sessionGeneration)return;
+  const list=Array.isArray(result.accounts)?result.accounts:[];
+  const failed=list.filter(x=>x&&x.error);
+  notice(failed.length?`积分刷新完成，${failed.length} 个账号失败：${failed[0].error}`:`积分已刷新（${list.length} 个账号）`);
+  await loadRaccoon();
+ }catch(error){if(generation===sessionGeneration)notice(error.message);}
+ finally{if(generation===sessionGeneration){raccoonBusy=false;raccoonActionControls();}}
+});
+$('raccoon-import-form').addEventListener('submit',async event=>{
+ event.preventDefault();if(raccoonBusy)return;
+ const text=$('raccoon-import-json').value.trim();
+ if(!text){$('raccoon-import-hint').textContent='请粘贴桌面端导出的凭证 JSON。';return;}
+ let payload;try{payload=JSON.parse(text);}catch{$('raccoon-import-hint').textContent='不是合法的 JSON，请粘贴完整凭证内容。';return;}
+ const generation=sessionGeneration;raccoonBusy=true;$('raccoon-import').disabled=true;notice('');
+ $('raccoon-import-hint').textContent='正在导入…';
+ try{
+  const result=await jsonAPI('raccoon/import',payload);
+  if(generation!==sessionGeneration)return;
+  $('raccoon-import-json').value='';
+  $('raccoon-import-hint').textContent=`已导入 ${result.nickname||result.uid||'账号'}${result.needs_check?'；凭据临近有效期，建议到账号管理点「刷新」核对。':''}`;
+  notice('小浣熊凭证导入成功');
+  raccoonView='status';await loadRaccoon();
+ }catch(error){
+  if(generation===sessionGeneration)$('raccoon-import-hint').textContent=error.status===409?'该账号已有更新的凭证，未覆盖（409）。':error.message;
+ }finally{if(generation===sessionGeneration){raccoonBusy=false;$('raccoon-import').disabled=false;}}
+});
+$('raccoon-stop').addEventListener('click',()=>activeRequest?.abort());
+$('raccoon-form').addEventListener('submit',async event=>{
+ event.preventDefault();if(activeRequest)return;const text=$('raccoon-prompt').value.trim();if(!text||!$('raccoon-model').value)return;
+ const generation=sessionGeneration;
+ notice('');message('user',text,$('raccoon-messages'));$('raccoon-prompt').value='';const answer=message('assistant','正在等待模型…',$('raccoon-messages'));
+ const controller=new AbortController();activeRequest=controller;raccoonControls();
+ let content='',usage,finished=false;const outgoing=[...raccoonHistory,{role:'user',content:text}];
+ try{
+  const response=await api('raccoon/chat',{model:$('raccoon-model').value,messages:outgoing,stream:true},controller.signal);
+  if(!response.ok){const err=await response.json();throw new Error(err.error?.message||err.error||`HTTP ${response.status}`);}
+  const reader=response.body.getReader(),decoder=new TextDecoder();let buffer='';
+  const processFrame=frame=>{
+   const payload=frame.split('\n').filter(l=>l.startsWith('data:')).map(l=>l.slice(5).trimStart()).join('\n');if(!payload)return;
+   if(payload==='[DONE]'){finished=true;return;}
+   const part=JSON.parse(payload);if(part.error)throw new Error(part.error.message||'上游流式响应发生错误');
+   content+=part.choices?.[0]?.delta?.content||'';answer.content.textContent=content||'模型正在思考…';
+   if(part.usage)usage=part.usage;
+  };
+  while(true){const{value,done}=await reader.read();if(controller.signal.aborted){const error=new Error('已停止生成');error.name='AbortError';throw error;}buffer+=done?decoder.decode():decoder.decode(value,{stream:true});buffer=buffer.replace(/\r\n/g,'\n');let split;while((split=buffer.indexOf('\n\n'))>=0){processFrame(buffer.slice(0,split));buffer=buffer.slice(split+2);}if(done){if(buffer.trim())processFrame(buffer);break;}}
+  if(!finished)throw new Error('响应提前中断，可重新发送问题');
+  if(!content)answer.content.textContent='模型未返回文本内容。';
+  raccoonHistory=[...outgoing,{role:'assistant',content}];
+  $('raccoon-usage').textContent=(usage?`输入 ${usage.prompt_tokens??'—'} · 输出 ${usage.completion_tokens??'—'} · 总计 ${usage.total_tokens??'—'} tokens`:'上游未返回用量')+' · 本次通道：小浣熊';
+ }catch(e){if(generation===sessionGeneration){const msg=e.name==='AbortError'?'已停止生成':e.message;answer.content.textContent=(content?content+'\n\n':'')+msg;$('raccoon-usage').textContent=msg;}}
+ finally{controller.abort();activeRequest=undefined;raccoonControls();}
 });
 
 jsonAPI('session').then(signedIn).catch(()=>{});

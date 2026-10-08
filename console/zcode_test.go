@@ -995,3 +995,77 @@ func TestMergedModelsStartPlanFilter(t *testing.T) {
 		}
 	})
 }
+
+// TestRaccoonPrefixRoutesAndMerges 验证 raccoon- 前缀的两条公共面行为：
+// 数据面按前缀分流到 sidecar（剥前缀、注 Bearer、不漏部署 API Key），
+// 目录面把 sidecar 模型补上 raccoon- 前缀与 realm 标签并入 /v1/models。
+func TestRaccoonPrefixRoutesAndMerges(t *testing.T) {
+	var mu sync.Mutex
+	var raccoonAuth, raccoonAPIKey string
+	core := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/v1/models" {
+			fmt.Fprint(w, `{"object":"list","data":[{"id":"cn:workbuddy"}]}`)
+			return
+		}
+		t.Errorf("unexpected core path %s", r.URL.Path)
+		fmt.Fprint(w, `{"core":true}`)
+	}))
+	t.Cleanup(core.Close)
+	raccoon := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/v1/models":
+			fmt.Fprint(w, `{"object":"list","data":[{"id":"glm-5.3"}]}`)
+		default:
+			mu.Lock()
+			raccoonAuth, raccoonAPIKey = r.Header.Get("Authorization"), r.Header.Get("X-Api-Key")
+			body, _ := io.ReadAll(r.Body)
+			mu.Unlock()
+			if !strings.Contains(string(body), `"model":"glm-5.3"`) {
+				t.Errorf("raccoon upstream body=%s want stripped model name", body)
+			}
+			fmt.Fprint(w, `{"raccoon":true}`)
+		}
+	}))
+	t.Cleanup(raccoon.Close)
+	cfg := testConfig(core.URL)
+	cfg.RaccoonURL = mustParseURL(t, raccoon.URL)
+	cfg.RaccoonKey = strings.Repeat("r", 32)
+	h, err := NewServer(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	r := httptest.NewRequest("POST", "http://console.test/v1/chat/completions", strings.NewReader(chatBody("raccoon-glm-5.3")))
+	r.Header.Set("Authorization", "Bearer client-api-key")
+	r.Header.Set("x-api-key", "client-api-key")
+	w := httptest.NewRecorder()
+	h.ServeHTTP(w, r)
+	if w.Code != 200 || w.Body.String() != `{"raccoon":true}` {
+		t.Fatalf("raccoon dispatch: %d %s", w.Code, w.Body)
+	}
+	mu.Lock()
+	if raccoonAuth != "Bearer "+strings.Repeat("r", 32) {
+		t.Errorf("raccoon auth=%q", raccoonAuth)
+	}
+	if raccoonAPIKey != "" {
+		t.Errorf("deployment api key leaked to raccoon as x-api-key: %q", raccoonAPIKey)
+	}
+	mu.Unlock()
+
+	mr := httptest.NewRequest("GET", "http://console.test/v1/models", nil)
+	mr.Header.Set("Authorization", "Bearer client-api-key")
+	mw := httptest.NewRecorder()
+	h.ServeHTTP(mw, mr)
+	if mw.Code != 200 {
+		t.Fatalf("models: %d %s", mw.Code, mw.Body)
+	}
+	if !strings.Contains(mw.Body.String(), `"id":"raccoon-glm-5.3"`) {
+		t.Fatalf("merged models missing prefixed raccoon entry: %s", mw.Body)
+	}
+	if !strings.Contains(mw.Body.String(), `"realm":"raccoon"`) {
+		t.Fatalf("merged raccoon entry missing realm tag: %s", mw.Body)
+	}
+	if !strings.Contains(mw.Body.String(), "cn:workbuddy") {
+		t.Fatalf("core models must survive: %s", mw.Body)
+	}
+}

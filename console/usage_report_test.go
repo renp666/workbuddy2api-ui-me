@@ -91,6 +91,9 @@ func usagePair(t *testing.T, sink *usageReportSink, channel string, upstream htt
 	case "trae":
 		cfg.TraeURL = mustParseURL(t, proxy.URL)
 		cfg.TraeKey = strings.Repeat("t", 32)
+	case "raccoon":
+		cfg.RaccoonURL = mustParseURL(t, proxy.URL)
+		cfg.RaccoonKey = strings.Repeat("r", 32)
 	default:
 		cfg.ZCodeURL = mustParseURL(t, proxy.URL)
 		cfg.ZCodeKey = strings.Repeat("z", 32)
@@ -317,6 +320,36 @@ func TestUsageReportTraeKeepsPublicModelName(t *testing.T) {
 	}
 	if e["prompt_tokens"] != float64(7) || e["completion_tokens"] != float64(4) {
 		t.Fatalf("trae tokens = %v", e)
+	}
+}
+
+func TestUsageReportRaccoonKeepsPublicModelName(t *testing.T) {
+	sink := &usageReportSink{}
+	h := usagePair(t, sink, "raccoon", func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		// raccoon 上游收到的是剥前缀后的模型名。
+		var env struct {
+			Model string `json:"model"`
+		}
+		_ = json.Unmarshal(body, &env)
+		if env.Model != "glm-5.3" {
+			t.Errorf("upstream model = %q want stripped name", env.Model)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprint(w, `{"usage":{"prompt_tokens":3,"completion_tokens":5}}`)
+	})
+	w := postChat(h, "/v1/chat/completions", `{"model":"raccoon-glm-5.3","messages":[]}`)
+	if w.Code != 200 {
+		t.Fatalf("call: %d %s", w.Code, w.Body)
+	}
+	entries := sink.waitFor(t, 1)
+	e := entries[0]
+	// 上报里的模型名必须保留公共前缀，账号名与前端译名（小浣熊）不必同字面。
+	if e["uid"] != "raccoon" || e["account"] != "Raccoon 通道" || e["model"] != "raccoon-glm-5.3" {
+		t.Fatalf("raccoon entry = %v", e)
+	}
+	if e["prompt_tokens"] != float64(3) || e["completion_tokens"] != float64(5) {
+		t.Fatalf("raccoon tokens = %v", e)
 	}
 }
 
