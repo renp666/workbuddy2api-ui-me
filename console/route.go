@@ -220,7 +220,7 @@ func validateRouteEntries(models []routeEntry) error {
 		}
 		model := strings.TrimSpace(entry.Model)
 		if !validRouteName(model, 128, routeModelChars) {
-			return fmt.Errorf("别名 %q 的模型名不合法：只允许字母、数字、点、下划线、冒号、连字符、空格和中点，长度 1-128", alias)
+			return fmt.Errorf("别名 %q 的模型名不合法：只允许字母、数字、点、下划线、冒号、连字符、空格、中点和斜杠，长度 1-128", alias)
 		}
 		// core 的模型 ID 由上游以 cn:/global: 命名空间下发，缺前缀的裸名字
 		// core 一定不认；反之旁路通道收不到带命名空间的名字。
@@ -280,7 +280,9 @@ func normalizeRoutes(models []routeEntry) []routeEntry {
 }
 
 // routeModelChars 是合法公共模型名的字符集，别名模型名与模型开关表共用。
-const routeModelChars = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789._:- ·"
+// 含 / 是因为 autoclaw 上游下发的原生 id 就带它（openclaw/default、global/zai_auto），
+// 别名与开关表必须原样收下，改名会让配置和 /v1/models 公布的公共名对不上。
+const routeModelChars = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789._:- ·/"
 
 // maxModelSwitchEntries 限制单张开关表的条目数。core 约 30 个模型、旁路通道各
 // 十来个，四通道合计远小于此上限，留足冗余同时防止失控写入撑满文件。
@@ -351,7 +353,7 @@ func (s *routeStore) modelOverride(model string) (enabled bool, has bool) {
 func (s *routeStore) setModelSwitch(model string, enable bool) error {
 	model = strings.TrimSpace(model)
 	if !validRouteName(model, 128, routeModelChars) {
-		return errors.New("模型名不合法：只允许字母、数字、点、下划线、冒号、连字符、空格和中点，长度 1-128")
+		return errors.New("模型名不合法：只允许字母、数字、点、下划线、冒号、连字符、空格、中点和斜杠，长度 1-128")
 	}
 	if model == autoModelName {
 		return errors.New("auto 是虚拟模型，不参与积分开关")

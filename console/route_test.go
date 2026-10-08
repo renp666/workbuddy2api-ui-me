@@ -424,6 +424,23 @@ func TestValidateRouteEntriesAcceptsLegalConfig(t *testing.T) {
 	}
 }
 
+// TestValidateRouteEntriesAcceptsSlashInUpstreamModelNames 覆盖 autoclaw 上游
+// 下发的原生模型名形态：id 里带 /（openclaw/default、global/zai_auto）。
+// 别名表与模型开关表都必须放行，否则管理员既配不了别名也调不了这些模型的开关。
+func TestValidateRouteEntriesAcceptsSlashInUpstreamModelNames(t *testing.T) {
+	ok := []routeEntry{
+		{Alias: "no1", Channel: channelAutoClaw, Model: "autoclaw-openclaw/default", Enabled: true},
+		{Alias: "no2", Channel: channelAutoClaw, Model: "autoclaw-global/zai_auto", Enabled: true},
+	}
+	if err := validateRouteEntries(ok); err != nil {
+		t.Fatalf("带 / 的上游模型名被别名表拒：%v", err)
+	}
+	list := []string{"autoclaw-openclaw/default", "autoclaw-global/zai_auto"}
+	if err := validateModelSwitchList("禁用模型表", list); err != nil {
+		t.Fatalf("带 / 的上游模型名被开关表拒：%v", err)
+	}
+}
+
 func TestRouteStoreReloadKeepsLastGoodConfig(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "routes.json")
 	store := newRouteStore(path)
