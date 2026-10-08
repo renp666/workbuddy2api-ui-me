@@ -97,6 +97,22 @@ class ProductionConfigTest(unittest.TestCase):
                 for service in ("core", "console"):
                     self.assertEqual(config["services"][service]["environment"], {"TZ": "Asia/Shanghai"})
 
+    def test_qoder_sidecar_pins_cli_config_dir_to_the_mounted_credential_volume(self):
+        """qoderclicn resolves ~/.qoder-cn by default while the credential volume is mounted at
+        /root/.qoderworkcn, so an unpinned sidecar writes and reads credentials in two different
+        directories. That surfaces as the recurring 'Not logged in' channel outage."""
+        override = ROOT / "deploy/compose.qoder.yml"
+        self.assertTrue(override.is_file(), "qoder sidecar entry missing")
+        config = self.config(files=[ROOT / "docker-compose.yml", override])
+        service = config["services"]["qoder-proxy"]
+        targets = {mount["target"] for mount in service["volumes"]}
+        self.assertEqual(targets, {"/root/.qoderworkcn"}, "credential volume mount target changed")
+        self.assertEqual(
+            service["environment"].get("QODERCN_CONFIG_DIR"),
+            "/root/.qoderworkcn",
+            "the qoder CLI must be pinned to the mounted credential directory",
+        )
+
     def test_optional_runtime_config_is_explicit_and_readonly(self):
         override = ROOT / "deploy/compose.config.yml"
         self.assertTrue(override.is_file(), "explicit config entry missing")

@@ -24,6 +24,9 @@ services:
       CONTROL_API_KEY: ${WB2A_QODER_KEY:-}
       # 无人值守备选：页面登录与本地凭据存在时无需配置
       QODERCN_PERSONAL_ACCESS_TOKEN: ${WB2A_QODER_PAT:-}
+      # qoderclicn 默认解析 ~/.qoder-cn，而凭据卷挂载在 /root/.qoderworkcn；不钉死这一项时
+      # 登录写入与 CLI 读取分属两个目录，表现为渠道周期性 "Not logged in" 掉线。
+      QODERCN_CONFIG_DIR: "/root/.qoderworkcn"
     volumes:
       - ./runtime/qoder:/root/.qoderworkcn
 
