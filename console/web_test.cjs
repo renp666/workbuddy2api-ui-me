@@ -1823,6 +1823,8 @@ test('raccoon soft-disabled account shows as stopped and offers enable',async()=
 test('raccoon models show the upstream display name while the select value stays the public id',async()=>{
   // sidecar 目录条目带 name（上游真实展示名）。此前模型表与下拉都只读 id，页面显示
   // raccoon-8c4485 这类代码名。展示名只改可读标签，选路键仍是公共 id。
+  // 表头写的是「模型 ID」，别名表单里选的也是 id，所以行里还要把 id 补出来，
+  // 否则「SenseNova 6.8 Flash Lite」这类展示名看不出对应的是哪个可路由模型（问题4）。
   const {ctx,get}=raccoonFixture({enabled:true,reachable:true,model_count:2,
     models:[{id:'raccoon-8c4485',name:'Raccoon-Work',realm:'raccoon'},
       {id:'raccoon-chat-ml-5-5',name:'Raccoon Chat ML 5.5',realm:'raccoon'}],
@@ -1833,6 +1835,9 @@ test('raccoon models show the upstream display name while the select value stays
   assert.equal(rows.length,2,'model table row count');
   assert.equal(rows[0].children[0].textContent,'Raccoon-Work','model table must show the display name');
   assert.equal(rows[1].children[0].textContent,'Raccoon Chat ML 5.5','model table must show the display name');
+  // mock 的 textContent 不聚合子节点，id 那行小字要单独看孩子。
+  assert.equal(rows[0].children[0].children[0].textContent,'raccoon-8c4485','行里没写出可路由 id，对不上别名表单里选的那个');
+  assert.equal(rows[1].children[0].children[0].textContent,'raccoon-chat-ml-5-5','行里没写出可路由 id，对不上别名表单里选的那个');
   assert.deepEqual(get('raccoon-model').children.map(option=>option.textContent),['Raccoon-Work','Raccoon Chat ML 5.5'],'select labels use the display name');
   assert.deepEqual(get('raccoon-model').children.map(option=>option.value),['raccoon-8c4485','raccoon-chat-ml-5-5'],'select values stay the public id');
 });
@@ -1843,6 +1848,8 @@ test('raccoon models without a name fall back to the id',async()=>{
   await vm.runInContext("signedIn({csrf:'c',global_enabled:true,zcode_enabled:false,qoder_enabled:false,opencode_enabled:false,autoclaw_enabled:false,trae_enabled:false,raccoon_enabled:true})",ctx);
   await vm.runInContext('loadRaccoon()',ctx);
   assert.equal(get('raccoon-models-body').children[0].children[0].textContent,'raccoon-8c4485','missing name must fall back to the id');
+  // 标签本身就是 id 时不该再补一行重复的 id。
+  assert.equal(get('raccoon-models-body').children[0].children[0].children.length,0,'标签已是 id，却又补了一行同样的 id');
   assert.deepEqual(get('raccoon-model').children.map(option=>option.value),['raccoon-8c4485']);
 });
 

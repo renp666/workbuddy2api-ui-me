@@ -317,10 +317,12 @@ function channelModelRows(channel,list,health){
  const switchable=channel!=='opencode'&&channel!=='autoclaw'&&channel!=='trae'&&channel!=='raccoon';
  // 去重身份始终按 id（core 用完整公共名，其余通道用跨源对齐键），展示名不参与身份判定：
  // 目录条目可能带 name（如小浣熊的上游真实展示名），只改行标签，不改选路键与探测对齐。
- const ensure=(id,label)=>{const identity=channel==='core'?String(id||''):modelKey(id);if(!identity)return null;if(!rows.has(identity))rows.set(identity,{key:modelKey(id),label:String(label||id),id:String(id),cap:null,result:null,efforts:null,credits:null,creditValue:null,accounts:null,tier:null});return rows.get(identity);};
+ // upstreamName 单独留一份：行标签是给人看的，id 是选路与别名表单里真正在用的那个（问题4）。
+ const ensure=(id,label,upstreamName)=>{const identity=channel==='core'?String(id||''):modelKey(id);if(!identity)return null;if(!rows.has(identity))rows.set(identity,{key:modelKey(id),label:String(label||id),upstreamName:String(upstreamName||''),id:String(id),cap:null,result:null,efforts:null,credits:null,creditValue:null,accounts:null,tier:null});return rows.get(identity);};
  for(const item of(Array.isArray(list)?list:[])){
   if(!item||!item.id)continue;
-  const row=ensure(item.id,typeof item.name==='string'&&item.name?item.name:item.id);if(!row)continue;
+  const upstreamName=typeof item.name==='string'&&item.name?item.name:'';
+  const row=ensure(item.id,upstreamName||item.id,upstreamName);if(!row)continue;
   row.efforts=Array.isArray(item.reasoning_supported_efforts)?item.reasoning_supported_efforts:null;
   row.cap=caps.get(row.key)||row.cap;
   row.credits=typeof item.credits==='string'?item.credits:null;
@@ -339,7 +341,7 @@ function channelModelRows(channel,list,health){
   const result=row.result;
   const variants=[...new Set([...modelVariantNames(result),...modelVariantNames(row.cap)])];
   const ms=result?Number(result.durationMs):NaN;
-  return{key:row.key,label:row.label,id:row.id,switchable,credits:row.credits,creditValue:row.creditValue,accounts:row.accounts,tier:row.tier,state:modelProbeState(result),
+  return{key:row.key,label:row.label,upstreamName:row.upstreamName,id:row.id,switchable,credits:row.credits,creditValue:row.creditValue,accounts:row.accounts,tier:row.tier,state:modelProbeState(result),
    caps:modelCapabilityBadges(row.cap,row.efforts&&row.efforts.length?['推理']:null),
    limit:modelLimitText(row.cap),
    variants:variants.length?`档位 ${variants.join(' / ')}`:'',
@@ -367,6 +369,10 @@ function probeSort(a,b){
 // modelTableGroupsByAccount：哪些通道的模型表支持按账号分层。core 的归属来自
 // /v1/models 的 accounts，autoclaw 的归属来自 bridge 逐账号下发的目录；两者共用同一套分组渲染。
 function modelTableGroupsByAccount(channel){return channel==='core'||channel==='autoclaw';}
+// modelLabelCell 渲染模型表第一列。目录条目带 name 时行标签用的是上游展示名（人看的），
+// 但选路、探测对齐和别名表单里真正用的是 id——表头写的就是「模型 ID」，
+// 不把 id 写出来就没人能把这一行和别名表单里选的那个对上（问题4）。
+function modelLabelCell(row){return cell(row.label,row.upstreamName&&row.upstreamName!==row.id?row.id:'');}
 function renderModelTable(channel,list,health){
  const config=modelChannels[channel];
  modelHeatSources[channel]={list,health};
@@ -379,7 +385,7 @@ function renderModelTable(channel,list,health){
   if(row.state.tone==='warn'||row.state.tone==='bad')tr.className='row-'+row.state.tone;
   // tier 徽标排在能力徽标之前：它说「这个模型属于哪一档」，与「能不能调通」是两件事。
   const caps=row.tier?['Agent',...row.caps]:row.caps;
-  tr.append(cell(row.label),chipsCell(caps,[row.limit,row.variants].filter(Boolean).join(' · ')),badgeCell(row.state.label,row.state.tone),numCell(row.duration,row.source),numCell(row.speed),cell(row.note),modelHeatCell(row.key),globalHeatCell(row.key));
+  tr.append(modelLabelCell(row),chipsCell(caps,[row.limit,row.variants].filter(Boolean).join(' · ')),badgeCell(row.state.label,row.state.tone),numCell(row.duration,row.source),numCell(row.speed),cell(row.note),modelHeatCell(row.key),globalHeatCell(row.key));
   // opencode 免费通道不采集倍率、不加开关列；其余通道追加「积分消耗」与「操作」两列。
   if(row.switchable){ tr.append(creditCell(row),switchOpCell(row)); }
   body.append(tr);
