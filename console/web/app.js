@@ -2039,7 +2039,9 @@ function renderRouteAliases(aliases){
  $('routes-alias-empty').hidden=aliases.length>0;
  for(const entry of aliases){
   const tr=document.createElement('tr');
-  tr.append(cell(entry.alias),channelCell(routeChannelLabel(entry.channel),entry.channel),cell(entry.model),cell(entry.public_model),badgeCell(entry.enabled?'启用':'停用',entry.enabled?'ok':'idle'),cell(entry.note||'—'));
+  // 状态说「已启用/已停用」，与模型表同口径：同一行的操作列还有一颗「停用/启用」按钮，
+  // 两边都写「启用/停用」会让状态与动作分不清。
+  tr.append(cell(entry.alias),channelCell(routeChannelLabel(entry.channel),entry.channel),cell(entry.model),cell(entry.public_model),badgeCell(entry.enabled?'已启用':'已停用',entry.enabled?'ok':'idle'),cell(entry.note||'—'));
   const actions=document.createElement('td');
   const edit=document.createElement('button');edit.className='secondary';edit.textContent='编辑';edit.addEventListener('click',()=>startRouteEdit(entry));
   const toggle=document.createElement('button');toggle.className='secondary';toggle.textContent=entry.enabled?'停用':'启用';toggle.addEventListener('click',()=>saveRouteAliases(currentRouteAliases().map(item=>item.alias===entry.alias?{...item,enabled:!entry.enabled}:item)));

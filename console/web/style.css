@@ -478,6 +478,10 @@ textarea{width:100%;resize:vertical;min-height:64px;max-height:180px;display:blo
 #cap-tiers small{margin-bottom:8px}
 #cap-body td{white-space:nowrap}
 #cap-body td:first-child,#cap-body td:nth-child(2){white-space:normal}
+/* 「现在有哪些模型可用」复用 .access-grid 排通道卡片，但那张网格是给接入页表单用的：
+   默认 align-items:stretch 会把同一行的卡片拉成等高，于是 core 那种几十个模型的卡片
+   旁边站着一个底部大片空白的矮卡片。这里只让卡片按内容高、顶对齐，接入页表单不受影响。 */
+#routes-channels{align-items:start}
 
 /* ---------- 动效 ---------- */
 @media(prefers-reduced-motion:reduce){

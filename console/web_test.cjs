@@ -2642,7 +2642,7 @@ test('Agent 接入 tab renders auto preview, alias table, channel sources and a 
   const rows=get('routes-alias-body').children;
   assert.equal(rows.length,1,'alias row missing');
   assert.deepEqual(rows[0].children.slice(0,6).map(td=>td.textContent),['my-fast','OpenCode 通道','OC · Free','opencode-OC · Free','','日常']);
-  assert.equal(rows[0].children[4].children[0].textContent,'启用','alias state badge');
+  assert.equal(rows[0].children[4].children[0].textContent,'已启用','alias state badge');
   assert.equal(rows[0].children[4].children[0].className,'badge ok');
   // Only enabled channels are offered; the disabled qoder channel must not be selectable.
   assert.deepEqual(get('routes-alias-channel').children.map(option=>option.value),['core','opencode']);
@@ -3624,4 +3624,18 @@ test('可点的徽章片要有悬停反馈：与只读徽章同款，没反馈�
   const js=readFileSync(__dirname+'/web/app.js','utf8');
   assert.match(js,/tag\.className='badge'[\s\S]{0,200}pickRouteModel/,
     'app.js 里找不到「可点模型片」的构造点（模型清单那排可点徽章），这条测试的锚点写错了');
+});
+
+test('别名页两处口径：状态徽章写「已启用/已停用」，通道卡片按内容高顶对齐',()=>{
+  const css=readFileSync(__dirname+'/web/style.css','utf8');
+  // .access-grid 是接入页的表单网格，默认 align-items:stretch；复用它的通道卡片会被拉成等高，
+  // core 那种几十个模型的卡片旁边就站着一个底部大片空白的矮卡片。
+  assert.match(cssRuleBody(css,'#routes-channels'),/align-items:start/,
+    '#routes-channels 没顶对齐：通道卡片被 .access-grid 的 stretch 拉成等高，矮卡片底部留大片空白');
+  // 接入页表单本身要继续拉伸（等高才好对齐），别把上面那条写成通用规则。
+  assert.doesNotMatch(cssRuleBody(css,'.access-grid'),/align-items:start/,
+    '.access-grid 被改成不拉伸了，接入页的表单格子会变成高低不一');
+  // 别名表的状态徽章与模型表同口径：同一行还有「停用/启用」按钮，撞词会分不清状态和动作。
+  const js=readFileSync(__dirname+'/web/app.js','utf8');
+  assert.match(js,/entry\.enabled\?'已启用':'已停用'/,'别名表状态徽章没用「已启用/已停用」');
 });
