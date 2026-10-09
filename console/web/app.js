@@ -2914,7 +2914,7 @@ $('raccoon-import-form').addEventListener('submit',async event=>{
  const generation=sessionGeneration;raccoonBusy=true;$('raccoon-import').disabled=true;notice('');
  $('raccoon-import-hint').textContent='正在导入…';
  try{
-  const result=await jsonAPI('raccoon/import',payload);
+  const result=await jsonAPI('raccoon/accounts/import',payload);
   if(generation!==sessionGeneration)return;
   $('raccoon-import-json').value='';
   $('raccoon-import-hint').textContent=`已导入 ${result.nickname||result.uid||'账号'}${result.needs_check?'；凭据临近有效期，建议到账号管理点「刷新」核对。':''}`;

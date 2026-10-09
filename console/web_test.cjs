@@ -1776,7 +1776,7 @@ test('raccoon import form posts parsed credentials and explains a 409 skip',asyn
   const requests=[];
   const {ctx,get}=raccoonFixture({enabled:true,reachable:true,model_count:0,models:[],accounts:[]});
   ctx.fetch=async(url,options={})=>{
-    if(url==='/admin/raccoon/import'&&options.method==='POST'){
+    if(url==='/admin/raccoon/accounts/import'&&options.method==='POST'){
       requests.push({url,body:options.body});
       if(requests.length===1)return {ok:false,status:409,json:async()=>({action:'skipped_existing_newer'})};
       return {ok:true,status:200,json:async()=>({uid:'r1',nickname:'一号',action:'created',needs_check:true})};
