@@ -3269,6 +3269,39 @@ test('调用明细的客户端列：旁路通道前置通道标签认是谁报�
   assert.equal(rows[2].children[1].className,'ch-name ch-trae','客户端列的改动串到了通道列');
 });
 
+test('调用明细的客户端列：认得出的串显示准确 agent 名，格式是「真名（原始串）」',async()=>{
+  const items=[
+    {ts:2000,uid:'trae',account:'Trae 通道',model:'trae-x',mode:'sync',prompt_tokens:1,completion_tokens:1,credit:0,client:'Hertz'},
+    {ts:2001,uid:'trae',account:'Trae 通道',model:'trae-x',mode:'sync',prompt_tokens:1,completion_tokens:1,credit:0,client:'Hertz/0.10.1'},
+    {ts:2002,uid:'trae',account:'Trae 通道',model:'trae-x',mode:'sync',prompt_tokens:1,completion_tokens:1,credit:0,client:'Hermes 0.18.0'},
+    {ts:2003,uid:'u1',account:'alice',model:'cn:m',mode:'sync',prompt_tokens:1,completion_tokens:1,credit:0,client:''},
+  ];
+  const usage=taskFixture(async()=>({ok:true,status:200,json:async()=>({range:'today',items,summary:{}})}));
+  await vm.runInContext('loadUsage()',usage.ctx);
+  const rows=usage.get('usage-body').children;
+  const clientOf=tr=>tr.children[10].textContent;
+  // 明细最新在上：空值 → 未识别 → 带版本号的 Hertz → 裸 Hertz。
+  assert.deepEqual(rows.map(clientOf),['—','Trae · Hermes 0.18.0','Trae CN（Hertz/0.10.1）','Trae CN（Hertz）'],
+    '认得出的串没显示准确 agent 名，或未识别的串没退回通道标签');
+  // 原始串必须原样带出：真名是补充，不是替换，否则对不上现场抓的 UA。
+  assert.equal(rows[3].children[10].textContent,'Trae CN（Hertz）','原始串被吞了，光看真名对不上现场抓的 UA');
+  // 大小写不敏感、含即中；认不出/空值绝不硬套。
+  const {ctx}=taskFixture(async()=>({ok:true,status:200,json:async()=>({}),headers:{get:()=>null}}));
+  const call=expr=>vm.runInContext(expr,ctx);
+  assert.equal(call("clientAgentName('HERTZ')"),'Trae CN','关键词匹配区分了大小写');
+  assert.equal(call("clientAgentName('hz-hertz-client/1.2')"),'Trae CN','带前后缀的 UA 认不出');
+  assert.equal(call("clientAgentName('unknown-agent/1.0')"),'','不认识的串被硬套了真名');
+  assert.equal(call("clientAgentName('')"),'');
+  assert.equal(call("clientLabel('Hertz','trae')"),'Trae CN（Hertz）','认得出时不该再重复挂通道标签');
+  assert.equal(call("clientLabel('x','workbuddy')"),'x','核心通道的 UA 必须原样');
+  // 对照表只增不改：每条都得是「非空关键词 → 非空真名」，否则匹配到空名会渲染出「（Hertz）」这种残句。
+  const table=call('clientAgentNames');
+  for(const row of table){
+    assert.ok(Array.isArray(row)&&row.length===2&&typeof row[0]==='string'&&row[0].length>0&&typeof row[1]==='string'&&row[1].length>0,
+      'clientAgentNames 里有一条不是「非空关键词 → 非空真名」：'+JSON.stringify(row));
+  }
+});
+
 test('两条通道筛选下拉：选项正好等于 usageChannelOrder，新通道不许只加在脚本里',()=>{
   const html=readFileSync(__dirname+'/web/index.html','utf8');
   const channels=channelList(readFileSync(__dirname+'/web/app.js','utf8'));

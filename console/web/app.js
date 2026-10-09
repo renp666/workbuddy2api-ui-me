@@ -976,8 +976,21 @@ const usageChannelOrder=['workbuddy','zcode','qoder','opencode','autoclaw','trae
 // workbuddy 的标签留空即「原样显示」，键的顺序与 usageChannelOrder 一致（有判据按同序反查）。
 const usageChannelTags={workbuddy:'',zcode:'GLM',qoder:'Qoder',opencode:'OpenCode',autoclaw:'AutoClaw',trae:'Trae',raccoon:'小浣熊'};
 function usageChannelOf(entry){const uid=entry.uid||'';return uid==='zcode'||uid==='qoder'||uid==='opencode'||uid==='autoclaw'||uid==='trae'||uid==='raccoon'?uid:'workbuddy';}
-// clientLabel 只在 client 非空时前置标签；空值仍由调用点显示「—」，不编出「GLM · —」。
-function clientLabel(raw,channel){const tag=usageChannelTags[channel];return raw?(tag?tag+' · '+raw:raw):'';}
+// 客户端列的「准确名称」对照表：旁路 sidecar 报的 raw 串里认得出的关键词 → 这个 agent 的真名。
+// 只增不改、按序匹配、忽略大小写、含即中（UA 常带版本号，如「Hertz/0.10.1」也认得出）。
+// 只填实测确认过的：认得出就显示「真名（原始串）」，认不出就退回下面的通道标签，绝不猜。
+// 例：Trae CN 的 sidecar 走字节自家的 Hertz 框架，UA 只报「Hertz」，光看串认不出是 Trae。
+const clientAgentNames=[['hertz','Trae CN']];
+function clientAgentName(raw){const s=String(raw||'').toLowerCase();for(const [needle,name] of clientAgentNames){if(s.includes(needle))return name;}return '';}
+// clientLabel：认得出真名就显示「真名（原始串）」——通道另有专列，不重复挂标签；
+// 认不出才退回通道标签（旁路报的串认不出是谁）；空值仍由调用点显示「—」，不编出「GLM · —」。
+function clientLabel(raw,channel){
+ if(!raw)return '';
+ const agent=clientAgentName(raw);
+ if(agent)return agent+'（'+raw+'）';
+ const tag=usageChannelTags[channel];
+ return tag?tag+' · '+raw:raw;
+}
 // 一束色认一条通道。routes 那侧的键是 core/glm，账本这侧是 workbuddy/zcode，
 // 指的是同一束光；翻译只写这一处，别在调用点各摆一份映射。
 // 通道类挂在单元格上，整行都是同一束光时（通道总览、通道分布）再挂到 <tr>，
