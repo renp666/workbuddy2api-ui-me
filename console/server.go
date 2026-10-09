@@ -71,6 +71,10 @@ type Config struct {
 	// It is consumed by the login limiter only; same-origin and CSRF checks keep using the connection peer.
 	TrustedProxyCIDRs string
 	RequireHTTPS      bool
+	// HealthProbe 决定 console 是否启动后台常态探活协程（聚合端点 GET /admin/health
+	// 始终可用）。探活只读端口/服务存活，不消耗上游额度。生产由 configFromEnv 置真；
+	// 测试构造的 Config 保持零值，避免后台请求干扰以 mock 上游断言调用次数的用例。
+	HealthProbe bool
 }
 type adminSession struct {
 	csrf, owner string
@@ -114,6 +118,8 @@ type server struct {
 	// catalog 缓存 OpenRouter 公开目录的一份快照，同时供「全球热度」列和
 	// 「模型能力 TOP」榜单派生，保证两列出自同一次抓取。
 	catalog *catalogCache
+	// health 保留后台常态探活的历史轮次（内存态，重启清空）。
+	health *healthCache
 }
 
 func NewServer(cfg Config) (http.Handler, error) {
@@ -220,6 +226,7 @@ func NewServer(cfg Config) (http.Handler, error) {
 	h.probe = newProbeRunner()
 	h.credits = &creditCache{}
 	h.catalog = &catalogCache{}
+	h.health = &healthCache{}
 	assets, err := fs.Sub(webFiles, "web")
 	if err != nil {
 		return nil, err
@@ -330,6 +337,8 @@ func NewServer(cfg Config) (http.Handler, error) {
 	// 手工测速探测：POST 触发一轮探测，GET 轮询进度与结论（仅内存，重启清空）。
 	h.mux.HandleFunc("POST /admin/probe", h.withAdmin(h.adminProbeStart))
 	h.mux.HandleFunc("GET /admin/probe", h.withAdmin(h.adminProbeState))
+	// 常态健康检查：GET 即时跑一轮「网关 + 七通道」总览并附后台探活历史（只读）。
+	h.mux.HandleFunc("GET /admin/health", h.withAdmin(h.adminHealth))
 	h.mux.HandleFunc("POST /admin/access", h.withAdmin(func(w http.ResponseWriter, r *http.Request) {
 		if _, err := h.coreInfo(r.Context()); err != nil {
 			adminError(w, 503, err.Error())
@@ -359,6 +368,9 @@ func NewServer(cfg Config) (http.Handler, error) {
 	}
 	if cfg.ZCodeControlURL != nil {
 		go h.zcodeAutoStart()
+	}
+	if cfg.HealthProbe {
+		go h.healthAutoStart()
 	}
 	return h, nil
 }
