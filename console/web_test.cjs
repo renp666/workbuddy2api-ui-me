@@ -66,8 +66,29 @@ test('usage statistics distinguish unknown tokens and credit from zero', () => {
   assert.equal(vm.runInContext('formatUsageTokens(123)',ctx),'123');
   assert.equal(vm.runInContext('formatUsageCredit(null)',ctx),'—');
   assert.equal(vm.runInContext('formatUsageCredit(undefined)',ctx),'—');
-  assert.equal(vm.runInContext('formatUsageCredit(0)',ctx),'0');
-  assert.equal(vm.runInContext('formatUsageCredit(1.5)',ctx),'1.5');
+  // 积分一律四舍五入保留 2 位小数：零与缺失仍是两件事，但都要带上小数位。
+  assert.equal(vm.runInContext('formatUsageCredit(0)',ctx),'0.00');
+  assert.equal(vm.runInContext('formatUsageCredit(1.5)',ctx),'1.50');
+  assert.equal(vm.runInContext('formatUsageCredit(1.234)',ctx),'1.23');
+  assert.equal(vm.runInContext('formatUsageCredit(1.235)',ctx),'1.24');
+  assert.equal(vm.runInContext('formatUsageCredit(1234.5)',ctx),'1,234.50');
+});
+
+test('token 三档动态展示：万以下给原值，万级加「万」副值，亿级以「亿」为主', () => {
+  const {ctx}=logoutFixture(()=>new Promise(()=>{}));
+  const parts=v=>JSON.parse(vm.runInContext(`JSON.stringify(tokenParts(${v}))`,ctx));
+  // 档一：低于万，原值，无副值。
+  assert.deepEqual(parts(0),{text:'0',sub:''});
+  assert.deepEqual(parts(9999),{text:'9,999',sub:''});
+  // 档二：万级，原值为主 + 四舍五入两位的「万」副值。
+  assert.deepEqual(parts(10000),{text:'10,000',sub:'1.00 万'});
+  assert.deepEqual(parts(123456),{text:'123,456',sub:'12.35 万'});
+  assert.deepEqual(parts(99999999),{text:'99,999,999',sub:'10000.00 万'});
+  // 档三：亿级，以「亿」为主 + 原值退到副值。
+  assert.deepEqual(parts(100000000),{text:'1.00 亿',sub:'100,000,000'});
+  assert.deepEqual(parts(1234567890),{text:'12.35 亿',sub:'1,234,567,890'});
+  // 未观测仍是「—」，不参与任何换算。
+  assert.deepEqual(parts(-1),{text:'—',sub:''});
 });
 
 test('task request id uses secure random bytes when randomUUID is unavailable', () => {
@@ -1356,7 +1377,7 @@ test('autoclaw tab renders badge, health rows, accounts, models and select when 
   assert.match(rows[0].children[0].textContent,/一号/);
   assert.equal(rows[0].children[1].textContent,'国际版');
   assert.equal(rows[0].children[2].children[0].textContent,'可用');
-  assert.equal(rows[0].children[3].textContent,'120');
+  assert.equal(rows[0].children[3].textContent,'120.00');
   assert.equal(rows[0].children[4].textContent,'3 / 1');
   assert.equal(rows[0].children[6].children[0].textContent,'停用');
   assert.equal(rows[0].children[6].children[2].textContent,'签到');
@@ -1589,7 +1610,7 @@ test('trae tab renders badge, health rows, accounts, models and select when reac
   assert.equal(rows.length,3,'account table row count');
   assert.match(rows[0].children[0].textContent,/一号/);
   assert.equal(rows[0].children[1].children[0].textContent,'可用');
-  assert.equal(rows[0].children[2].textContent,'120');
+  assert.equal(rows[0].children[2].textContent,'120.00');
   assert.equal(rows[0].children[3].textContent,'— / 1');
   assert.match(rows[0].children[4].textContent,/20\d\d/,'有效期列应显示凭据到期时间');
   assert.equal(rows[0].children[6].children[0].textContent,'停用');
@@ -1744,7 +1765,7 @@ test('raccoon tab renders badge, health rows, accounts, models and select when r
   assert.equal(rows.length,3,'account table row count');
   assert.match(rows[0].children[0].textContent,/一号/);
   assert.equal(rows[0].children[1].children[0].textContent,'可用');
-  assert.equal(rows[0].children[2].textContent,'120','points column must read the sidecar points field');
+  assert.equal(rows[0].children[2].textContent,'120.00','points column must read the sidecar points field');
   assert.equal(rows[0].children[3].textContent,'— / 1','sidecar has no success counter, success column stays dashed');
   assert.match(rows[0].children[4].textContent,/20\d\d/,'有效期列应显示凭据到期时间');
   assert.equal(rows[0].children[6].children[0].textContent,'停用');
@@ -2083,14 +2104,14 @@ test('usage page aggregates by channel, filters the detail list and keeps missin
   await vm.runInContext('loadUsage()',ctx);
   assert.equal(get('usage-calls').textContent,'4');
   assert.equal(get('usage-tokens').textContent,'342');
-  assert.equal(get('usage-credit').textContent,'3.5');
+  assert.equal(get('usage-credit').textContent,'3.50');
   assert.match(get('usage-note').textContent,/1 条记录未回报输入 token/,'unknown input token not surfaced');
   assert.doesNotMatch(get('usage-note').textContent,/未回报输出 token/,'输出都回报了却声称缺失：'+get('usage-note').textContent);
   assert.match(get('usage-note').textContent,/1 条记录未回报积分扣费/,'missing credit not surfaced');
   const dist=get('usage-by-channel-body').children;
   assert.deepEqual(dist.map(tr=>tr.children[0].textContent),['WorkBuddy','GLM（Zcode）','Qoder','OpenCode'],'distribution rows missing or misordered');
   assert.deepEqual(dist[1].children.map(td=>td.textContent),['GLM（Zcode）','1','10','20','—'],'zcode missing credit must show dash, not 0');
-  assert.deepEqual(dist[2].children.map(td=>td.textContent),['Qoder','1','—','5','0'],'qoder 整组输入缺失要显示「—」，真实 0 积分保留');
+  assert.deepEqual(dist[2].children.map(td=>td.textContent),['Qoder','1','—','5','0.00'],'qoder 整组输入缺失要显示「—」，真实 0 积分保留');
   // Filtering narrows only the detail list; the distribution keeps the full picture.
   ctx.USAGE_ITEMS=items;
   vm.runInContext("usageChannel='zcode';renderUsage({items:USAGE_ITEMS})",ctx);
@@ -2150,7 +2171,7 @@ test('token 缺失按输入与输出分别计数：只回报输入时输出不�
   assert.doesNotMatch(note,/未回报 token 用量/,'仍在使用输入输出合并的旧口径：'+note);
   // 通道分布表同样按字段留空：输出缺失的通道显示「—」而不是 0。
   const dist=get('usage-by-channel-body').children;
-  assert.deepEqual(dist[0].children.map(td=>td.textContent),['WorkBuddy','1','7','—','1'],'输出缺失被写成 0：'+dist[0].children.map(td=>td.textContent));
+  assert.deepEqual(dist[0].children.map(td=>td.textContent),['WorkBuddy','1','7','—','1.00'],'输出缺失被写成 0：'+dist[0].children.map(td=>td.textContent));
 });
 
 test('全部未观测时两张卡的积分与 Tokens 都读「—」，概览与调用统计口径一致',async()=>{
@@ -2865,17 +2886,17 @@ test('overview aggregates every enabled channel and filters the metric cards by 
   const rows=get('overview-channels-body').children;
   const text=td=>td.children.length?td.children[0].textContent:td.textContent;
   assert.deepEqual(rows.map(tr=>tr.children[0].textContent),['WorkBuddy','GLM（Zcode）','Qoder','OpenCode','AutoClaw','Trae','小浣熊'],'channel overview rows missing or misordered');
-  assert.deepEqual(rows[0].children.map(text),['WorkBuddy','运行中','1','1','100','200','1.5']);
+  assert.deepEqual(rows[0].children.map(text),['WorkBuddy','运行中','1','1','100','200','1.50']);
   // 旁路状态来自页签缓存：未访问过的通道如实标「未加载」，不伪造在线。
   assert.deepEqual(rows[1].children.map(text),['GLM（Zcode）','在线','3','1','10','20','—'],'zcode missing credit must show dash, not 0');
-  assert.deepEqual(rows[2].children.map(text),['Qoder','未加载','—','1','—','5','0'],'qoder 输入整组缺失显示「—」，输出与真实 0 积分保留');
+  assert.deepEqual(rows[2].children.map(text),['Qoder','未加载','—','1','—','5','0.00'],'qoder 输入整组缺失显示「—」，输出与真实 0 积分保留');
   assert.match(text(rows[3].children[1]),/不可达|未加载/);
-  assert.deepEqual(rows[4].children.map(text),['AutoClaw','在线','2','1','6','7','0'],'autoclaw 通道行口径不符');
-  assert.deepEqual(rows[5].children.map(text),['Trae','在线','2','1','8','9','0'],'trae 通道行口径不符');
-  assert.deepEqual(rows[6].children.map(text),['小浣熊','在线','1','1','2','3','0'],'raccoon 通道行口径不符');
+  assert.deepEqual(rows[4].children.map(text),['AutoClaw','在线','2','1','6','7','0.00'],'autoclaw 通道行口径不符');
+  assert.deepEqual(rows[5].children.map(text),['Trae','在线','2','1','8','9','0.00'],'trae 通道行口径不符');
+  assert.deepEqual(rows[6].children.map(text),['小浣熊','在线','1','1','2','3','0.00'],'raccoon 通道行口径不符');
   assert.equal(get('overview-usage-calls').textContent,'7');
   assert.equal(get('overview-usage-tokens').textContent,'377');
-  assert.equal(get('overview-usage-credit').textContent,'3.5');
+  assert.equal(get('overview-usage-credit').textContent,'3.50');
   assert.match(get('overview-usage-note').textContent,/1 条记录未回报输入 token/);
   assert.match(get('overview-usage-note').textContent,/1 条记录未回报积分扣费/);
   // 单通道筛选只作用于指标卡，通道总览表保持全量。

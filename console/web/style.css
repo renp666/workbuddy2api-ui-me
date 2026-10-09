@@ -222,6 +222,9 @@ code{font-family:var(--font-mono);font-size:.92em}
 .metrics span{font-size:11px;color:var(--muted);display:block;letter-spacing:.02em}
 .metrics strong{display:block;font-family:var(--font-mono);font-size:32px;font-weight:700;letter-spacing:-1.2px;line-height:1.1;margin:7px 0 3px;font-variant-numeric:tabular-nums;overflow-wrap:anywhere}
 .metrics small{font-size:11px;color:var(--muted)}
+/* 指标卡主值里的副值（万/亿）：同一个数的另一种单位，跟主值同行但明显退后，
+   所以只压字号与颜色，不动 32px 的主读数。letter-spacing 归零，免得继承主值的紧排。 */
+.metrics strong small{display:inline-block;font-size:12px;font-weight:600;letter-spacing:0;color:var(--muted);margin-left:6px;vertical-align:2px}
 
 /* ---------- 通道机架（运行概览招牌） ---------- */
 /* 概览顶部这块不是"四张卡片"，是一根机架里并排的四束光：底色与顶栏同族，

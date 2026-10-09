@@ -524,18 +524,18 @@ function renderOverview(){
   const s=summarizeUsage(byChannel.get(c)||[]);
   const status=overviewChannelStatus(c);
   const count=overviewChannelModelCount(c);
-  const credit=s.calls?s.creditMissing===s.calls?'—':String(s.credit):'—';
+  const credit=s.calls?formatCreditGroup(s.credit,s.creditMissing,s.calls):'—';
   const tr=document.createElement('tr');
   tr.className='ch-'+c+' ch-band';
   const td=document.createElement('td');const tag=document.createElement('span');tag.className='badge'+(status.tone?' '+status.tone:'');tag.textContent=status.label;td.append(tag);
-  tr.append(channelCell(usageChannelNames[c],c),td,numCell(count===null?'—':String(count)),numCell(String(s.calls)),numCell(formatUsageGroup(s.prompt,s.promptMissing,s.calls)),numCell(formatUsageGroup(s.completion,s.completionMissing,s.calls)),numCell(credit));
+  tr.append(channelCell(usageChannelNames[c],c),td,numCell(count===null?'—':String(count)),numCell(String(s.calls)),tokenCell(s.prompt,s.promptMissing,s.calls),tokenCell(s.completion,s.completionMissing,s.calls),numCell(credit));
   body.append(tr);
  }
  const items=overviewUsageChannel==='all'?overviewUsageItems:overviewUsageItems.filter(e=>usageChannelOf(e)===overviewUsageChannel);
  const s=summarizeUsage(items);
  $('overview-usage-calls').textContent=String(s.calls);
- $('overview-usage-tokens').textContent=formatUsageTokensTotal(s);
- $('overview-usage-credit').textContent=formatUsageGroup(s.credit,s.creditMissing,s.calls);
+ setMetric('overview-usage-tokens',usageTokenTotal(s));
+ $('overview-usage-credit').textContent=formatCreditGroup(s.credit,s.creditMissing,s.calls);
  const notes=[];
  if(s.promptMissing)notes.push(`${s.promptMissing} 条记录未回报输入 token，未计入合计`);
  if(s.completionMissing)notes.push(`${s.completionMissing} 条记录未回报输出 token，未计入合计`);
@@ -668,7 +668,7 @@ function renderAccounts(data) {
   const accountTone={'可用':'ok','冷却中':'warn','已禁用':'idle'}[state];
   const status=cell('');const badge=document.createElement('span');badge.className='badge '+accountTone;badge.textContent=state;status.append(badge);
   const limits=(a.rate_limited_models||[]).map(m => `${m.model} 至 ${new Date(m.until).toLocaleString()}`).join('；');
-  tr.append(cell(a.nickname||a.uid,`${a.realm === 'global'?'国际版':'国内版'} · ${a.uid}`),status,cell(a.credits_known ? String(a.credits) : a.credits>0 ? `${a.credits}（历史）` : '待确认'),numCell(`${a.success_count||0} / ${a.err_total||0}`),numCell(String(a.in_flight)),cell(limits||a.disabled_reason||a.reason||'—', a.cool_remaining_sec ? `约 ${Math.ceil(a.cool_remaining_sec/60)} 分钟后恢复` : ''), pinOpCell(a));
+  tr.append(cell(a.nickname||a.uid,`${a.realm === 'global'?'国际版':'国内版'} · ${a.uid}`),status,cell(a.credits_known ? formatCredit(a.credits) : a.credits>0 ? `${formatCredit(a.credits)}（历史）` : '待确认'),numCell(`${a.success_count||0} / ${a.err_total||0}`),numCell(String(a.in_flight)),cell(limits||a.disabled_reason||a.reason||'—', a.cool_remaining_sec ? `约 ${Math.ceil(a.cool_remaining_sec/60)} 分钟后恢复` : ''), pinOpCell(a));
   $('accounts-body').append(tr);
  }
  updateModelHint();
@@ -935,20 +935,55 @@ function shareCell(value,total){
 // 各自计入 prompt_missing / completion_missing），credit 缺失（null）不累加且计入 credit_missing。
 // 一个通道只回报了输入、没回报输出是真实存在的响应，把输出当 0 会静悄悄少报总量。
 function summarizeUsage(items){const s={calls:items.length,prompt:0,completion:0,credit:0,creditMissing:0,promptMissing:0,completionMissing:0};for(const e of items){if(e.prompt_tokens>=0)s.prompt+=e.prompt_tokens;else s.promptMissing++;if(e.completion_tokens>=0)s.completion+=e.completion_tokens;else s.completionMissing++;if(e.credit!=null)s.credit+=e.credit;else s.creditMissing++;}return s;}
-// formatUsageGroup 聚合值展示：整组都未回报时给「—」，部分回报才给累计数。
-function formatUsageGroup(total,missing,calls){return calls>0&&missing===calls?'—':String(total);}
-// formatUsageTokensTotal Tokens 合计口径：输入与输出都没有任何观测时读「—」，
-// 只有回报值的和才当数字展示（0 条观测不等于 0 消耗）。
-function formatUsageTokensTotal(s){return s.calls>0&&s.promptMissing===s.calls&&s.completionMissing===s.calls?'—':String(s.prompt+s.completion);}
-function formatUsageTokens(value){return value<0?'—':String(value);}
-function formatUsageCredit(value){return value==null||value===undefined?'—':String(value);}
+// ── 数值展示口径：全站唯一一处，改这里全站生效 ──
+// tokenParts 三档动态展示：<1万 直接给原值；≥1万 原值为主、副行给「万」值；
+// ≥1亿 以「亿」为主、原值退到副行。未观测（<0）仍是「—」，不把缺失当 0。
+// 副行只承载「同一个数的另一种单位」，调用点要么用 setMetric 落成 <small>，
+// 要么用 tokenCell/cell 的副行参数，绝不把两段拼进同一个 textContent。
+function tokenParts(value){
+ const n=Math.round(Number(value));
+ if(!Number.isFinite(n)||n<0)return{text:'—',sub:''};
+ if(n<10000)return{text:n.toLocaleString('en-US'),sub:''};
+ if(n<1e8)return{text:n.toLocaleString('en-US'),sub:(n/1e4).toFixed(2)+' 万'};
+ return{text:(n/1e8).toFixed(2)+' 亿',sub:n.toLocaleString('en-US')};
+}
+function formatTokens(value){return tokenParts(value).text;}
+// formatCredit 积分一律四舍五入保留 2 位小数；缺失（null/undefined）仍是「—」，零与缺失不同。
+function formatCredit(value){
+ if(value==null||value==='')return '—';
+ const n=Number(value);
+ return Number.isFinite(n)?n.toLocaleString('en-US',{minimumFractionDigits:2,maximumFractionDigits:2}):'—';
+}
+// formatCreditGroup 与上同形，但走积分口径（2 位小数）。
+function formatCreditGroup(total,missing,calls){return calls>0&&missing===calls?'—':formatCredit(total);}
+// usageTokenTotal Tokens 合计口径：输入与输出都没有任何观测时返回 null（调用点写「—」），
+// 否则给出可展示的合计值（0 条观测不等于 0 消耗）。两处指标条共用，避免各写一遍判据。
+function usageTokenTotal(s){return s.calls>0&&s.promptMissing===s.calls&&s.completionMissing===s.calls?null:s.prompt+s.completion;}
+function formatUsageTokens(value){return formatTokens(value);}
+function formatUsageCredit(value){return formatCredit(value);}
+// tokenCell 表格里的 token 单元格：整组未回报给「—」，否则主值走三档主文本、
+// 万/亿副值落进单元格的 <small>（numCell 的副行），与指标卡同一口径。
+function tokenCell(total,missing,calls){
+ if(calls>0&&missing===calls)return numCell('—');
+ const parts=tokenParts(total);
+ return numCell(parts.text,parts.sub);
+}
+// setMetric 指标卡写值：value 是数值时按三档给「主值 + 万/亿副值」（副值用嵌套 <small>，
+// 直接继承 .metrics small 的 11px 灰字，不另立一套样式）；value 为 null 时如实写「—」。
+function setMetric(id,value){
+ const el=$(id);if(!el)return;
+ if(value==null){el.textContent='—';return;}
+ const parts=tokenParts(value);
+ el.textContent=parts.text;
+ if(parts.sub&&typeof document.createElement==='function'){const s=document.createElement('small');s.textContent=parts.sub;el.append(s);}
+}
 function renderUsage(data){
  const all=(data.items||[]);
  const items=all.filter(e=>usageChannel==='all'||usageChannelOf(e)===usageChannel).slice().reverse();
  const summary=summarizeUsage(items);
  $('usage-calls').textContent=String(summary.calls);
- $('usage-tokens').textContent=formatUsageTokensTotal(summary);
- $('usage-credit').textContent=formatUsageGroup(summary.credit,summary.creditMissing,summary.calls);
+ setMetric('usage-tokens',usageTokenTotal(summary));
+ $('usage-credit').textContent=formatCreditGroup(summary.credit,summary.creditMissing,summary.calls);
  const notes=[];
  if(summary.promptMissing)notes.push(`${summary.promptMissing} 条记录未回报输入 token，未计入合计`);
  if(summary.completionMissing)notes.push(`${summary.completionMissing} 条记录未回报输出 token，未计入合计`);
@@ -967,10 +1002,10 @@ function renderUsage(data){
  const distRows=usageChannelOrder.filter(c=>byChannel.has(c));
  $('usage-by-channel-empty').hidden=distRows.length>0;
  for(const c of distRows){
-  const s=summarizeUsage(byChannel.get(c));const credit=s.creditMissing===s.calls?'—':String(s.credit);
+  const s=summarizeUsage(byChannel.get(c));const credit=s.calls?formatCreditGroup(s.credit,s.creditMissing,s.calls):'—';
   const tr=document.createElement('tr');tr.className='ch-'+c+' ch-band';
   const calls=numCell(String(s.calls));calls.append(shareCell(s.calls,all.length));
-  tr.append(channelCell(usageChannelNames[c],c),calls,numCell(formatUsageGroup(s.prompt,s.promptMissing,s.calls)),numCell(formatUsageGroup(s.completion,s.completionMissing,s.calls)),numCell(credit));
+  tr.append(channelCell(usageChannelNames[c],c),calls,tokenCell(s.prompt,s.promptMissing,s.calls),tokenCell(s.completion,s.completionMissing,s.calls),numCell(credit));
   distBody.append(tr);
  }
  $('usage-empty').hidden=items.length>0;
@@ -1101,8 +1136,8 @@ function renderUsageLifetime(){
  const lt=usageDailyLifetime;
  if(!lt){$('usage-life-line').textContent='正在读取日度汇总…';return;}
  $('usage-life-line').textContent=lt.calls>0?`全历史 ${lt.days} 个自然日有调用，累计 ${formatUsageInt(lt.calls)} 次（自 ${lt.first_date}）`:'账本里还没有成功调用记录。';
- $('usage-life-tokens').textContent=lt.tokens_missing?'—':formatUsageInt(lt.tokens);
- $('usage-life-peak').textContent=!lt.peak_date||lt.peak_tokens_missing?'—':formatUsageInt(lt.peak_tokens);
+ setMetric('usage-life-tokens',lt.tokens_missing?null:lt.tokens);
+ setMetric('usage-life-peak',!lt.peak_date||lt.peak_tokens_missing?null:lt.peak_tokens);
  $('usage-life-peak-note').textContent=lt.peak_date?`Token 最多的一天：${lt.peak_date}`:'Token 最多的那一天';
  $('usage-life-streak').textContent=String(lt.current_streak);
  $('usage-life-longest').textContent=String(lt.longest_streak);
@@ -2345,7 +2380,7 @@ function renderAutoClawAccounts(list){
   const op=document.createElement('td');
   if(a.disabled)op.append(ac('启用','enable','secondary'),' ',ac('删除','delete','quiet'));
   else op.append(ac('停用','disable','secondary'),' ',ac('签到','checkin','quiet'),' ',ac('删除','delete','quiet'));
-  tr.append(cell(a.nickname||a.uid,a.uid),cell(region),status,numCell(a.points==null?'—':String(a.points)),numCell(`${a.success_count||0} / ${a.err_count||0}`),cell(a.reason||'—',a.cool_remaining_sec?`约 ${Math.ceil(a.cool_remaining_sec/60)} 分钟后恢复`:''),op);
+  tr.append(cell(a.nickname||a.uid,a.uid),cell(region),status,numCell(a.points==null?'—':formatCredit(a.points)),numCell(`${a.success_count||0} / ${a.err_count||0}`),cell(a.reason||'—',a.cool_remaining_sec?`约 ${Math.ceil(a.cool_remaining_sec/60)} 分钟后恢复`:''),op);
   body.append(tr);
  }
  $('autoclaw-accounts-empty').hidden=autoclawAccounts.length>0;
@@ -2577,7 +2612,7 @@ function renderTraeAccounts(list){
   if(a.disabled)op.append(ta('启用','enable','secondary'),' ',ta('删除','delete','quiet'));
   else op.append(ta('停用','disable','secondary'),' ',ta('刷新','refresh','quiet'),' ',ta('删除','delete','quiet'));
   // sidecar 只回报失败次数，没有成功计数；成功列留「—」而不是拿 0 充数。
-  tr.append(cell(a.nickname||a.uid,a.uid),status,numCell(a.credits==null?'—':String(a.credits)),numCell('— / '+(a.err_count||0)),cell(expires,a.expired_soon?'Token 即将过期':''),cell(a.reason||'—',traeRecoveryHint(a)),op);
+  tr.append(cell(a.nickname||a.uid,a.uid),status,numCell(a.credits==null?'—':formatCredit(a.credits)),numCell('— / '+(a.err_count||0)),cell(expires,a.expired_soon?'Token 即将过期':''),cell(a.reason||'—',traeRecoveryHint(a)),op);
   body.append(tr);
  }
  $('trae-accounts-empty').hidden=traeAccounts.length>0;
@@ -2863,7 +2898,7 @@ function renderRaccoonAccounts(list){
   if(stopped)op.append(ta('启用','enable','secondary'),' ',ta('删除','delete','quiet'));
   else op.append(ta('停用','disable','secondary'),' ',ta('刷新','refresh','quiet'),' ',ta('删除','delete','quiet'));
   // sidecar 只回报失败次数，没有成功计数；成功列留「—」而不是拿 0 充数。
-  tr.append(cell(a.nickname||a.uid,a.uid),status,numCell(a.points==null?'—':String(a.points)),numCell('— / '+(a.err_count||0)),cell(expires,a.expired_soon?'Token 即将过期':''),cell(a.reason||'—',raccoonRecoveryHint(a)),op);
+  tr.append(cell(a.nickname||a.uid,a.uid),status,numCell(a.points==null?'—':formatCredit(a.points)),numCell('— / '+(a.err_count||0)),cell(expires,a.expired_soon?'Token 即将过期':''),cell(a.reason||'—',raccoonRecoveryHint(a)),op);
   body.append(tr);
  }
  $('raccoon-accounts-empty').hidden=raccoonAccounts.length>0;
