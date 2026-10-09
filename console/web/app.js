@@ -2911,17 +2911,21 @@ $('raccoon-pick-file').addEventListener('click',()=>$('raccoon-file').click());
 $('raccoon-file').addEventListener('change',()=>{
  const file=$('raccoon-file').files&&$('raccoon-file').files[0];if(!file)return;
  const reader=new FileReader();
- reader.onload=()=>{$('raccoon-import-json').value=String(reader.result||'');$('raccoon-import-hint').textContent=`已读取 ${file.name}，确认无误后点「导入」。`;};
+ reader.onload=()=>{
+  $('raccoon-import-json').value=String(reader.result||'');
+  $('raccoon-import').classList.add('attn');$('raccoon-import').focus();
+  $('raccoon-import-hint').textContent=`已读取 ${file.name}，内容已填入下面的输入框，确认无误后点「导入」。`;
+ };
  reader.onerror=()=>{$('raccoon-import-hint').textContent='读取文件失败，请改用文本编辑器打开后复制内容粘贴。';};
  reader.readAsText(file);
 });
 $('raccoon-import-form').addEventListener('submit',async event=>{
  event.preventDefault();if(raccoonBusy)return;
  const text=$('raccoon-import-json').value.trim();
- if(!text){$('raccoon-import-hint').textContent='请粘贴 auth.json 的完整内容，或点上面的「选择 auth.json 文件」。';return;}
- if(!/^[{[]/.test(text)){$('raccoon-import-hint').textContent='这看起来是文件路径，不是凭证内容。请点上面的「选择 auth.json 文件」选择该文件，或用文本编辑器打开后复制里面的完整 JSON 粘贴进来。';return;}
+ if(!text){$('raccoon-import-hint').textContent='请先点上面的「① 选择 auth.json 文件」，或直接粘贴 auth.json 的完整内容。';return;}
+ if(!/^[{[]/.test(text)){$('raccoon-import-hint').textContent='这看起来是文件路径，不是凭证内容。请点上面的「① 选择 auth.json 文件」选择该文件，或用文本编辑器打开后复制里面的完整 JSON 粘贴进来。';return;}
  let payload;try{payload=JSON.parse(text);}catch{$('raccoon-import-hint').textContent='不是合法的 JSON，请粘贴完整凭证内容。';return;}
- const generation=sessionGeneration;raccoonBusy=true;$('raccoon-import').disabled=true;notice('');
+ const generation=sessionGeneration;raccoonBusy=true;$('raccoon-import').disabled=true;$('raccoon-import').classList.remove('attn');notice('');
  $('raccoon-import-hint').textContent='正在导入…';
  try{
   const result=await jsonAPI('raccoon/accounts/import',payload);

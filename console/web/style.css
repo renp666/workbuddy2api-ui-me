@@ -90,6 +90,10 @@ code{font-family:var(--font-mono);font-size:.92em}
 .secondary:hover:not(:disabled){background:var(--bg-soft);border-color:#c3c9dd}
 .quiet{background:none;color:var(--accent-strong);padding:8px 12px}
 .quiet:hover:not(:disabled){background:var(--accent-soft)}
+/* 选文件读入成功后给「导入」一圈呼吸高亮，把下一步指出来；点导入即移除。
+   动效时长与次数都写死，减少动效偏好由上面的全局规则统一压平。 */
+.attn{animation:attn-pulse 1.2s ease-in-out 3;box-shadow:0 0 0 3px var(--accent-soft)}
+@keyframes attn-pulse{0%,100%{box-shadow:0 0 0 3px var(--accent-soft)}50%{box-shadow:0 0 0 6px var(--accent-line)}}
 .muted,.subtle{color:var(--muted)}
 .small{font-size:12px}
 

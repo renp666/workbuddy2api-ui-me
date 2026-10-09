@@ -93,7 +93,7 @@ function taskFixture(fetch, cryptoImpl={randomUUID:()=> '11111111-2222-4333-8444
   function element(tag='div') {
     return {tagName:tag.toUpperCase(),value:'',type:'',hidden:false,disabled:false,textContent:'',className:'',children:[],dataset:{},handlers:{},classList:{toggled:{},toggle(name,on){this.toggled[name]=on;},add(name){this.toggled[name]=true;},remove(name){delete this.toggled[name];}},
       addEventListener(name,fn){this.handlers[name]=fn;},append(...children){this.children.push(...children);},appendChild(child){this.children.push(child);return child;},
-      replaceChildren(...children){this.children=children;},setAttribute(name,value){this[name]=value;},insertBefore(child){this.children.unshift(child);},querySelector(){return null;},scrollIntoView(){},select(){}};
+      replaceChildren(...children){this.children=children;},setAttribute(name,value){this[name]=value;},insertBefore(child){this.children.unshift(child);},querySelector(){return null;},scrollIntoView(){},select(){},focus(){this.focused=true;}};
   }
   const get=id=>{if(!elements.has(id))elements.set(id,element());return elements.get(id);};
   const protocolButtons=['access-openai','access-anthropic','chat-openai','chat-anthropic'].map(id=>{const button=get(id);button.dataset.protocol=id.split('-')[1];return button;});
@@ -1880,6 +1880,13 @@ test('raccoon import form posts parsed credentials and explains a 409 skip',asyn
   assert.equal(get('raccoon-import-json').value,'{"access_token":"t"}','picked file must fill the JSON box');
   assert.match(get('raccoon-import-hint').textContent,/已读取 auth\.json/);
   assert.equal(requests.length,2,'picking a file must not itself issue an import request');
+  // 读入成功后把下一步「导入」指出来：高亮并聚焦，用户不用回头找按钮。
+  assert.equal(get('raccoon-import').classList.toggled.attn,true,'picking a file must highlight the import button');
+  assert.equal(get('raccoon-import').focused,true,'picking a file must focus the import button');
+  // 点「导入」进入请求后高亮即撤下，避免和提交态抢注意力。
+  await get('raccoon-import-form').handlers.submit({preventDefault(){}});
+  assert.equal(requests.length,3,'submitting the picked file must issue the import request');
+  assert.ok(!get('raccoon-import').classList.toggled.attn,'submitting must clear the attention highlight');
 });
 
 test('access model select merges raccoon models and routes raccoon go-chat to the raccoon tab',async()=>{
