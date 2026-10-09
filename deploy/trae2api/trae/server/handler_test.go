@@ -229,8 +229,8 @@ func TestModelsEndpoint(t *testing.T) {
 		t.Errorf("object=%v", resp["object"])
 	}
 	data := resp["data"].([]any)
-	if len(data) != 33 {
-		t.Errorf("models count=%d want 33", len(data))
+	if len(data) != 32 {
+		t.Errorf("models count=%d want 32", len(data))
 	}
 	foundGlm, foundNo22 := false, false
 	for _, m := range data {
@@ -244,8 +244,10 @@ func TestModelsEndpoint(t *testing.T) {
 	if !foundGlm {
 		t.Error("glm-5.2 missing")
 	}
-	if !foundNo22 {
-		t.Error("no22 missing")
+	// no22 是本网关的别名被人工加进 IDE 后回流的条目：静态表里留着它，动态表被过滤掉时
+	// 它仍会露出来，trae-no22 就指回本网关自身了。
+	if foundNo22 {
+		t.Error("no22 仍在静态兜底表里：它是网关别名，会形成 trae-no22 → 网关 的回环")
 	}
 }
 

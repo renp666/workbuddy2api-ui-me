@@ -268,3 +268,87 @@ func TestCheckinStatusAndClaim(t *testing.T) {
 		t.Errorf("path=%s", path)
 	}
 }
+
+// modelsFixture 是一份 get_detail_param 的真实形态裁剪版：两条内置模型（config_source=1，
+// 带 display_contact_config 倍率串）、两条本地配置模型（config_source=3 + is_custom_model，
+// 就是被人工加回上游目录的网关别名）、一条上游没给倍率的内置模板。
+const modelsFixture = `{"config_info_list":[
+ {"config_name":"Doubao-Seed-Evolving","config_source":1,
+  "display_config":{"display_name":"Seed-Evolving","is_custom_model":false},
+  "display_contact_config":"{\"consumption_rate\":{\"enable\":true,\"data\":{\"rate\":0.08}}}"},
+ {"config_name":"glm-5.3","config_source":1,
+  "display_config":{"display_name":"GLM-5.3","is_custom_model":false},
+  "display_contact_config":"{\"consumption_rate\":{\"enable\":true,\"data\":{\"rate\":0.78}}}"},
+ {"config_name":"no22","config_source":3,
+  "display_config":{"display_name":"no22","is_custom_model":true}},
+ {"config_name":"gateway-auto","config_source":3,
+  "display_config":{"display_name":"gateway-auto","is_custom_model":true}},
+ {"config_name":"custom_model_gemini","config_source":1,
+  "display_config":{"display_name":"","is_custom_model":false}}
+]}`
+
+func TestCreditsFromContact(t *testing.T) {
+	cases := []struct{ raw, want string }{
+		{"", ""},
+		{"{}", ""},
+		{`{"consumption_rate":{"enable":true,"data":{}}}`, ""},
+		{`{"consumption_rate":{"enable":true,"data":{"rate":0.08}}}`, "x0.08"},
+		{`{"consumption_rate":{"data":{"rate":0.2}}}`, "x0.2"},
+		{`{"consumption_rate":{"data":{"rate":1}}}`, "x1"},
+		// 上游写了 0 是「免费」，必须与「没这个字段」区分开：前者出 "x0"，后者出空串。
+		{`{"consumption_rate":{"data":{"rate":0}}}`, "x0"},
+		{"not json", ""},
+	}
+	for _, c := range cases {
+		if got := creditsFromContact(c.raw); got != c.want {
+			t.Errorf("creditsFromContact(%q)=%q want %q", c.raw, got, c.want)
+		}
+	}
+}
+
+func TestFetchModelsScopeHidesLocalModelsAndReadsCredits(t *testing.T) {
+	c := testClient(func(r *http.Request) (*http.Response, error) { return jsonResp(200, modelsFixture), nil })
+	infos, err := c.fetchModelsScope(&auth.Auth{AccessToken: "at", UID: "u1"}, FunctionAgent)
+	if err != nil {
+		t.Fatalf("fetchModelsScope: %v", err)
+	}
+	got := map[string]string{}
+	for _, mi := range infos {
+		got[mi.ID] = mi.Credits
+	}
+	// 本地配置模型是「网关别名被人工加进 IDE」后回流的条目，列出去会让 trae-<别名> 指回网关自身。
+	for _, hidden := range []string{"no22", "gateway-auto"} {
+		if _, ok := got[hidden]; ok {
+			t.Errorf("本地配置模型 %s 没被过滤掉：它会指回本网关自身形成回环", hidden)
+		}
+	}
+	if len(infos) != 3 {
+		t.Fatalf("保留 %d 条，want 3（两条内置 + 一条无倍率的内置模板）: %v", len(infos), got)
+	}
+	if got["Doubao-Seed-Evolving"] != "x0.08" {
+		t.Errorf("credits=%q want x0.08", got["Doubao-Seed-Evolving"])
+	}
+	if got["glm-5.3"] != "x0.78" {
+		t.Errorf("credits=%q want x0.78", got["glm-5.3"])
+	}
+	if got["custom_model_gemini"] != "" {
+		t.Errorf("上游没给倍率时应留空（未知不是 0），得到 %q", got["custom_model_gemini"])
+	}
+}
+
+// TestFetchModelsScopeKeepsLocalModelsOutOfBothScopes 守住两个作用域都过滤：
+// 只改一个作用域时，另一个仍会把网关别名漏出去。
+func TestFetchModelsScopeKeepsLocalModelsOutOfBothScopes(t *testing.T) {
+	c := testClient(func(r *http.Request) (*http.Response, error) { return jsonResp(200, modelsFixture), nil })
+	for _, fn := range []string{Function, FunctionAgent} {
+		infos, err := c.fetchModelsScope(&auth.Auth{AccessToken: "at"}, fn)
+		if err != nil {
+			t.Fatalf("scope %s: %v", fn, err)
+		}
+		for _, mi := range infos {
+			if strings.HasPrefix(mi.ID, "no") || mi.ID == "gateway-auto" {
+				t.Errorf("scope %s 漏出本地配置模型 %s", fn, mi.ID)
+			}
+		}
+	}
+}

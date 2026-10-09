@@ -232,7 +232,8 @@ func (h *Handler) knownModel(model string) bool {
 	return false
 }
 
-// 静态 SOLO 模型表（SPEC P3：32 个 config_name 来自逆向报告，另加 Agent 接入别名 no22；动态拉取失败时回退）。
+// 静态 SOLO 模型表（SPEC P3：32 个 config_name 来自逆向报告；动态拉取失败时回退）。
+// 不含 no22：那是本网关的别名被人工加进 IDE 后回流的条目，列出去会让 trae-no22 指回本网关自身。
 var staticModels = []map[string]any{
 	{"id": "Doubao-Seed-2.1-Pro", "object": "model", "created": 1753600000, "owned_by": "trae-solo", "context_length": 131072},
 	{"id": "seed-code-pro-0430", "object": "model", "created": 1753600000, "owned_by": "trae-solo", "context_length": 131072},
@@ -252,8 +253,6 @@ var staticModels = []map[string]any{
 	{"id": "qwen-3.7-plus", "object": "model", "created": 1753600000, "owned_by": "trae-solo", "context_length": 131072},
 	{"id": "sagitta", "object": "model", "created": 1753600000, "owned_by": "trae-solo", "context_length": 131072},
 	{"id": "aquila", "object": "model", "created": 1753600000, "owned_by": "trae-solo", "context_length": 131072},
-	// Agent 接入模型（上游别名 no22，非 SPEC P3 逆向表内条目）。
-	{"id": "no22", "object": "model", "created": 1753600000, "owned_by": "trae-solo", "context_length": 131072},
 	{"id": "custom_model_gemini", "object": "model", "created": 1753600000, "owned_by": "trae-solo", "context_length": 131072},
 	{"id": "custom_model_placeholder", "object": "model", "created": 1753600000, "owned_by": "trae-solo", "context_length": 131072},
 	{"id": "custom_model_1M_text", "object": "model", "created": 1753600000, "owned_by": "trae-solo", "context_length": 131072},
@@ -307,6 +306,10 @@ func (h *Handler) modelList() []map[string]any {
 			}
 			if mi.Name != "" {
 				entry["name"] = mi.Name
+			}
+			// 上游下发的倍率（"x0.08"），控制台「积分消耗」列直接复用 core 的解析口径。
+			if mi.Credits != "" {
+				entry["credits"] = mi.Credits
 			}
 			// 上游不下发上下文长度时兜底 128K（any(int64) 与字面量 0 直接 == 永不相等，
 			// 动态类型 int64 ≠ int，必须断言后比较）

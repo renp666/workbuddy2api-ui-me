@@ -9,6 +9,7 @@ import (
 	"io"
 	"log"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 
@@ -268,6 +269,37 @@ type ModelInfo struct {
 	Name          string
 	ContextWindow int64 // = maxInputTokens
 	MaxTokens     int64 // = maxOutputTokens
+	// Credits 是上游下发的倍率原始串（形态 "x0.08"，与 core 的 credits 同口径），
+	// 供控制台「积分消耗」列直接复用 parseCreditRule。上游没给就是空串 = 未知，不补 0。
+	Credits string
+}
+
+// customConfigSource 是 get_detail_param 里「用户在本机 IDE 里人工添加的模型」的 config_source。
+// 实测与 display_config.is_custom_model == true 完全重合（83 条里 17 条）。
+const customConfigSource = 3
+
+// contactConfig 只取 display_contact_config 里我们真正要用的那一段。
+type contactConfig struct {
+	ConsumptionRate struct {
+		Data struct {
+			// 用指针区分「上游写了 0」与「上游没这个字段」：前者是免费，后者是未知。
+			Rate *float64 `json:"rate"`
+		} `json:"data"`
+	} `json:"consumption_rate"`
+}
+
+// creditsFromContact 解析 display_contact_config —— 注意它是**一个 JSON 字符串**，要二次
+// 反序列化 —— 取出 consumption_rate.data.rate，转成 core 口径的倍率串（"x0.08"）。
+// 实测与 IDE 模型选择器右侧显示的 0.08x / 0.2x / 0.78x 逐条一致。
+func creditsFromContact(raw string) string {
+	if strings.TrimSpace(raw) == "" {
+		return ""
+	}
+	var cfg contactConfig
+	if json.Unmarshal([]byte(raw), &cfg) != nil || cfg.ConsumptionRate.Data.Rate == nil {
+		return ""
+	}
+	return "x" + strconv.FormatFloat(*cfg.ConsumptionRate.Data.Rate, 'f', -1, 64)
 }
 
 // FetchModels 合并拉取 SOLO 两个作用域的模型表（get_detail_param）：
@@ -326,9 +358,12 @@ func (c *Client) fetchModelsScope(a *auth.Auth, function string) ([]ModelInfo, e
 	}
 	var resp struct {
 		ConfigInfoList []struct {
-			ConfigName    string `json:"config_name"`
-			DisplayConfig struct {
-				DisplayName string `json:"display_name"`
+			ConfigName           string `json:"config_name"`
+			ConfigSource         int    `json:"config_source"`
+			DisplayContactConfig string `json:"display_contact_config"`
+			DisplayConfig        struct {
+				DisplayName   string `json:"display_name"`
+				IsCustomModel bool   `json:"is_custom_model"`
 			} `json:"display_config"`
 			ModelDetailList []struct {
 				ModelName string `json:"model_name"`
@@ -343,9 +378,16 @@ func (c *Client) fetchModelsScope(a *auth.Auth, function string) ([]ModelInfo, e
 		if cfg.ConfigName == "" {
 			continue
 		}
+		// config_source==3（= display_config.is_custom_model）是用户在本机 IDE 里人工添加的
+		// 「本地配置模型」。本网关自己的别名（no1/no22/gateway-auto/cn:*/global:*）正是这样被
+		// 加回上游目录的：再原样列出去，trae-<别名> 会指回本网关自身，形成回环（俄罗斯套娃）。
+		if cfg.ConfigSource == customConfigSource || cfg.DisplayConfig.IsCustomModel {
+			continue
+		}
 		out = append(out, ModelInfo{
-			ID:   cfg.ConfigName,
-			Name: cfg.DisplayConfig.DisplayName,
+			ID:      cfg.ConfigName,
+			Name:    cfg.DisplayConfig.DisplayName,
+			Credits: creditsFromContact(cfg.DisplayContactConfig),
 		})
 	}
 	if len(out) == 0 {
