@@ -1206,3 +1206,205 @@ func TestAliasWithoutFallbacksKeepsLegacyBehavior(t *testing.T) {
 		t.Fatalf("target index=%q, want 0", got)
 	}
 }
+
+// switchGroup 通过整组端点切换「一个真实模型 + 所有指向它的别名」。
+func switchGroup(t *testing.T, h http.Handler, model string, enabled bool) *httptest.ResponseRecorder {
+	t.Helper()
+	cookie, csrf := login(t, h)
+	payload, err := json.Marshal(map[string]any{"model": model, "enabled": enabled})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return adminRequest(h, "POST", "/admin/route/switch", string(payload), cookie, csrf)
+}
+
+// testAlias 通过别名测试端点对单个别名发一次最小对话。
+func testAlias(t *testing.T, h http.Handler, alias string) *httptest.ResponseRecorder {
+	t.Helper()
+	cookie, csrf := login(t, h)
+	payload, err := json.Marshal(map[string]any{"alias": alias})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return adminRequest(h, "POST", "/admin/route/test", string(payload), cookie, csrf)
+}
+
+// readRouteAliases 读路由状态里的别名条目，保留原始 JSON 形态以便断言 enabled/probe。
+func readRouteAliases(t *testing.T, h http.Handler) []map[string]any {
+	t.Helper()
+	cookie, csrf := login(t, h)
+	rec := adminRequest(h, "GET", "/admin/route", "", cookie, csrf)
+	if rec.Code != 200 {
+		t.Fatalf("read route: %d %s", rec.Code, rec.Body)
+	}
+	var state struct {
+		Aliases []map[string]any `json:"aliases"`
+	}
+	if json.Unmarshal(rec.Body.Bytes(), &state) != nil {
+		t.Fatalf("route state not JSON: %s", rec.Body)
+	}
+	return state.Aliases
+}
+
+func aliasEnabled(t *testing.T, h http.Handler, alias string) bool {
+	t.Helper()
+	for _, entry := range readRouteAliases(t, h) {
+		if entry["alias"] == alias {
+			enabled, _ := entry["enabled"].(bool)
+			return enabled
+		}
+	}
+	t.Fatalf("alias %q not found", alias)
+	return false
+}
+
+// TestRouteSwitchSyncsModelAndAliases 验证「整组启停」：模型列表与别名表共用同一个
+// 写入口，点任一处，模型开关表与所有指向它的别名一起变；指向别的模型的别名不受牵连。
+func TestRouteSwitchSyncsModelAndAliases(t *testing.T) {
+	h, _ := routeConsole(t, func(w http.ResponseWriter, r *http.Request) {
+		fmt.Fprint(w, `{"object":"list","data":[{"id":"cn:glm-5.3","credits":"x0.79"},{"id":"cn:free","credits":"x0.00"}]}`)
+	}, nil)
+	entries := []routeEntry{
+		{Alias: "strong-a", Channel: channelCore, Model: "cn:glm-5.3"},
+		{Alias: "strong-b", Channel: channelCore, Model: "cn:glm-5.3"},
+		{Alias: "daily", Channel: channelCore, Model: "cn:free", Enabled: true},
+	}
+	if got := saveRoutes(t, h, entries, ""); got.Code != 200 {
+		t.Fatalf("save: %d %s", got.Code, got.Body)
+	}
+	if got := switchGroup(t, h, "cn:glm-5.3", true); got.Code != 200 {
+		t.Fatalf("route/switch on: %d %s", got.Code, got.Body)
+	}
+	if overrides := readSwitch(t, h); overrides["cn:glm-5.3"] != true {
+		t.Fatalf("模型开关表没有落盘: %v", overrides)
+	}
+	if !aliasEnabled(t, h, "strong-a") || !aliasEnabled(t, h, "strong-b") {
+		t.Fatalf("指向该模型的别名必须跟着开")
+	}
+	if !aliasEnabled(t, h, "daily") {
+		t.Fatalf("指向别的模型的别名不该被牵连")
+	}
+	// 反向：关掉模型，两个别名一起关，无关别名照旧。
+	if got := switchGroup(t, h, "cn:glm-5.3", false); got.Code != 200 {
+		t.Fatalf("route/switch off: %d %s", got.Code, got.Body)
+	}
+	if aliasEnabled(t, h, "strong-a") || aliasEnabled(t, h, "strong-b") {
+		t.Fatalf("别名没有跟着模型一起关")
+	}
+	if !aliasEnabled(t, h, "daily") {
+		t.Fatalf("切另一个模型时误改了无关别名")
+	}
+}
+
+// TestRouteSwitchRejectsAutoAndBadNames 验证整组端点沿用模型开关的入参校验。
+func TestRouteSwitchRejectsAutoAndBadNames(t *testing.T) {
+	h, _ := routeConsole(t, func(w http.ResponseWriter, r *http.Request) {
+		fmt.Fprint(w, `{"object":"list","data":[]}`)
+	}, nil)
+	if got := switchGroup(t, h, autoModelName, true); got.Code != 400 {
+		t.Fatalf("auto 虚拟模型必须被拒: %d %s", got.Code, got.Body)
+	}
+	if got := switchGroup(t, h, "bad name!", true); got.Code != 400 {
+		t.Fatalf("非法模型名必须被拒: %d %s", got.Code, got.Body)
+	}
+}
+
+// TestRouteStateCarriesProbe 验证别名状态里带 probe 字段（没跑过探测时为 null）：
+// 别名页的状态与速度列全靠它，缺字段会让页面把「未探测」渲染成 undefined。
+func TestRouteStateCarriesProbe(t *testing.T) {
+	h, _ := routeConsole(t, func(w http.ResponseWriter, r *http.Request) {
+		fmt.Fprint(w, `{"object":"list","data":[{"id":"cn:free","credits":"x0.00"}]}`)
+	}, nil)
+	if got := saveRoutes(t, h, []routeEntry{{Alias: "daily", Channel: channelCore, Model: "cn:free", Enabled: true}}, ""); got.Code != 200 {
+		t.Fatalf("save: %d %s", got.Code, got.Body)
+	}
+	aliases := readRouteAliases(t, h)
+	if len(aliases) != 1 {
+		t.Fatalf("aliases=%v", aliases)
+	}
+	probe, ok := aliases[0]["probe"]
+	if !ok {
+		t.Fatalf("probe 字段缺失: %v", aliases[0])
+	}
+	if probe != nil {
+		t.Fatalf("还没跑过探测，probe 应为 null: %v", probe)
+	}
+}
+
+// TestRouteTestRejectsUnknownAndDisabled 验证别名测试在发出上游请求之前就判掉
+// 「别名不存在」「别名已停用」，并把原因原样回给页面——这两种情况测试必然失败，
+// 报清楚比报超时有用，也不该白白打一次上游。
+func TestRouteTestRejectsUnknownAndDisabled(t *testing.T) {
+	var mu sync.Mutex
+	upstreamChats := 0
+	h, _ := routeConsole(t, func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/internal/v1/chat" {
+			mu.Lock()
+			upstreamChats++
+			mu.Unlock()
+		}
+		fmt.Fprint(w, `{"object":"list","data":[{"id":"cn:free","credits":"x0.00"}]}`)
+	}, nil)
+	if got := saveRoutes(t, h, []routeEntry{{Alias: "off", Channel: channelCore, Model: "cn:free"}}, ""); got.Code != 200 {
+		t.Fatalf("save: %d %s", got.Code, got.Body)
+	}
+	if got := testAlias(t, h, "ghost"); got.Code != 404 {
+		t.Fatalf("不存在的别名应返回 404: %d %s", got.Code, got.Body)
+	}
+	got := testAlias(t, h, "off")
+	if got.Code != 200 {
+		t.Fatalf("停用别名的测试: %d %s", got.Code, got.Body)
+	}
+	var result map[string]any
+	if json.Unmarshal(got.Body.Bytes(), &result) != nil {
+		t.Fatalf("result not JSON: %s", got.Body)
+	}
+	if result["ok"] != false || result["category"] != "alias_disabled" {
+		t.Fatalf("停用别名应报 alias_disabled: %v", result)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if upstreamChats != 0 {
+		t.Fatalf("被判掉的别名不该发出上游调用，实际 %d 次", upstreamChats)
+	}
+}
+
+// TestRouteTestRunsMinimalChat 验证可用别名的测试真发一条流式最小对话，并按探测
+// 口径带回 ok / 耗时，同时把结论写回探测缓存（别名表状态列随即能看到）。
+func TestRouteTestRunsMinimalChat(t *testing.T) {
+	h, _ := routeConsole(t, func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/internal/v1/chat" {
+			if got := r.Header.Get("Authorization"); got != "Bearer "+strings.Repeat("b", 32) {
+				t.Errorf("bridge auth=%q", got)
+			}
+			w.Header().Set("Content-Type", "text/event-stream")
+			fmt.Fprint(w, "data: {\"choices\":[{\"delta\":{\"content\":\"pong\"},\"finish_reason\":null}]}\n\n")
+			fmt.Fprint(w, "data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\"}],\"usage\":{\"completion_tokens\":4}}\n\n")
+			fmt.Fprint(w, "data: [DONE]\n\n")
+			return
+		}
+		fmt.Fprint(w, `{"object":"list","data":[{"id":"cn:free","credits":"x0.00"}]}`)
+	}, nil)
+	if got := saveRoutes(t, h, []routeEntry{{Alias: "daily", Channel: channelCore, Model: "cn:free", Enabled: true}}, ""); got.Code != 200 {
+		t.Fatalf("save: %d %s", got.Code, got.Body)
+	}
+	got := testAlias(t, h, "daily")
+	if got.Code != 200 {
+		t.Fatalf("alias test: %d %s", got.Code, got.Body)
+	}
+	var result map[string]any
+	if json.Unmarshal(got.Body.Bytes(), &result) != nil {
+		t.Fatalf("result not JSON: %s", got.Body)
+	}
+	if result["ok"] != true {
+		t.Fatalf("可用别名应报 ok: %v", result)
+	}
+	if _, ok := result["durationMs"]; !ok {
+		t.Fatalf("结论必须带耗时: %v", result)
+	}
+	// 结论回写探测缓存：紧接着读路由状态就能看到同一份结论。
+	aliases := readRouteAliases(t, h)
+	if len(aliases) != 1 || aliases[0]["probe"] == nil {
+		t.Fatalf("测试结论没有回写探测缓存: %v", aliases)
+	}
+}

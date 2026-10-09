@@ -327,6 +327,10 @@ func NewServer(cfg Config) (http.Handler, error) {
 	// 路由别名：GET 读当前配置与各通道模型目录，POST 落盘并即时生效。
 	h.mux.HandleFunc("GET /admin/route", h.withAdmin(h.writeRouteState))
 	h.mux.HandleFunc("POST /admin/route/save", h.withAdmin(h.adminRouteSave))
+	// 整组启停：模型列表与别名表共用同一个写入口，保证两边状态一致。
+	h.mux.HandleFunc("POST /admin/route/switch", h.withAdmin(h.adminRouteSwitch))
+	// 单别名测试：发一条最小对话，把可用性与速度/失败原因直接带回页面。
+	h.mux.HandleFunc("POST /admin/route/test", h.withAdmin(h.adminRouteTest))
 	// 模型积分开关：GET 读人工覆盖表，POST 切换单个模型并即时生效。
 	h.mux.HandleFunc("GET /admin/model-switch", h.withAdmin(h.adminModelSwitchState))
 	h.mux.HandleFunc("POST /admin/model-switch", h.withAdmin(h.adminModelSwitch))

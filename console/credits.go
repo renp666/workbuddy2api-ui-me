@@ -127,9 +127,18 @@ func (h *server) modelGate(ctx context.Context, model string) bool {
 	if h.routes == nil || model == "" {
 		return true
 	}
-	// opencode/autoclaw/trae/raccoon 是免费通道：不采集倍率、不参与开关（需求明确排除），
+	// trae 的倍率来自上游 consumption_rate，语义是「套餐额度的消耗率」，不是「这次要扣多少钱」：
+	// 0.78 只说明它比 0.06 的模型更吃额度。所以不能沿用 core 的「倍率非零即默认停用」——
+	// 那会让 trae 全部模型一上线就显示已停用。默认恒放行，只认管理员显式写下的停用。
+	if strings.HasPrefix(model, traeModelPrefix) {
+		if enabled, has := h.routes.modelOverride(model); has {
+			return enabled
+		}
+		return true
+	}
+	// opencode/autoclaw/raccoon 是免费通道：不采集倍率、不参与开关（需求明确排除），
 	// 与前端 channelModelRows 的 switchable=false 保持同一口径。
-	if strings.HasPrefix(model, opencodeModelPrefix) || strings.HasPrefix(model, autoclawModelPrefix) || strings.HasPrefix(model, traeModelPrefix) || strings.HasPrefix(model, raccoonModelPrefix) {
+	if strings.HasPrefix(model, opencodeModelPrefix) || strings.HasPrefix(model, autoclawModelPrefix) || strings.HasPrefix(model, raccoonModelPrefix) {
 		return true
 	}
 	if enabled, has := h.routes.modelOverride(model); has {
@@ -158,7 +167,9 @@ func (h *server) modelGate(ctx context.Context, model string) bool {
 // writeModelDisabledError 按请求路径分协议返回「模型已停用」。状态用 404，
 // 与「模型不存在」同构——被停用的模型同时从 /v1/models 隐藏，语义一致。
 func writeModelDisabledError(w http.ResponseWriter, r *http.Request, model string) {
-	message := fmt.Sprintf("模型 %s 已停用（积分消耗规则不为零或未知，默认关闭），可在控制台模型列表启用", model)
+	// 只说事实与出路，不写死原因：默认关闭的依据按通道不同——core 是「倍率非零或未知」，
+	// zcode/qoder 是「旁路上游不下发倍率」，trae 则只可能是管理员显式停用（默认恒放行）。
+	message := fmt.Sprintf("模型 %s 已停用，可在控制台模型列表或别名表点「启用」恢复", model)
 	if r.URL.Path == "/v1/messages" {
 		writeJSON(w, 404, map[string]any{"type": "error", "error": map[string]string{"type": "not_found_error", "message": message}})
 		return

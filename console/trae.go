@@ -132,14 +132,14 @@ func (h *server) adminTraeStatus(w http.ResponseWriter, r *http.Request) {
 		"enabled":     true,
 		"reachable":   false,
 		"model_count": 0,
-		"models":      []map[string]string{},
+		"models":      []map[string]any{},
 		"accounts":    []any{},
 	}
 	if h.traeHealth(r.Context()) {
 		result["reachable"] = true
 	}
 	if out, code, err := h.traeCtl(r.Context(), "GET", "/v1/models", nil, traeCtlTimeout); err == nil && code == 200 {
-		models := []map[string]string{}
+		models := []map[string]any{}
 		if data, ok := out["data"].([]any); ok {
 			for _, item := range data {
 				entry, ok := item.(map[string]any)
@@ -153,7 +153,13 @@ func (h *server) adminTraeStatus(w http.ResponseWriter, r *http.Request) {
 				if !strings.HasPrefix(id, traeModelPrefix) {
 					id = traeModelPrefix + id
 				}
-				models = append(models, map[string]string{"id": id, "realm": "trae"})
+				model := map[string]any{"id": id, "realm": "trae"}
+				// sidecar 从上游 display_contact_config 里解出的倍率（"x0.08"）。透传给页面，
+				// 「积分消耗」列复用 core 的同一套解析，缺失即未知，不补零。
+				if credits, ok := entry["credits"].(string); ok && credits != "" {
+					model["credits"] = credits
+				}
+				models = append(models, model)
 			}
 		}
 		result["models"] = models

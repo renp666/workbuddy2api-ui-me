@@ -481,6 +481,46 @@ func (s *routeStore) setModelSwitch(model string, enable bool) error {
 	return s.saveFile(next)
 }
 
+// setGroupSwitch 是「整组启停」的落盘实现：一个真实模型与所有指向它的别名
+// 视为同一个同步组，整体开或整体关。用户口径是控制台模型列表与别名表的开关
+// 必须永远一致、点哪一处都一样，所以这里一次性写两件事：模型开关表（决定
+// modelGate 放行与 /v1/models 是否公布）和指向它的每个别名的 Enabled
+// （决定别名是否广播）。分成两次写会出现「模型开了但别名还关着」的中间态。
+func (s *routeStore) setGroupSwitch(model string, enable bool) error {
+	model = strings.TrimSpace(model)
+	if !validRouteName(model, 128, routeModelChars) {
+		return errors.New("模型名不合法：只允许字母、数字、点、下划线、冒号、连字符、空格、中点和斜杠，长度 1-128")
+	}
+	if model == autoModelName {
+		return errors.New("auto 是虚拟模型，不参与积分开关")
+	}
+	current := s.snapshotFile()
+	disabled := removeModel(current.DisabledModels, model)
+	enabled := removeModel(current.EnabledModels, model)
+	if enable {
+		enabled = append(enabled, model)
+	} else {
+		disabled = append(disabled, model)
+	}
+	disabled = normalizeSwitchList(disabled)
+	enabled = normalizeSwitchList(enabled)
+	if err := validateModelSwitchList("禁用模型表", disabled); err != nil {
+		return err
+	}
+	if err := validateModelSwitchList("启用模型表", enabled); err != nil {
+		return err
+	}
+	models := make([]routeEntry, 0, len(current.Models))
+	for _, entry := range current.Models {
+		if entry.publicModel() == model {
+			entry.Enabled = enable
+		}
+		models = append(models, entry)
+	}
+	next := routeFile{Version: routeFileVersion, Models: models, AutoFallback: current.AutoFallback, DisabledModels: disabled, EnabledModels: enabled}
+	return s.saveFile(next)
+}
+
 // removeModel 返回去掉某个模型名后的新切片（不改原切片）。
 func removeModel(list []string, model string) []string {
 	out := make([]string, 0, len(list))
@@ -1091,6 +1131,86 @@ func (h *server) adminRouteSave(w http.ResponseWriter, r *http.Request) {
 	h.writeRouteState(w, r)
 }
 
+// adminRouteSwitch 是「整组启停」的唯一写入口：模型列表与别名表的开关按钮都打
+// 这个端点，由服务端一次把模型开关表与所有指向它的别名写成同一状态。两边各写
+// 一半（别名走 route/save、模型走 model-switch）会留下中间态，也容易互相覆盖。
+func (h *server) adminRouteSwitch(w http.ResponseWriter, r *http.Request) {
+	if h.routes == nil {
+		adminError(w, 409, "路由别名功能未启用：未配置 console 可写路由目录")
+		return
+	}
+	var body struct {
+		Model   string `json:"model"`
+		Enabled bool   `json:"enabled"`
+	}
+	if !decodeRouteBody(w, r, &body) {
+		return
+	}
+	if err := h.routes.setGroupSwitch(body.Model, body.Enabled); err != nil {
+		adminError(w, 400, err.Error())
+		return
+	}
+	h.writeRouteState(w, r)
+}
+
+// adminRouteTest 对单个别名做一次真实最小对话并把结论直接回给页面。复用
+// probeOne 的测速口径（流式 + 校验 content 非空 + 真实 usage 算速度），只打
+// 这一条别名的目标模型。别名停用、或目标模型被闸门拦下时直接返回原因、不发出
+// 上游请求——这两种情况测试必然失败，报清楚比报超时有用。
+func (h *server) adminRouteTest(w http.ResponseWriter, r *http.Request) {
+	if h.routes == nil {
+		adminError(w, 409, "路由别名功能未启用：未配置 console 可写路由目录")
+		return
+	}
+	var body struct {
+		Alias string `json:"alias"`
+	}
+	if !decodeRouteBody(w, r, &body) {
+		return
+	}
+	alias := strings.TrimSpace(body.Alias)
+	var found *routeEntry
+	for _, entry := range h.routes.snapshot() {
+		if entry.Alias == alias {
+			copied := entry
+			found = &copied
+			break
+		}
+	}
+	if found == nil {
+		adminError(w, 404, fmt.Sprintf("别名 %q 不存在", alias))
+		return
+	}
+	if !found.Enabled {
+		writeJSON(w, 200, probeFailResult("alias_disabled", fmt.Sprintf("别名 %s 已停用，先在别名表启用再测", alias), 0))
+		return
+	}
+	public := found.publicModel()
+	if !h.modelGate(r.Context(), public) {
+		writeJSON(w, 200, probeFailResult("model_disabled", fmt.Sprintf("目标模型 %s 已停用，先在模型列表启用再测", public), 0))
+		return
+	}
+	result := h.probeOne(found.Channel, public)
+	// 结论回写探测缓存：模型列表与别名表的状态列随即看到同一份结论，不必等下一轮全量探测。
+	h.probe.record(found.Channel, public, result)
+	h.probes.invalidate()
+	writeJSON(w, 200, result)
+}
+
+// aliasProbe 取别名主目标的探测结论。结论按「通道 + 公共模型名」存在探测器里，
+// 别名页据此渲染状态与速度列，与模型列表读的是同一份数据，两处不会打架。
+// 没有结论返回 nil——「没测过」和「测不通」是两件事，不能混。
+func (h *server) aliasProbe(entry routeEntry) map[string]any {
+	if h.probe == nil {
+		return nil
+	}
+	results := h.probe.channelResults(entry.Channel)
+	if len(results) == 0 {
+		return nil
+	}
+	return results[entry.publicModel()]
+}
+
 func (h *server) writeRouteState(w http.ResponseWriter, r *http.Request) {
 	aliases := []map[string]any{}
 	channels := []routeChannelCatalog{}
@@ -1112,6 +1232,9 @@ func (h *server) writeRouteState(w http.ResponseWriter, r *http.Request) {
 				"strategy":     entry.strategy(),
 				"enabled":      entry.Enabled,
 				"note":         entry.Note,
+				// probe 是主目标的探测结论（可能为 null）。页面拿它画状态与速度，
+				// 与模型列表同源，避免两处各算一套、显示不一致。
+				"probe": h.aliasProbe(entry),
 			})
 		}
 		channels = h.routeCatalog(r.Context())
@@ -1137,6 +1260,9 @@ func (h *server) writeRouteState(w http.ResponseWriter, r *http.Request) {
 		// 旁路上游不公布倍率，opencode / autoclaw / trae 是免费通道，前端各自判定，
 		// 缺失不等于零价。
 		"model_costs": h.consoleCreditRules(r.Context()),
+		// overrides 与 /admin/model-switch 同源。整组开关（route/switch）复用本响应，
+		// 带上它前端一次请求就能同时刷新别名表与模型列表，省掉一次往返。
+		"overrides": h.modelSwitchState()["overrides"],
 	})
 }
 
