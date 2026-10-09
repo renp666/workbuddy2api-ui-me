@@ -304,7 +304,7 @@ function channelModelRows(channel,list,health){
  if(health&&Array.isArray(health.models))for(const item of health.models){if(item&&item.name)caps.set(modelKey(item.name),item);}
  const rows=new Map();
  const switchable=channel!=='opencode'&&channel!=='autoclaw'&&channel!=='trae'&&channel!=='raccoon';
- const ensure=label=>{const identity=channel==='core'?String(label||''):modelKey(label);if(!identity)return null;const key=modelKey(label);if(!rows.has(identity))rows.set(identity,{key,label:String(label),id:String(label),cap:null,result:null,efforts:null,credits:null,creditValue:null,accounts:null});return rows.get(identity);};
+ const ensure=label=>{const identity=channel==='core'?String(label||''):modelKey(label);if(!identity)return null;const key=modelKey(label);if(!rows.has(identity))rows.set(identity,{key,label:String(label),id:String(label),cap:null,result:null,efforts:null,credits:null,creditValue:null,accounts:null,tier:null});return rows.get(identity);};
  for(const item of(Array.isArray(list)?list:[])){
   if(!item||!item.id)continue;
   const row=ensure(item.id);if(!row)continue;
@@ -313,6 +313,8 @@ function channelModelRows(channel,list,health){
   row.credits=typeof item.credits==='string'?item.credits:null;
   row.creditValue=parseCreditRule(row.credits);
   row.accounts=Array.isArray(item.accounts)?item.accounts:null;
+  // tier 是上游侧的分档判定（autoclaw 由 bridge 标出 Agent 目标），不是探测结论，两者分开读。
+  row.tier=typeof item.tier==='string'&&item.tier?item.tier:null;
  }
  for(const[id,result]of Object.entries(results)){
   const cap=caps.get(modelKey(id))||null;
@@ -324,7 +326,7 @@ function channelModelRows(channel,list,health){
   const result=row.result;
   const variants=[...new Set([...modelVariantNames(result),...modelVariantNames(row.cap)])];
   const ms=result?Number(result.durationMs):NaN;
-  return{key:row.key,label:row.label,id:row.id,switchable,credits:row.credits,creditValue:row.creditValue,accounts:row.accounts,state:modelProbeState(result),
+  return{key:row.key,label:row.label,id:row.id,switchable,credits:row.credits,creditValue:row.creditValue,accounts:row.accounts,tier:row.tier,state:modelProbeState(result),
    caps:modelCapabilityBadges(row.cap,row.efforts&&row.efforts.length?['推理']:null),
    limit:modelLimitText(row.cap),
    variants:variants.length?`档位 ${variants.join(' / ')}`:'',
@@ -349,6 +351,9 @@ function creditSort(a,b){
 function probeSort(a,b){
  return a.state.order-b.state.order||((a.durationMs??Infinity)-(b.durationMs??Infinity));
 }
+// modelTableGroupsByAccount：哪些通道的模型表支持按账号分层。core 的归属来自
+// /v1/models 的 accounts，autoclaw 的归属来自 bridge 逐账号下发的目录；两者共用同一套分组渲染。
+function modelTableGroupsByAccount(channel){return channel==='core'||channel==='autoclaw';}
 function renderModelTable(channel,list,health){
  const config=modelChannels[channel];
  modelHeatSources[channel]={list,health};
@@ -359,12 +364,14 @@ function renderModelTable(channel,list,health){
   const tr=document.createElement('tr');
   // 只有异常行抬底色：可用/未知是常态，整表染色等于没染色，失败行反而被淹掉。
   if(row.state.tone==='warn'||row.state.tone==='bad')tr.className='row-'+row.state.tone;
-  tr.append(cell(row.label),chipsCell(row.caps,[row.limit,row.variants].filter(Boolean).join(' · ')),badgeCell(row.state.label,row.state.tone),numCell(row.duration,row.source),numCell(row.speed),cell(row.note),modelHeatCell(row.key),globalHeatCell(row.key));
+  // tier 徽标排在能力徽标之前：它说「这个模型属于哪一档」，与「能不能调通」是两件事。
+  const caps=row.tier?['Agent',...row.caps]:row.caps;
+  tr.append(cell(row.label),chipsCell(caps,[row.limit,row.variants].filter(Boolean).join(' · ')),badgeCell(row.state.label,row.state.tone),numCell(row.duration,row.source),numCell(row.speed),cell(row.note),modelHeatCell(row.key),globalHeatCell(row.key));
   // opencode 免费通道不采集倍率、不加开关列；其余通道追加「积分消耗」与「操作」两列。
   if(row.switchable){ tr.append(creditCell(row),switchOpCell(row)); }
   body.append(tr);
  };
- if(channel==='core'&&modelsGroupByAccount&&rows.some(row=>Array.isArray(row.accounts)&&row.accounts.length)){
+ if(modelTableGroupsByAccount(channel)&&modelsGroupByAccount&&rows.some(row=>Array.isArray(row.accounts)&&row.accounts.length)){
   // 按账号分层：每个模型挂到它的每个可用账号下（多账号模型在各组重复出现，
   // 与「哪些账号能跑这个模型」的归属口径一致）；无归属信息的行归入「未归属」。
   const groups=new Map();
@@ -381,6 +388,8 @@ function renderModelTable(channel,list,health){
    const head=document.createElement('tr');head.className='model-group-head';
    const th=document.createElement('td');th.colSpan=cols;
    th.textContent=g.acc?`${g.acc.nickname||g.acc.uid} · ${g.items.length} 个模型`:`未归属账号 · ${g.items.length} 个模型`;
+   // autoclaw 的 global: 模型由 bridge 标成归属国内版账号，不加这句会被读成「国际版账号也能跑」。
+   if(channel==='autoclaw'){const note=document.createElement('small');note.textContent='含 global: 前缀的模型实际由国内版账号承接';th.append(note);}
    head.append(th);body.append(head);
    for(const row of g.items)appendRow(row);
   }
@@ -471,6 +480,9 @@ $('models-group-toggle').addEventListener('click',()=>{
  btn.textContent=modelsGroupByAccount?'▤ 按账号分层':'▤ 平铺列表';
  const source=modelHeatSources.core;
  renderModelTable('core',source?source.list:modelList,source?source.health:null);
+ // 分层开关共用：autoclaw 表若已渲染过，跟着重画一次。
+ const auto=modelHeatSources.autoclaw;
+ if(auto)renderModelTable('autoclaw',auto.list,auto.health);
 });
 async function restoreProbe(){
  try{

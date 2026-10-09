@@ -864,14 +864,16 @@ def _peek_model(body: bytes) -> str:
 
 
 def _is_agent_target(model: str) -> bool:
-    m = model.strip().lower()
+    # 目录里的模型带 cn:/global: 命名空间，先剥前缀再判档，否则 cn:openclaw 会被当成
+    # 普通后端模型，绕开 Agent 目标分支（x-openclaw-model 头与 relay 分派都依赖这个判定）。
+    m = _strip_route_prefix(model).strip().lower()
     if m in ("openclaw", "openclaw/default"):
         return True
     return m.startswith(("openclaw/", "openclaw:", "agent:"))
 
 
 def _normalize_model(model: str):
-    m = (model or "").strip()
+    m = _strip_route_prefix((model or "").strip())
     if not m:
         return "openclaw", ""
     if _is_agent_target(m):
@@ -910,9 +912,9 @@ def _request_model_header(body: bytes) -> str:
 
 
 def _strip_route_prefix(model: str) -> str:
-    """global/zai_auto → zai_auto；cn/xxx → xxx；其余原样。"""
-    for p in ("global/", "cn/"):
-        if model.startswith(p):
+    """global:zai_auto / global/zai_auto → zai_auto；cn 同理；其余原样。"""
+    for p in ("global:", "global/", "cn:", "cn/"):
+        if model.lower().startswith(p):
             return model[len(p):]
     return model
 
@@ -1822,32 +1824,101 @@ class Bridge:
             except Exception:
                 pass
 
+    def _healthy_accounts(self, region: str) -> list:
+        """模型目录用的只读账号快照：走 status_list，不 refresh、不唤醒、不改池状态。
+        返回 [(auth, 归属引用)]，最多 MODEL_LIST_ACCOUNT_LIMIT 个——归属要按账号读目录，
+        不设上限的话账号数增长会把只读请求也放大成上游风暴。"""
+        pool = self.pools[region]
+        out = []
+        for st in pool.status_list():
+            if st.get("disabled") or st.get("cooling"):
+                continue
+            a = pool.auth_by_uid(st["uid"])
+            if a is not None:
+                out.append((a, {"uid": st["uid"], "nickname": st.get("nickname") or ""}))
+        return out[:MODEL_LIST_ACCOUNT_LIMIT]
+
+    def _catalog_ready(self, a: Auth, wake: bool) -> bool:
+        """把账号备到能读模型目录：按需 refresh + ensure_sandbox。
+        wake 只给每区首个账号——目录本身是只读请求，沙箱唤醒留给真正的对话请求。"""
+        if a.needs_refresh(self.refresh_skew):
+            if not a.refresh_token.strip():
+                return False
+            try:
+                self.up.refresh(a)
+                a.save()
+            except Exception:
+                return False
+        try:
+            self.up.ensure_sandbox(a)
+            if wake:
+                self.up.wake_sandbox(a, a.sandbox_id)
+            a.save()
+        except Exception:
+            return False
+        return True
+
+    def _serving_refs(self) -> list:
+        return [ref for _, ref in self._healthy_accounts("cn")]
+
     def model_list(self) -> list:
         with self.models_lock:
-            if self.models_cache["data"] and time.time() - self.models_cache["fetched"] < 3600:
-                return self.models_cache["data"]
+            cached = self.models_cache["data"]
+            if cached and time.time() - self.models_cache["fetched"] < 3600:
+                return cached
             if self.models_cache["last_fail"] and time.time() - self.models_cache["last_fail"] < 300:
-                return self.models_cache["data"] or _static_models()
-        out = []
-        for region in ("cn", "global"):
-            a = self.pools[region].pick()
-            if not a:
+                return cached or _static_models(self._serving_refs())
+        cn_accounts = self._healthy_accounts("cn")
+        # global: 目录从 global 账号读一次，但对话统一走 cn 池 relay（zai-proxy 直连被
+        # WAF 406 拦截，2026-09-23），所以 global: 模型的承接方是 cn 账号。
+        serving = [ref for _, ref in cn_accounts]
+        owners: dict = {}
+        meta: dict = {}
+
+        def note(model_id: str, refs: list, description: str = "", context_length: int = 0) -> None:
+            bucket = owners.setdefault(model_id, [])
+            for ref in refs:
+                if ref not in bucket:
+                    bucket.append(ref)
+            if model_id not in meta:
+                meta[model_id] = {"description": description, "context_length": context_length}
+
+        # cn: 逐账号读沙箱目录，模型挂到它真正出现的账号下（多账号模型在各组重复出现）。
+        for i, (a, ref) in enumerate(cn_accounts):
+            if not self._catalog_ready(a, wake=(i == 0)):
                 continue
             try:
-                self._prepare(a)
+                mids = self.up.fetch_sandbox_models(a) or []
             except Exception:
                 continue
-            if region == "global":
-                items = self.up.fetch_model_config(a)
-                for it in items:
-                    mid = it.get("id") or ""
-                    if mid:
-                        out.append({"id": f"global/{mid}", "object": "model", "created": 1787000000,
-                                    "owned_by": "autoclaw", "context_length": it.get("contextWindow") or 1000000,
-                                    "description": (it.get("name") or mid) + " (global)"})
-            for mid in (self.up.fetch_sandbox_models(a) or []):
-                out.append({"id": mid if region == "cn" else f"global/{mid}", "object": "model",
-                            "created": 1787000000, "owned_by": "autoclaw", "context_length": 1000000})
+            for mid in mids:
+                note(f"cn:{mid}", [ref])
+        for i, (a, _ref) in enumerate(self._healthy_accounts("global")):
+            if not self._catalog_ready(a, wake=(i == 0)):
+                continue
+            try:
+                if i == 0:
+                    for it in self.up.fetch_model_config(a) or []:
+                        mid = it.get("id") or ""
+                        if mid:
+                            note(f"global:{mid}", serving, it.get("name") or mid, it.get("contextWindow") or 0)
+                mids = self.up.fetch_sandbox_models(a) or []
+            except Exception:
+                continue
+            for mid in mids:
+                note(f"global:{mid}", serving)
+        out = []
+        for model_id, refs in owners.items():
+            info = meta.get(model_id) or {}
+            entry = {"id": model_id, "object": "model", "created": 1787000000,
+                     "owned_by": "autoclaw",
+                     "context_length": info.get("context_length") or 1000000,
+                     "accounts": refs}
+            if _is_agent_target(model_id):
+                entry["tier"] = "agent"
+            if info.get("description"):
+                entry["description"] = info["description"]
+            out.append(entry)
         if out:
             with self.models_lock:
                 self.models_cache["data"] = out
@@ -1856,17 +1927,32 @@ class Bridge:
             return out
         with self.models_lock:
             self.models_cache["last_fail"] = time.time()
-        return self.models_cache["data"] or _static_models()
+        return self.models_cache["data"] or _static_models(serving)
 
 
-def _static_models() -> list:
+# MODEL_LIST_ACCOUNT_LIMIT 限制逐账号读目录的账号数：归属精度换来的是上游只读请求，
+# 不设上限的话账号数增长会把它放大成风暴。
+MODEL_LIST_ACCOUNT_LIMIT = 10
+
+
+def _tier(model: str) -> dict:
+    """Agent 分档复用 _is_agent_target 的口径：命中才标 tier，其余不标。"""
+    return {"tier": "agent"} if _is_agent_target(model) else {}
+
+
+def _static_models(accounts: Optional[list] = None) -> list:
+    """上游全不可达时的兜底目录。命名空间与在线口径一致（cn:/global:），
+    归属沿用 cn 账号——global: 模型实际也由国内版账号承接。"""
+    refs = list(accounts or [])
     out = []
     for m in CN_STATIC_MODELS:
-        out.append({"id": m, "object": "model", "created": 1787000000, "owned_by": "autoclaw",
-                    "context_length": 1000000, "description": "cn"})
+        out.append({"id": f"cn:{m}", "object": "model", "created": 1787000000,
+                    "owned_by": "autoclaw", "context_length": 1000000,
+                    "accounts": list(refs), **_tier(m)})
     for m in GLOBAL_STATIC_MODELS:
-        out.append({"id": f"global/{m}", "object": "model", "created": 1787000000, "owned_by": "autoclaw",
-                    "context_length": 1000000, "description": "global"})
+        out.append({"id": f"global:{m}", "object": "model", "created": 1787000000,
+                    "owned_by": "autoclaw", "context_length": 1000000,
+                    "accounts": list(refs), **_tier(m)})
     return out
 
 

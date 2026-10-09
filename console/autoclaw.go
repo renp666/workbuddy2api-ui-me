@@ -118,7 +118,7 @@ func (h *server) adminAutoClawStatus(w http.ResponseWriter, r *http.Request) {
 		"enabled":     true,
 		"reachable":   false,
 		"model_count": 0,
-		"models":      []map[string]string{},
+		"models":      []map[string]any{},
 		"accounts":    []any{},
 	}
 	if health := h.autoclawHealth(r.Context()); health != nil {
@@ -126,7 +126,7 @@ func (h *server) adminAutoClawStatus(w http.ResponseWriter, r *http.Request) {
 		result["reachable"] = true
 	}
 	if out, code, err := h.autoclawCtl(r.Context(), "GET", "/v1/models", nil, autoclawCtlTimeout); err == nil && code == 200 {
-		models := []map[string]string{}
+		models := []map[string]any{}
 		if data, ok := out["data"].([]any); ok {
 			for _, item := range data {
 				entry, ok := item.(map[string]any)
@@ -140,7 +140,16 @@ func (h *server) adminAutoClawStatus(w http.ResponseWriter, r *http.Request) {
 				if !strings.HasPrefix(id, autoclawModelPrefix) {
 					id = autoclawModelPrefix + id
 				}
-				models = append(models, map[string]string{"id": id, "realm": "autoclaw"})
+				// bridge 按账号下发归属（cn:/global: 各自挂到能承接它的账号），前端据此
+				// 按账号分层；tier 标出 Agent 目标档。bridge 没给就不补，不凭空造归属。
+				model := map[string]any{"id": id, "realm": "autoclaw"}
+				if accounts, ok := entry["accounts"].([]any); ok && len(accounts) > 0 {
+					model["accounts"] = accounts
+				}
+				if tier, ok := entry["tier"].(string); ok && tier != "" {
+					model["tier"] = tier
+				}
+				models = append(models, model)
 			}
 		}
 		result["models"] = models

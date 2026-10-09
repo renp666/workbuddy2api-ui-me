@@ -1367,6 +1367,41 @@ test('autoclaw tab renders badge, health rows, accounts, models and select when 
   assert.deepEqual(get('autoclaw-model').children.map(option=>option.value),['autoclaw-AC · Fast','autoclaw-AC · Slow']);
 });
 
+test('autoclaw model table groups by owning account, badges agent tier and notes the global prefix',async()=>{
+  const {ctx,get}=autoclawFixture({enabled:true,reachable:true,model_count:3,
+    models:[{id:'autoclaw-cn:alpha',realm:'autoclaw',accounts:[{uid:'ac-1',nickname:'一号'}],tier:'agent'},
+      {id:'autoclaw-cn:beta',realm:'autoclaw',accounts:[{uid:'ac-1',nickname:'一号'},{uid:'ac-2',nickname:'二号'}]},
+      {id:'autoclaw-global:zai_auto',realm:'autoclaw',accounts:[{uid:'ac-1',nickname:'一号'}]}],
+    accounts:[{uid:'ac-1',nickname:'一号',region:'cn',points:10,success_count:1,err_count:0}],
+    health:{healthy:1,total:1}});
+  await vm.runInContext('loadAutoClaw()',ctx);
+  let rows=get('autoclaw-models-body').children;
+  assert.equal(rows.length,6,'autoclaw grouped rows missing');
+  assert.equal(rows[0].className,'model-group-head');
+  assert.match(rows[0].children[0].textContent,/一号 · 3 个模型/);
+  assert.equal(rows[0].children[0].colSpan,8);
+  assert.equal(rows[0].children[0].children[0].textContent,'含 global: 前缀的模型实际由国内版账号承接');
+  assert.equal(rows[1].children[0].textContent,'autoclaw-cn:alpha');
+  assert.equal(rows[2].children[0].textContent,'autoclaw-cn:beta');
+  assert.equal(rows[3].children[0].textContent,'autoclaw-global:zai_auto');
+  assert.match(rows[4].children[0].textContent,/二号 · 1 个模型/);
+  assert.equal(rows[4].children[0].children[0].textContent,'含 global: 前缀的模型实际由国内版账号承接');
+  assert.equal(rows[5].children[0].textContent,'autoclaw-cn:beta','multi-account model missing from second group');
+  const badges=tr=>tr.children[1].children.length?tr.children[1].children[0].children.map(tag=>tag.textContent):[];
+  assert.deepEqual(badges(rows[1]),['Agent'],'agent tier lost its badge');
+  assert.deepEqual(badges(rows[2]),[],'row without tier gained an Agent badge');
+  assert.deepEqual(badges(rows[3]),[],'global row without tier gained an Agent badge');
+  assert.equal(rows[2].children[1].textContent,'—');
+  get('models-group-toggle').handlers.click();
+  rows=get('autoclaw-models-body').children;
+  assert.equal(rows.length,3,'autoclaw flat rows missing');
+  assert.ok(rows.every(tr=>tr.className!=='model-group-head'),'group head survived the flat toggle');
+  assert.deepEqual(rows.map(tr=>tr.children[0].textContent),['autoclaw-cn:alpha','autoclaw-cn:beta','autoclaw-global:zai_auto']);
+  assert.deepEqual(badges(rows[0]),['Agent'],'agent badge lost in flat mode');
+  get('models-group-toggle').handlers.click();
+  assert.equal(get('autoclaw-models-body').children.length,6,'autoclaw table did not regroup');
+});
+
 test('autoclaw tab reports an unreachable container and keeps only the login entry',async()=>{
   const {ctx,get}=autoclawFixture({enabled:true,reachable:false,model_count:0,models:[],accounts:[]});
   await vm.runInContext("signedIn({csrf:'c',global_enabled:true,zcode_enabled:false,qoder_enabled:false,opencode_enabled:false,autoclaw_enabled:true})",ctx);
