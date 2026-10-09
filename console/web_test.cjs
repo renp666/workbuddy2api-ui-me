@@ -2670,6 +2670,76 @@ test('Agent 接入 tab posts the whole alias list when adding an alias',async()=
   assert.equal(posts[0].auto_fallback,'');
 });
 
+// modelOptionValues 读「指向哪个模型」下拉里当前有哪些项，用来断言候选是否只属于当前通道。
+const modelOptionValues=get=>get('routes-alias-model').children.map(option=>option.value);
+const customOption='__custom__';
+function aliasFixture(routeState){
+  return routeFixture(Object.assign({enabled:true,auto_model:'gateway-auto',auto_fallback:'',default_auto_fallback:'cn:auto',auto_preview:{},aliases:[]},routeState));
+}
+
+test('别名表点「编辑」：滚到编辑栏、亮出编辑提示、模型名原样回填（问题1）',async()=>{
+  const {ctx,get}=aliasFixture({aliases:[{alias:'my-fast',channel:'core',model:'cn:workbuddy',public_model:'cn:workbuddy',enabled:true,note:'日常'}],
+    channels:[{channel:'core',enabled:true,reachable:true,models:['cn:workbuddy','cn:strong']}]});
+  await vm.runInContext("signedIn({csrf:'c',global_enabled:true,zcode_enabled:false,qoder_enabled:false,opencode_enabled:false})",ctx);
+  await vm.runInContext('loadRoutes()',ctx);
+  // 编辑栏在别名表下面：点「编辑」不滚过去，用户会以为没反应。
+  let scrolls=0;get('routes-alias-panel').scrollIntoView=()=>scrolls++;
+  get('routes-alias-body').children[0].children[6].children[0].handlers.click();
+  assert.equal(scrolls,1,'点「编辑」没有把编辑栏滚进视野');
+  assert.equal(get('routes-alias-editing').hidden,false,'编辑提示没亮');
+  assert.equal(get('routes-alias-editing').textContent,'正在编辑「my-fast」');
+  assert.equal(get('routes-alias-name').value,'my-fast');
+  assert.equal(get('routes-alias-channel').value,'core');
+  assert.equal(get('routes-alias-model').value,'cn:workbuddy');
+  assert.equal(get('routes-alias-model-custom').hidden,true,'模型在清单里时不该亮手动输入框');
+});
+
+test('「指向哪个模型」只列当前通道，换通道整份换掉（问题2、问题3）',async()=>{
+  const {ctx,get}=aliasFixture({channels:[{channel:'core',enabled:true,reachable:true,models:['cn:workbuddy','cn:strong']},
+    {channel:'qoder',enabled:true,reachable:true,models:['qoder-1','qoder-2']}]});
+  await vm.runInContext("signedIn({csrf:'c',global_enabled:true,zcode_enabled:false,qoder_enabled:false,opencode_enabled:false})",ctx);
+  await vm.runInContext('loadRoutes()',ctx);
+  assert.deepEqual(modelOptionValues(get),['','cn:workbuddy','cn:strong',customOption],'core 通道的候选不对');
+  get('routes-alias-channel').value='qoder';
+  get('routes-alias-channel').handlers.change();
+  // 旧通道的模型留在下拉里，用户就会选串到别的通道上（问题3）。
+  assert.deepEqual(modelOptionValues(get),['','qoder-1','qoder-2',customOption],'换通道后旧通道的模型还留在下拉里');
+  assert.equal(get('routes-alias-model').value,'','换通道后应回到「请选择模型…」，不能沿用旧通道的值');
+  // 下拉直接选中即可用，不需要先清空再输（问题2）。
+  get('routes-alias-model').value='qoder-2';
+  get('routes-alias-model').handlers.change();
+  assert.equal(get('routes-alias-model-custom').hidden,true,'选清单里的模型时手动输入框应保持收起');
+});
+
+test('别名指向清单外的模型时落到「自定义…」并回填，保存时读手动输入框',async()=>{
+  const {ctx,get,posts}=aliasFixture({aliases:[{alias:'legacy',channel:'core',model:'cn:retired',public_model:'cn:retired',enabled:true,note:''}],
+    channels:[{channel:'core',enabled:true,reachable:true,models:['cn:workbuddy']}]});
+  await vm.runInContext("signedIn({csrf:'c',global_enabled:true,zcode_enabled:false,qoder_enabled:false,opencode_enabled:false})",ctx);
+  await vm.runInContext('loadRoutes()',ctx);
+  // 别名可以指向当前没广播的模型，编辑时不能因为下拉里没有就把它悄悄改掉。
+  get('routes-alias-body').children[0].children[6].children[0].handlers.click();
+  assert.equal(get('routes-alias-model').value,customOption,'清单外的模型应落到「自定义…」');
+  assert.equal(get('routes-alias-model-custom').hidden,false,'清单外的模型要亮出手动输入框');
+  assert.equal(get('routes-alias-model-custom').value,'cn:retired','清单外的模型名被丢掉了');
+  // 表单读的必须是手动输入框的值，否则会把自定义模型名存成哨兵串。
+  get('routes-alias-model-custom').value='cn:brand-new';
+  await get('routes-alias-form').handlers.submit({preventDefault(){}});
+  assert.deepEqual(posts[0].models,[{alias:'legacy',channel:'core',model:'cn:brand-new',enabled:true,note:''}]);
+});
+
+test('点「取消编辑」清掉编辑提示与表单，回到新增状态（问题1）',async()=>{
+  const {ctx,get}=aliasFixture({aliases:[{alias:'my-fast',channel:'core',model:'cn:workbuddy',public_model:'cn:workbuddy',enabled:true,note:'日常'}],
+    channels:[{channel:'core',enabled:true,reachable:true,models:['cn:workbuddy']}]});
+  await vm.runInContext("signedIn({csrf:'c',global_enabled:true,zcode_enabled:false,qoder_enabled:false,opencode_enabled:false})",ctx);
+  await vm.runInContext('loadRoutes()',ctx);
+  get('routes-alias-body').children[0].children[6].children[0].handlers.click();
+  get('routes-alias-reset').handlers.click();
+  assert.equal(get('routes-alias-editing').hidden,true,'取消编辑后提示还挂着');
+  assert.equal(get('routes-alias-name').value,'');
+  assert.equal(get('routes-alias-model').value,'');
+  assert.equal(get('routes-alias-model-custom').hidden,true);
+});
+
 test('模型能力 TOP ranks only pool models and tiers them by real local cost',async()=>{
   const {ctx,get}=capabilityFixture({available:true,snapshot_at:'2026-10-05T02:00:00Z',note:'源站不标注各项评测的发布日期',rows:capabilityRows});
   await vm.runInContext("signedIn({csrf:'c',global_enabled:true,zcode_enabled:false,qoder_enabled:false,opencode_enabled:false})",ctx);
@@ -3131,6 +3201,33 @@ test('页面级刷新按钮吸顶，落在网关状态左侧且只有当前页�
   }
   vm.runInContext("showPage('workbuddy')",ctx);
   assert.deepEqual(visible(),[],'WorkBuddy 与 API 接入页没有页面级刷新，顶栏不该留一个可点的空按钮');
+});
+
+test('顶栏刷新点下去有可见反馈：飞行中禁用并改写文案，落定后记下刷新时刻（问题5）',async()=>{
+  let release;const gate=new Promise(resolve=>{release=resolve;});
+  const empty=body=>({ok:true,status:200,json:async()=>body});
+  const {ctx,get}=taskFixture(async url=>{
+    if(url==='/admin/session')return new Promise(()=>{});
+    if(url==='/admin/zcode'){await gate;return empty({enabled:false,control:false,logged_in:false,model_count:0,models:[],health:{}});}
+    if(url==='/admin/models')return empty({data:[]});
+    if(url==='/admin/status')return empty({total:0,healthy:0,cooling:0,disabled:0,accounts:[]});
+    if(url==='/admin/model-switch')return empty({enabled:true,overrides:{}});
+    return empty({});
+  });
+  get('realm').querySelector=()=>({disabled:false});
+  await vm.runInContext("signedIn({csrf:'c',global_enabled:true,zcode_enabled:false,qoder_enabled:false,opencode_enabled:false})",ctx);
+  const button=get('zcode-refresh');
+  button.textContent='↻ 刷新状态';
+  const pending=button.handlers.click();
+  // 此前按钮点下去毫无变化，数据与上一轮一样时看不出刷没刷，这是「好像没生效」的根因。
+  assert.equal(button.disabled,true,'刷新在飞时按钮没有禁用，连点会重复打上游');
+  assert.equal(button.textContent,'↻ 刷新中…','点下去没有任何可见反馈');
+  release();
+  await pending;
+  assert.equal(button.disabled,false,'刷新结束后按钮没有恢复可点');
+  assert.equal(button.textContent,'↻ 刷新状态','刷新结束后按钮文案没有还原');
+  assert.match(get('refresh-stamp').textContent,/^最近刷新 \d{2}:\d{2}:\d{2}$/,'刷新结束后没有写下完成时刻');
+  assert.equal(get('refresh-stamp').hidden,false,'刷新时刻写好了却被藏着');
 });
 
 test('状态徽章分五档：可用、打折、不可达、未启用、未探测各占一档且互不相同', () => {

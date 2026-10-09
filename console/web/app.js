@@ -25,6 +25,18 @@ let selectedTaskRun, historyGeneration = 0, historyLoading = false, taskHistoryK
 const taskIntents = new Map(), taskReads = new Set();
 function newConversation() { return `web-${Date.now()}-${Math.random().toString(36).slice(2)}`; }
 function notice(text = '') { $('notice').textContent = text; $('notice').hidden = !text; $('announce').textContent = text; }
+// runTopRefresh 给顶栏刷新按钮加统一反馈：请求在飞时禁用并改写成「刷新中…」，落定后恢复原文案，
+// 并在旁边记下这次刷新的完成时刻。此前点完按钮没有任何可见变化，数据与上一轮一样时根本看不出
+// 刷没刷（问题5）。失败时各加载器自己 notice 报错，这里只负责「点了有反应」和「刚刷过」。
+function runTopRefresh(button,action){
+ button.addEventListener('click',async()=>{
+  if(button.disabled)return;
+  const label=button.textContent;
+  button.disabled=true;button.textContent='↻ 刷新中…';
+  try{await action();const stamp=$('refresh-stamp');stamp.textContent=`最近刷新 ${new Date().toLocaleTimeString('zh-CN',{hour12:false})}`;stamp.hidden=false;}
+  finally{button.disabled=false;button.textContent=label;}
+ });
+}
 async function api(path, data, signal) {
  const generation = sessionGeneration;
  const response = await fetch('/admin/' + path, {method:data === undefined ? 'GET' : 'POST',credentials:'same-origin',headers:{'Content-Type':'application/json','X-CSRF-Token':csrf},body:data === undefined ? undefined : JSON.stringify(data),signal});
@@ -51,8 +63,9 @@ function signedOut() {
  autoclawModels=[];autoclawHistory=[];autoclawStatus=null;autoclawEnabled=false;autoclawBusy=false;autoclawLoginBusy=false;autoclawView='status';autoclawAccounts=[];clearTimeout(autoclawCodeTimer);autoclawCodeTimer=null;$('autoclaw-model').replaceChildren();clearMessages($('autoclaw-messages'));$('autoclaw-prompt').value='';$('autoclaw-usage').textContent='用量将在上游返回后显示';$('autoclaw-disabled').hidden=true;$('autoclaw-content').hidden=true;$('nav-autoclaw').classList.remove('nav-muted');$('autoclaw-health-wrap').hidden=true;$('autoclaw-health-body').replaceChildren();$('autoclaw-accounts-body').replaceChildren();$('autoclaw-phone').value='';$('autoclaw-code').value='';$('autoclaw-oauth-url').value='';$('autoclaw-login-hint').textContent='';$('autoclaw-global-hint').textContent='';const sc=$('autoclaw-sendcode');sc.disabled=false;sc.textContent='发送验证码';
  traeModels=[];traeHistory=[];traeStatus=null;traeEnabled=false;traeBusy=false;traeLoginBusy=false;traeView='status';traeAccounts=[];traeAuthURL='';clearTimeout(traePollTimer);traePollTimer=null;$('trae-model').replaceChildren();clearMessages($('trae-messages'));$('trae-prompt').value='';$('trae-usage').textContent='用量将在上游返回后显示';$('trae-disabled').hidden=true;$('trae-content').hidden=true;$('nav-trae').classList.remove('nav-muted');$('trae-health-wrap').hidden=true;$('trae-health-body').replaceChildren();$('trae-accounts-body').replaceChildren();$('trae-auth-row').hidden=true;$('trae-login-hint').textContent='';$('trae-import-url').value='';$('trae-import-hint').textContent='';$('trae-schedule-body').replaceChildren();$('trae-schedule-hint').textContent='';$('trae-usage-body').replaceChildren();
  raccoonModels=[];raccoonHistory=[];raccoonStatus=null;raccoonEnabled=false;raccoonBusy=false;raccoonView='status';raccoonAccounts=[];$('raccoon-model').replaceChildren();clearMessages($('raccoon-messages'));$('raccoon-prompt').value='';$('raccoon-usage').textContent='用量将在上游返回后显示';$('raccoon-disabled').hidden=true;$('raccoon-content').hidden=true;$('nav-raccoon').classList.remove('nav-muted');$('raccoon-health-wrap').hidden=true;$('raccoon-health-body').replaceChildren();$('raccoon-accounts-body').replaceChildren();$('raccoon-import-json').value='';$('raccoon-import-hint').textContent='';
- routesState=null;routesBusy=false;routesEditing=null;modelSwitchOverrides=new Map();capState=null;capByKeys=new Map();capDim='coding';capCategory='';capFilter='';$('routes-disabled').hidden=true;$('routes-content').hidden=true;$('routes-alias-body').replaceChildren();$('routes-channels').replaceChildren();$('routes-model-options').replaceChildren();$('routes-example').textContent='';$('routes-alias-name').value='';$('routes-alias-model').value='';$('routes-alias-note').value='';$('routes-auto-fallback').value='';$('cap-filter').value='';
+ routesState=null;routesBusy=false;routesEditing=null;modelSwitchOverrides=new Map();capState=null;capByKeys=new Map();capDim='coding';capCategory='';capFilter='';$('routes-disabled').hidden=true;$('routes-content').hidden=true;$('routes-alias-body').replaceChildren();$('routes-channels').replaceChildren();$('routes-alias-model').replaceChildren();$('routes-alias-model-custom').value='';$('routes-alias-model-custom').hidden=true;$('routes-alias-editing').hidden=true;$('routes-alias-editing').textContent='';$('routes-example').textContent='';$('routes-alias-name').value='';$('routes-alias-model').value='';$('routes-alias-note').value='';$('routes-auto-fallback').value='';$('cap-filter').value='';
  probeSnapshot={running:false,done:0,total:0,channels:{}};probeTarget='';probeBusy=false;clearTimeout(probeTimer);probeTimer=undefined;for(const n of Object.keys(probeChannelNames)){$('probe-'+n+'-progress').hidden=true;$('probe-'+n+'-progress').textContent='';}
+$('refresh-stamp').hidden=true;$('refresh-stamp').textContent='';
  overviewUsageItems=[];overviewGeneration++;healthState=null;healthGeneration++;clearTimeout(healthPollTimer);healthPollTimer=undefined;
  pinState={cn:null,global:null};lastStatus=null;renderPinBanner();
 }
@@ -867,7 +880,7 @@ async function refreshModels() {
 function updateModelHint() { const realm=$('model').value.startsWith('global:')?'global':'cn'; $('model-hint').textContent=accounts.some(a=>(a.realm||'cn')===realm&&!a.disabled)?'模型列表可能包含静态候选；是否可调用以实际回答为准。':'当前没有此版本的已启用账号，请先添加对应账号。'; }
 function updateEfforts() { const model=modelList.find(m=>m.id===$('model').value),previous=$('effort').value;$('effort').replaceChildren(new Option('默认',''));for(const e of model?.reasoning_supported_efforts||[])$('effort').append(new Option(e,e));$('effort').value=model?.reasoning_supported_efforts?.includes(previous)?previous:'';$('effort').disabled=!!activeRequest||protocol==='anthropic'||!model?.reasoning_supported_efforts?.length;updateModelHint(); }
 $('model').addEventListener('change',updateEfforts);
-$('refresh').addEventListener('click',async()=>{await refreshStatus();await refreshModels();await loadHealth();});
+runTopRefresh($('refresh'),async()=>{await refreshStatus();await refreshModels();await loadHealth();});
 setInterval(()=>{if(csrf&&!document.hidden){refreshStatus();void loadPins();}},15000);
 
 const taskNames={checkin:'签到',travel:'猫猫旅行',activity:'活跃上报',keepalive:'Token 保活',school:'开学季',cat:'夜猫子'};
@@ -1149,7 +1162,7 @@ async function loadUsage(){
 $('usage-range').addEventListener('change',event=>{usageRange=event.target.value;usagePage=1;usageGeneration++;loadUsage();});
 $('usage-channel').addEventListener('change',event=>{usageChannel=event.target.value;usagePage=1;usageGeneration++;loadUsage();});
 $('usage-page-size').addEventListener('change',event=>{usagePageSize=Number(event.target.value);usagePage=1;renderUsageDetail();});
-$('usage-refresh').addEventListener('click',()=>{usageGeneration++;usageDailyGeneration++;loadUsage();loadUsageDaily();});
+runTopRefresh($('usage-refresh'),()=>{usageGeneration++;usageDailyGeneration++;return Promise.all([loadUsage(),loadUsageDaily()]);});
 
 // —— 调用统计·日度汇总视图：全历史指标条 / Token 热力图 / 每日按模型趋势 / 模型用量环形图 ——
 // 数据来自 core 的 daily- 汇总（永久保留），因此逐次明细被 90 天裁掉之后，跨年的
@@ -1492,7 +1505,7 @@ async function zcodeAction(path){
  }catch(error){if(generation===sessionGeneration)notice(error.message);}
  finally{if(generation===sessionGeneration){zcodeBusy=false;zcodeActionControls();}}
 }
-$('zcode-refresh').addEventListener('click',loadZcode);
+runTopRefresh($('zcode-refresh'),loadZcode);
 for(const view of ['status','login','models','chat'])$('zcode-view-'+view).addEventListener('click',()=>{zcodeViewTouched=true;setZcodeView(view);});
 function setZcodeView(view){zcodeView=view;if(zcodeStatus)renderZcode(zcodeStatus);}
 $('zcode-provider').addEventListener('change',()=>{zcodeProviderTouched=true;});
@@ -1679,7 +1692,7 @@ function qoderLoginPollLoop(generation){
  };
  qoderLoginTimer=setTimeout(tick,1000);
 }
-$('qoder-refresh').addEventListener('click',loadQoder);
+runTopRefresh($('qoder-refresh'),loadQoder);
 for(const view of ['status','login','models','chat'])$('qoder-view-'+view).addEventListener('click',()=>{qoderViewTouched=true;setQoderView(view);});
 function setQoderView(view){qoderView=view;if(qoderStatus)renderQoder(qoderStatus);}
 $('qoder-login-form').addEventListener('submit',async event=>{
@@ -1810,7 +1823,7 @@ function opencodeControls(){
 function opencodeActionControls(){
  $('opencode-refresh').disabled=opencodeBusy;
 }
-$('opencode-refresh').addEventListener('click',async()=>{
+runTopRefresh($('opencode-refresh'),async()=>{
  if(opencodeBusy)return;
  const generation=sessionGeneration;opencodeBusy=true;opencodeActionControls();
  try{await loadOpenCode();}finally{if(generation===sessionGeneration){opencodeBusy=false;opencodeActionControls();}}
@@ -2028,6 +2041,9 @@ function renderRoutes(state){
  for(const channel of state.channels||[])if(channel.enabled)select.appendChild(new Option(routeChannelLabel(channel.channel),channel.channel));
  const enabledChannels=(state.channels||[]).filter(channel=>channel.enabled).map(channel=>channel.channel);
  if(enabledChannels.includes(previous))select.value=previous;
+ // 没得保持（首次渲染、或原通道被停用）就显式落到第一个可用通道：不能只靠浏览器默认选中第一项，
+ // 否则「走哪个通道」与下面「指向哪个模型」的候选可能对不上（问题3）。
+ else if(enabledChannels.length)select.value=enabledChannels[0];
  fillRouteModelOptions(select.value);
  renderRouteAliases(state.aliases||[]);
  renderRouteChannels(state.channels||[]);
@@ -2073,13 +2089,48 @@ function renderRouteChannels(channels){
   article.append(list);container.append(article);
  }
 }
+// customRouteModelValue 是「自定义…」这一项的值。真实模型名不会等于它（下划线开头不在
+// routeModelChars 里），因此可以拿它当哨兵判断要不要读手动输入框。
+const customRouteModelValue='__custom__';
 function pickRouteModel(channel,model){
- $('routes-alias-channel').value=channel;fillRouteModelOptions(channel);$('routes-alias-model').value=model;
+ $('routes-alias-channel').value=channel;fillRouteModelOptions(channel,model);
 }
-function fillRouteModelOptions(channel){
- const list=$('routes-model-options');list.replaceChildren();
+// fillRouteModelOptions 只把「当前通道」的模型灌进下拉框。此前用的是 input+datalist：
+// 已填值时浏览器按输入内容过滤，唤不出整份候选（只能先删掉才选得动），且切换通道后
+// 旧通道的候选会留在同一份 datalist 里（问题2、问题3）。改成 select 后两个问题一起消失。
+// keepValue 是希望保持选中的模型名：在本通道清单里就选中它，不在就落到「自定义…」
+// 并回填手动输入框——别名可以指向当前没广播的模型，不能因此把它悄悄改掉。
+function fillRouteModelOptions(channel,keepValue){
+ const select=$('routes-alias-model'),custom=$('routes-alias-model-custom');
+ const previous=keepValue!==undefined?keepValue:select.value;
+ select.replaceChildren();
+ select.appendChild(new Option('请选择模型…',''));
  const source=((routesState&&routesState.channels)||[]).find(item=>item.channel===channel);
- for(const model of (source&&source.models)||[])list.appendChild(new Option(model,model));
+ const known=new Set();
+ for(const model of (source&&source.models)||[]){if(known.has(model))continue;known.add(model);select.appendChild(new Option(model,model));}
+ select.appendChild(new Option('自定义…（手动填）',customRouteModelValue));
+ if(previous&&previous!==customRouteModelValue&&known.has(previous)){select.value=previous;custom.value='';}
+ else if(previous&&previous!==customRouteModelValue){select.value=customRouteModelValue;custom.value=previous;}
+ else{select.value='';custom.value='';}
+ syncCustomRouteModelInput();
+}
+// 选到「自定义…」才需要手动输入框，平时收起来：两个框同时可填会让人以为要各填一遍。
+function syncCustomRouteModelInput(){
+ const select=$('routes-alias-model'),custom=$('routes-alias-model-custom');
+ const manual=select.value===customRouteModelValue;
+ custom.hidden=!manual;custom.required=manual;select.required=!manual;
+}
+// routeModelChoice 读表单当前指向的模型名：下拉里选的就是它，选「自定义…」时读手动输入框。
+function routeModelChoice(){
+ const select=$('routes-alias-model');
+ return (select.value===customRouteModelValue?$('routes-alias-model-custom').value:select.value).trim();
+}
+// resetRouteEdit 把表单退回「新增」状态并清掉编辑提示，保存成功与「取消编辑」共用。
+function resetRouteEdit(){
+ routesEditing=null;
+ $('routes-alias-name').value='';$('routes-alias-note').value='';
+ fillRouteModelOptions($('routes-alias-channel').value,'');
+ const hint=$('routes-alias-editing');hint.hidden=true;hint.textContent='';
 }
 function renderRouteExample(state){
  const alias=((state.aliases||[]).find(entry=>entry.enabled)||{}).alias||state.auto_model||'gateway-auto';
@@ -2092,7 +2143,7 @@ async function saveRouteAliases(models){
  try{
   const result=await jsonAPI('route/save',{models,auto_fallback:$('routes-auto-fallback').value.trim()});
   if(generation!==sessionGeneration)return;
-  routesEditing=null;$('routes-alias-name').value='';$('routes-alias-model').value='';$('routes-alias-note').value='';
+  resetRouteEdit();
   renderRoutes(result);notice('路由配置已保存，下一次请求即生效');
  }catch(error){if(generation===sessionGeneration)notice(error.message);}
  finally{if(generation===sessionGeneration){routesBusy=false;$('routes-alias-save').disabled=false;}}
@@ -2100,8 +2151,14 @@ async function saveRouteAliases(models){
 function startRouteEdit(entry){
  routesEditing=entry.alias;
  $('routes-alias-name').value=entry.alias;$('routes-alias-channel').value=entry.channel;
- fillRouteModelOptions(entry.channel);
- $('routes-alias-model').value=entry.model;$('routes-alias-note').value=entry.note||'';
+ // keepValue 传 entry.model：别名可能指向当前没广播的模型，这时落到「自定义…」并回填，
+ // 不能因为下拉里没有就把它悄悄清空。
+ fillRouteModelOptions(entry.channel,entry.model);
+ $('routes-alias-note').value=entry.note||'';
+ const hint=$('routes-alias-editing');hint.hidden=false;hint.textContent=`正在编辑「${entry.alias}」`;
+ // 编辑栏在别名表下面，点「编辑」后原地不动会看不到表单（问题1）。滚到面板顶部。
+ $('routes-alias-panel').scrollIntoView({behavior:'smooth',block:'start'});
+ $('routes-alias-name').focus({preventScroll:true});
 }
 // ---------- 模型能力 TOP（别名页） ----------
 // 契约见 console/capability.go：GET /admin/capabilities 返回 {available, snapshot_at, note, rows}，
@@ -2309,7 +2366,7 @@ function capAllColumns(){
 }
 $('routes-alias-form').addEventListener('submit',async event=>{
  event.preventDefault();if(routesBusy)return;
- const alias=$('routes-alias-name').value.trim(),channel=$('routes-alias-channel').value,model=$('routes-alias-model').value.trim(),note=$('routes-alias-note').value.trim();
+ const alias=$('routes-alias-name').value.trim(),channel=$('routes-alias-channel').value,model=routeModelChoice(),note=$('routes-alias-note').value.trim();
  if(!alias||!model||!channel)return;
  let models=currentRouteAliases();
  if(routesEditing&&routesEditing!==alias)models=models.filter(item=>item.alias!==routesEditing);
@@ -2318,12 +2375,15 @@ $('routes-alias-form').addEventListener('submit',async event=>{
  else models=[...models,{alias,channel,model,enabled:true,note}];
  await saveRouteAliases(models);
 });
-$('routes-alias-reset').addEventListener('click',()=>{routesEditing=null;$('routes-alias-name').value='';$('routes-alias-model').value='';$('routes-alias-note').value='';});
+$('routes-alias-reset').addEventListener('click',resetRouteEdit);
 $('routes-fallback-form').addEventListener('submit',async event=>{event.preventDefault();await saveRouteAliases(currentRouteAliases());});
-$('routes-alias-channel').addEventListener('change',()=>fillRouteModelOptions($('routes-alias-channel').value));
+// 换通道必须整份换候选（问题3）：旧通道的模型留在下拉里就会选串。传 '' 让下拉回到「请选择模型…」。
+$('routes-alias-channel').addEventListener('change',()=>fillRouteModelOptions($('routes-alias-channel').value,''));
+// 选到「自定义…」才亮手动输入框（问题2：下拉选中即可用，不必先清空再输）。
+$('routes-alias-model').addEventListener('change',syncCustomRouteModelInput);
 $('cap-category').addEventListener('change',()=>{capCategory=$('cap-category').value;renderCapabilities();});
 $('cap-filter').addEventListener('input',()=>{capFilter=$('cap-filter').value.trim().toLowerCase();renderCapabilities();});
-$('routes-refresh').addEventListener('click',()=>loadRoutes());
+runTopRefresh($('routes-refresh'),()=>loadRoutes());
 $('routes-copy-example').addEventListener('click',async()=>{try{await navigator.clipboard.writeText($('routes-example').textContent);notice('配置片段已复制，请替换 API Key 占位符');}catch{notice('浏览器不允许自动复制，请手动复制下方片段');}});
 $('reveal-key').addEventListener('click',async()=>{try{$('api-key').value=(await jsonAPI('access',{})).api_key;$('api-key').type='text';}catch(e){notice(e.message);}});
 $('copy-key').addEventListener('click',async()=>{const generation=sessionGeneration;try{if(!$('api-key').value)$('api-key').value=(await jsonAPI('access',{})).api_key;await navigator.clipboard.writeText($('api-key').value);if(generation===sessionGeneration)notice('API Key 已复制');}catch{if(generation!==sessionGeneration)return;$('api-key').type='text';$('api-key').select();notice('浏览器不允许自动复制，请手动复制选中的密钥');}});
@@ -2367,7 +2427,7 @@ async function ccrAction(action){ if(ccrBusy)return; const generation=sessionGen
 }
 $('ccr-start').addEventListener('click',()=>ccrAction('start'));
 $('ccr-stop').addEventListener('click',()=>ccrAction('stop'));
-$('ccr-refresh').addEventListener('click',()=>loadCCR());
+runTopRefresh($('ccr-refresh'),()=>loadCCR());
 $('ccr-link').addEventListener('click',async()=>{ const generation=sessionGeneration; ccrBusy=true; ccrControls();
  try{const result=await jsonAPI('ccr/link');if(generation!==sessionGeneration)return;window.open(result.ui_url,'_blank','noopener');}
  catch(error){if(generation===sessionGeneration)notice(error.message);}
@@ -2593,7 +2653,7 @@ $('autoclaw-oauth-form').addEventListener('submit',async event=>{
  finally{if(generation===sessionGeneration){autoclawLoginBusy=false;autoclawLoginControls();}}
 });
 for(const view of ['status','login','accounts','models','chat'])$('autoclaw-view-'+view).addEventListener('click',()=>{autoclawView=view;if(autoclawStatus)renderAutoClaw(autoclawStatus);});
-$('autoclaw-refresh').addEventListener('click',async()=>{
+runTopRefresh($('autoclaw-refresh'),async()=>{
  if(autoclawBusy)return;const generation=sessionGeneration;autoclawBusy=true;autoclawActionControls();
  try{await loadAutoClaw();}finally{if(generation===sessionGeneration){autoclawBusy=false;autoclawActionControls();}}
 });
@@ -2870,7 +2930,7 @@ $('trae-usage-refresh').addEventListener('click',async()=>{
  finally{if(generation===sessionGeneration){traeBusy=false;$('trae-usage-refresh').disabled=false;}}
 });
 for(const view of ['status','login','accounts','schedule','models','chat','usage'])$('trae-view-'+view).addEventListener('click',()=>{traeView=view;if(traeStatus)renderTrae(traeStatus);});
-$('trae-refresh').addEventListener('click',async()=>{
+runTopRefresh($('trae-refresh'),async()=>{
  if(traeBusy)return;const generation=sessionGeneration;traeBusy=true;traeActionControls();
  try{await loadTrae();}finally{if(generation===sessionGeneration){traeBusy=false;traeActionControls();}}
 });
@@ -3018,7 +3078,7 @@ $('raccoon-accounts-body').addEventListener('click',event=>{
  raccoonAccountAction(btn.dataset.raact,btn.dataset.uid);
 });
 for(const view of ['status','import','models','chat'])$('raccoon-view-'+view).addEventListener('click',()=>{raccoonView=view;if(raccoonStatus)renderRaccoon(raccoonStatus);});
-$('raccoon-refresh').addEventListener('click',async()=>{
+runTopRefresh($('raccoon-refresh'),async()=>{
  if(raccoonBusy)return;const generation=sessionGeneration;raccoonBusy=true;raccoonActionControls();
  try{await loadRaccoon();}finally{if(generation===sessionGeneration){raccoonBusy=false;raccoonActionControls();}}
 });
