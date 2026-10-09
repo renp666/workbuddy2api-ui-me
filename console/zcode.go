@@ -230,12 +230,29 @@ type modelsEnvelope struct {
 	Data   []json.RawMessage `json:"data"`
 }
 
-// filterZcodeModels drops GLM models the current plan tier cannot serve. The zcode-proxy
-// gateway only answers the -flash variants under start-plan (claimed trial/weekend quotas);
-// advertising the full catalog there hands clients models that fail with 1113. Any other
-// plan (including an unknown/unreachable plan) keeps the list intact.
-func filterZcodeModels(list []json.RawMessage, plan string) []json.RawMessage {
-	if plan != "start-plan" {
+// normalizeZcodeModelName 把「展示名」与「模型 id」归一到同一个比较键。
+// /quota 的 balances[].showName 写的是 "GLM-5.3-Flash"，而 /v1/models 的 id 是
+// "glm-5.3-flash"：大小写、空格、下划线都可能不同，直接比字符串必然对不上。
+func normalizeZcodeModelName(raw string) string {
+	s := strings.ToLower(strings.TrimSpace(raw))
+	s = strings.ReplaceAll(s, "_", "-")
+	// 内部空白折成连字符：Fields 顺带吃掉连续空格与制表符。
+	return strings.Join(strings.Fields(s), "-")
+}
+
+// filterZcodeModels 只保留当前账号真正能服务的模型。
+//
+// 判据是账号在 Z.AI 侧的真实权益（entitled，来自 sidecar GET /quota 的
+// balances[].showName），不是档位名。早期这里是「plan == start-plan 就只留 -flash」的
+// 启发式，前提是「start-plan 等于领取的试用/周末包」——实测不成立：同一份 start-plan
+// 配置下，账号权益可能是 GLM-5.3 + GLM-5.3-Flash（两个都可用），也可能只有 flash。
+// 用档位推断权益会误伤：本机就出现过账号能跑 glm-5.3、页面却只列 glm-5.3-flash。
+// 所以权益可用时以权益为准；取不到权益（sidecar 不可达 / 未登录 / 账单接口报错）时
+// 才退回旧的档位启发式，避免整个目录一次性摊开给客户端去撞 3006。
+//
+// 其余计划档（coding-plan / 未知）在两种判据下都不做过滤，与既有行为一致。
+func filterZcodeModels(list []json.RawMessage, entitled map[string]bool, plan string) []json.RawMessage {
+	if len(entitled) == 0 && plan != "start-plan" {
 		return list
 	}
 	out := make([]json.RawMessage, 0, len(list))
@@ -243,11 +260,113 @@ func filterZcodeModels(list []json.RawMessage, plan string) []json.RawMessage {
 		var entry struct {
 			ID string `json:"id"`
 		}
-		if json.Unmarshal(item, &entry) == nil && strings.Contains(entry.ID, "-flash") {
+		if json.Unmarshal(item, &entry) != nil || entry.ID == "" {
+			continue
+		}
+		if len(entitled) > 0 {
+			if entitled[normalizeZcodeModelName(entry.ID)] {
+				out = append(out, item)
+			}
+			continue
+		}
+		// 权益不可达时的兜底：start-plan 只留 -flash。
+		if strings.Contains(entry.ID, "-flash") {
 			out = append(out, item)
 		}
 	}
 	return out
+}
+
+// zcodeModelFilterMode 描述本次目录过滤用的是哪条判据，供页面解释「为什么列表比目录短」。
+// entitlement = 按账号真实权益；plan = 权益取不到，退回 start-plan 只留 -flash；空 = 未过滤。
+func zcodeModelFilterMode(entitled map[string]bool, plan string) string {
+	if len(entitled) > 0 {
+		return "entitlement"
+	}
+	if plan == "start-plan" {
+		return "plan"
+	}
+	return ""
+}
+
+// zcodeQuotaTTL 是权益快照的缓存时长。/quota 会打 Z.AI 的账单控制面（两次外呼），
+// 而权益以「天」为尺度变化，页面每开一次就打一次没有意义，也容易被上游限流。
+const zcodeQuotaTTL = 60 * time.Second
+
+// zcodeQuotaCache 缓存账号的模型权益。haveData=false 表示从未成功取到过，
+// 此时调用方退回档位启发式——「没取到」和「一个模型都没有」是两件事，不能混。
+type zcodeQuotaCache struct {
+	mu        sync.Mutex
+	fetchedAt time.Time
+	entitled  map[string]bool
+	haveData  bool
+}
+
+// zcodeEntitlements 返回账号可用的模型键集合；从未取到过返回 nil。
+// 取到过一次之后即使后续抓取失败也沿用上一份：权益不会凭空消失，抖动时清空列表
+// 会让整个 GLM 通道在页面上短暂「一个模型都没有」。
+func (h *server) zcodeEntitlements(ctx context.Context) map[string]bool {
+	c := h.zcodeQuota
+	if c == nil || h.cfg.ZCodeURL == nil {
+		return nil
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if time.Since(c.fetchedAt) < zcodeQuotaTTL {
+		return c.snapshotLocked()
+	}
+	entitled, ok := h.fetchZcodeEntitlements(ctx)
+	c.fetchedAt = time.Now()
+	if ok {
+		c.entitled = entitled
+		c.haveData = true
+	}
+	return c.snapshotLocked()
+}
+
+func (c *zcodeQuotaCache) snapshotLocked() map[string]bool {
+	if !c.haveData {
+		return nil
+	}
+	return c.entitled
+}
+
+// fetchZcodeEntitlements 拉一次 sidecar 的 /quota 快照并取出权益模型名。
+// 任何一步失败都返回 ok=false，由调用方决定降级方式，不在这里编造空权益。
+func (h *server) fetchZcodeEntitlements(ctx context.Context) (map[string]bool, bool) {
+	target := *h.cfg.ZCodeURL
+	target.Path = "/quota"
+	req, err := http.NewRequestWithContext(ctx, "GET", target.String(), nil)
+	if err != nil {
+		return nil, false
+	}
+	if h.cfg.ZCodeKey != "" {
+		req.Header.Set("Authorization", "Bearer "+h.cfg.ZCodeKey)
+	}
+	timeout, cancel := context.WithTimeout(req.Context(), 3*time.Second)
+	defer cancel()
+	response := h.fetchUpstream(req.WithContext(timeout))
+	if response.status != 200 {
+		return nil, false
+	}
+	var snapshot struct {
+		Balances []struct {
+			ShowName string `json:"showName"`
+		} `json:"balances"`
+	}
+	if json.Unmarshal(response.body, &snapshot) != nil {
+		return nil, false
+	}
+	entitled := make(map[string]bool, len(snapshot.Balances))
+	for _, balance := range snapshot.Balances {
+		if key := normalizeZcodeModelName(balance.ShowName); key != "" {
+			entitled[key] = true
+		}
+	}
+	if len(entitled) == 0 {
+		return nil, false
+	}
+	return entitled, true
 }
 
 // tagModelRealm injects a "realm" attribution tag into a raw model-list entry
@@ -293,15 +412,16 @@ func (h *server) mergedModels(w http.ResponseWriter, r *http.Request, core *http
 		coreReq.Header.Set("Authorization", auth)
 	}
 	var (
-		wg           sync.WaitGroup
-		coreResp     upstreamResponse
-		zcodeRaw     []json.RawMessage
-		qoderRaw     []json.RawMessage
-		opencodeRaw  []json.RawMessage
-		autoclawRaw  []json.RawMessage
-		traeRaw      []json.RawMessage
-		raccoonRaw   []json.RawMessage
-		zcodePlan    string
+		wg            sync.WaitGroup
+		coreResp      upstreamResponse
+		zcodeRaw      []json.RawMessage
+		qoderRaw      []json.RawMessage
+		opencodeRaw   []json.RawMessage
+		autoclawRaw   []json.RawMessage
+		traeRaw       []json.RawMessage
+		raccoonRaw    []json.RawMessage
+		zcodePlan     string
+		zcodeEntitled map[string]bool
 	)
 	wg.Add(1)
 	go func() {
@@ -322,6 +442,12 @@ func (h *server) mergedModels(w http.ResponseWriter, r *http.Request, core *http
 				zcodeReq.Header.Set("Authorization", "Bearer "+h.cfg.ZCodeKey)
 			}
 			zcodeRaw, _ = h.fetchModels(zcodeReq)
+		}()
+		// 权益与档位并行取：两者都只用于过滤 GLM 目录，谁先到都不影响其它通道。
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			zcodeEntitled = h.zcodeEntitlements(r.Context())
 		}()
 		if h.cfg.ZCodeControlURL != nil {
 			wg.Add(1)
@@ -511,7 +637,7 @@ func (h *server) mergedModels(w http.ResponseWriter, r *http.Request, core *http
 		}()
 	}
 	wg.Wait()
-	zcodeRaw = filterZcodeModels(zcodeRaw, zcodePlan)
+	zcodeRaw = filterZcodeModels(zcodeRaw, zcodeEntitled, zcodePlan)
 	coreList, ok := parseModelList(coreResp)
 	if !ok {
 		if coreResp.status == 0 {
@@ -600,6 +726,8 @@ func (h *server) adminZcodeStatus(w http.ResponseWriter, r *http.Request) {
 		control = h.zcodeControlStatus(r.Context())
 	}
 	plan, _ := control["plan"].(string)
+	// 判据是账号权益，档位只在权益取不到时兜底（见 filterZcodeModels）。
+	entitled := h.zcodeEntitlements(r.Context())
 	target := *h.cfg.ZCodeURL
 	target.Path = "/v1/models"
 	req, err := http.NewRequestWithContext(r.Context(), "GET", target.String(), nil)
@@ -617,7 +745,7 @@ func (h *server) adminZcodeStatus(w http.ResponseWriter, r *http.Request) {
 	reachable := false
 	if list, ok := parseModelList(response); ok {
 		reachable = true
-		for _, item := range filterZcodeModels(list, plan) {
+		for _, item := range filterZcodeModels(list, entitled, plan) {
 			var entry struct {
 				ID string `json:"id"`
 			}
@@ -627,6 +755,9 @@ func (h *server) adminZcodeStatus(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	out := map[string]any{"enabled": true, "reachable": reachable, "model_count": len(models), "models": models}
+	// 告诉页面这次目录是被哪条判据裁短的：页面据此解释「为什么列表比目录短」，
+	// 而不是自己拿 plan 再猜一遍（权益过滤时 plan 仍是 start-plan，猜不出来）。
+	out["model_filter"] = zcodeModelFilterMode(entitled, plan)
 	// 手工测速探测的结论以 health.modelResults 形态下发，前端模型表原样复用既有渲染。
 	if health := h.probeHealth(channelGLM); health != nil {
 		out["health"] = health

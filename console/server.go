@@ -120,6 +120,9 @@ type server struct {
 	catalog *catalogCache
 	// health 保留后台常态探活的历史轮次（内存态，重启清空）。
 	health *healthCache
+	// zcodeQuota 缓存 zcode 账号在 Z.AI 侧的真实模型权益（sidecar GET /quota 的
+	// balances[].showName），GLM 目录按它过滤，不再靠档位名推断。
+	zcodeQuota *zcodeQuotaCache
 }
 
 func NewServer(cfg Config) (http.Handler, error) {
@@ -227,6 +230,7 @@ func NewServer(cfg Config) (http.Handler, error) {
 	h.credits = &creditCache{}
 	h.catalog = &catalogCache{}
 	h.health = &healthCache{}
+	h.zcodeQuota = &zcodeQuotaCache{}
 	assets, err := fs.Sub(webFiles, "web")
 	if err != nil {
 		return nil, err

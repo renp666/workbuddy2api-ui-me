@@ -906,16 +906,126 @@ func TestAdminZcodeActionsRequireAdmin(t *testing.T) {
 func TestFilterZcodeModels(t *testing.T) {
 	list := []json.RawMessage{
 		json.RawMessage(`{"id":"glm-5.2"}`),
+		json.RawMessage(`{"id":"glm-5.3"}`),
 		json.RawMessage(`{"id":"glm-5.3-flash"}`),
 		json.RawMessage(`{"id":"not-json`),
 	}
-	if got := filterZcodeModels(list, "start-plan"); len(got) != 1 || string(got[0]) != `{"id":"glm-5.3-flash"}` {
-		t.Fatalf("start-plan filter: %v", got)
+	// 权益可用时以权益为准：账号只有 GLM-5.3 / GLM-5.3-Flash 时 glm-5.2 必须裁掉，
+	// 但 glm-5.3 要留下——这正是「只看 start-plan 档位」会误伤掉的那个模型。
+	entitled := map[string]bool{"glm-5.3": true, "glm-5.3-flash": true}
+	got := filterZcodeModels(list, entitled, "start-plan")
+	if len(got) != 2 || string(got[0]) != `{"id":"glm-5.3"}` || string(got[1]) != `{"id":"glm-5.3-flash"}` {
+		t.Fatalf("entitlement filter: %v", got)
+	}
+	// 权益取不到时才退回档位启发式：start-plan 只留 -flash。
+	if got := filterZcodeModels(list, nil, "start-plan"); len(got) != 1 || string(got[0]) != `{"id":"glm-5.3-flash"}` {
+		t.Fatalf("start-plan fallback: %v", got)
 	}
 	for _, plan := range []string{"coding-plan", "", "unknown"} {
-		if got := filterZcodeModels(list, plan); len(got) != len(list) {
+		if got := filterZcodeModels(list, nil, plan); len(got) != len(list) {
 			t.Fatalf("plan %q must keep the list intact: %v", plan, got)
 		}
+	}
+}
+
+func TestNormalizeZcodeModelName(t *testing.T) {
+	// /quota 下发的是展示名（"GLM-5.3-Flash"），/v1/models 下发的是 id（"glm-5.3-flash"）：
+	// 大小写与分隔符都可能不同，直接比字符串必然对不上，会把可用模型全裁掉。
+	for _, pair := range [][2]string{
+		{"GLM-5.3", "glm-5.3"},
+		{"GLM-5.3-Flash", "glm-5.3-flash"},
+		{"  glm-5.3-flash  ", "glm-5.3-flash"},
+		{"GLM 5.3 Flash", "glm-5.3-flash"},
+		{"GLM_5.3_Flash", "glm-5.3-flash"},
+		{"", ""},
+	} {
+		if got := normalizeZcodeModelName(pair[0]); got != pair[1] {
+			t.Errorf("normalize(%q) = %q, want %q", pair[0], got, pair[1])
+		}
+	}
+}
+
+// 页面列出的 GLM 模型必须与账号在 Z.AI 侧的真实权益一致，而不是与档位名一致。
+// 本机实测：start-plan 账号的权益是 GLM-5.3 + GLM-5.3-Flash，只按档位过滤会把
+// glm-5.3 一起裁掉——用户看到的列表里少了一个真能调通的模型。
+func TestAdminZcodeStatusFiltersByEntitlement(t *testing.T) {
+	ctrl := &fakeControl{resp: map[string]string{
+		"status": `{"ok":true,"state":"running","provider":"zai","plan":"start-plan","proxyPort":8080,"loggedIn":true}`,
+	}}
+	h, _ := testConsoleWithZcode(t, zcodePair{
+		coreHandler: func(w http.ResponseWriter, r *http.Request) { mockInfo(w, r) },
+		zcodeHandler: func(w http.ResponseWriter, r *http.Request) {
+			if r.URL.Path == "/quota" {
+				fmt.Fprint(w, `{"provider":"zai","balances":[{"showName":"GLM-5.3","remainingUnits":1,"totalUnits":2},{"showName":"GLM-5.3-Flash","remainingUnits":1,"totalUnits":2}],"claimablePlans":[],"errors":[]}`)
+				return
+			}
+			fmt.Fprint(w, `{"object":"list","data":[{"id":"glm-4.6"},{"id":"glm-5.2"},{"id":"glm-5.3"},{"id":"glm-5.3-flash"}]}`)
+		},
+		controlHandler: ctrl.handler,
+	})
+	cookie, csrf := login(t, h)
+	w := adminRequest(h, "GET", "/admin/zcode", "", cookie, csrf)
+	if w.Code != 200 {
+		t.Fatalf("status %d %s", w.Code, w.Body)
+	}
+	var status struct {
+		ModelFilter string `json:"model_filter"`
+		Models      []struct {
+			ID string `json:"id"`
+		} `json:"models"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &status); err != nil {
+		t.Fatalf("body %s", w.Body)
+	}
+	ids := make([]string, 0, len(status.Models))
+	for _, m := range status.Models {
+		ids = append(ids, m.ID)
+	}
+	if len(ids) != 2 || ids[0] != "glm-5.3" || ids[1] != "glm-5.3-flash" {
+		t.Fatalf("按权益过滤后应只剩 glm-5.3 / glm-5.3-flash，实际 %v", ids)
+	}
+	if status.ModelFilter != "entitlement" {
+		t.Errorf("model_filter = %q, want entitlement", status.ModelFilter)
+	}
+}
+
+// 权益取不到（/quota 报错、未登录、账单面不可达）时必须退回档位启发式，并把判据
+// 如实告诉页面：否则页面会把「按档位裁短」说成「按权益裁短」，解释与事实不符。
+func TestAdminZcodeStatusFallsBackToPlanWhenQuotaUnavailable(t *testing.T) {
+	ctrl := &fakeControl{resp: map[string]string{
+		"status": `{"ok":true,"state":"running","provider":"zai","plan":"start-plan","proxyPort":8080,"loggedIn":true}`,
+	}}
+	h, _ := testConsoleWithZcode(t, zcodePair{
+		coreHandler: func(w http.ResponseWriter, r *http.Request) { mockInfo(w, r) },
+		zcodeHandler: func(w http.ResponseWriter, r *http.Request) {
+			if r.URL.Path == "/quota" {
+				w.WriteHeader(500)
+				fmt.Fprint(w, `{"errors":["billing unreachable"]}`)
+				return
+			}
+			fmt.Fprint(w, `{"object":"list","data":[{"id":"glm-5.3"},{"id":"glm-5.3-flash"}]}`)
+		},
+		controlHandler: ctrl.handler,
+	})
+	cookie, csrf := login(t, h)
+	w := adminRequest(h, "GET", "/admin/zcode", "", cookie, csrf)
+	if w.Code != 200 {
+		t.Fatalf("status %d %s", w.Code, w.Body)
+	}
+	var status struct {
+		ModelFilter string `json:"model_filter"`
+		Models      []struct {
+			ID string `json:"id"`
+		} `json:"models"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &status); err != nil {
+		t.Fatalf("body %s", w.Body)
+	}
+	if status.ModelFilter != "plan" {
+		t.Errorf("model_filter = %q, want plan", status.ModelFilter)
+	}
+	if len(status.Models) != 1 || status.Models[0].ID != "glm-5.3-flash" {
+		t.Fatalf("权益不可达时应退回档位过滤（只留 -flash），实际 %v", status.Models)
 	}
 }
 
@@ -994,6 +1104,43 @@ func TestMergedModelsStartPlanFilter(t *testing.T) {
 			t.Fatalf("control down must not drop models: %d %s", w.Code, w.Body)
 		}
 	})
+}
+
+// 公共 /v1/models 才是客户端真正看到的目录：GLM 那一段同样要按权益裁，否则客户端会
+// 拿到一堆必然 3006 model not allowed 的模型，选谁都 502。
+func TestMergedModelsFilterByEntitlement(t *testing.T) {
+	ctrl := &fakeControl{resp: map[string]string{
+		"status": `{"ok":true,"state":"running","provider":"zai","plan":"start-plan","proxyPort":8080,"loggedIn":true}`,
+	}}
+	h, _ := testConsoleWithZcode(t, zcodePair{
+		coreHandler: func(w http.ResponseWriter, r *http.Request) {
+			fmt.Fprint(w, `{"object":"list","data":[{"id":"cn:workbuddy"}]}`)
+		},
+		zcodeHandler: func(w http.ResponseWriter, r *http.Request) {
+			if r.URL.Path == "/quota" {
+				fmt.Fprint(w, `{"provider":"zai","balances":[{"showName":"GLM-5.3"},{"showName":"GLM-5.3-Flash"}],"errors":[]}`)
+				return
+			}
+			fmt.Fprint(w, `{"object":"list","data":[{"id":"glm-4.6"},{"id":"glm-5.2"},{"id":"glm-5.3"},{"id":"glm-5.3-flash"}]}`)
+		},
+		controlHandler: ctrl.handler,
+	})
+	w := adminRequest(h, "GET", "/v1/models", "", nil, "")
+	if w.Code != 200 {
+		t.Fatalf("models: %d %s", w.Code, w.Body)
+	}
+	body := w.Body.String()
+	// 带引号匹配：不带引号时 "glm-5.3" 会被 "glm-5.3-flash" 里的子串蒙混过关。
+	for _, want := range []string{`"glm-5.3"`, `"glm-5.3-flash"`, `"cn:workbuddy"`} {
+		if !strings.Contains(body, want) {
+			t.Errorf("合并目录缺 %s：%s", want, body)
+		}
+	}
+	for _, unwanted := range []string{`"glm-4.6"`, `"glm-5.2"`} {
+		if strings.Contains(body, unwanted) {
+			t.Errorf("合并目录残留无权益的 %s：%s", unwanted, body)
+		}
+	}
 }
 
 // TestRaccoonPrefixRoutesAndMerges 验证 raccoon- 前缀的两条公共面行为：
