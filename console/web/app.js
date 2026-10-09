@@ -176,11 +176,19 @@ function parseCreditRule(raw){
  const value=Number(s);
  return Number.isFinite(value)&&value>=0?value:null;
 }
+// channelSwitchable 是「这条通道参不参与模型停用开关」的唯一判据。模型表与能力页
+// 都读它：两处各抄一份名单，改一处漏一处就会让同一条通道在两个页面显示相反的开关态。
+// opencode/autoclaw/raccoon 是免费通道，不采集倍率、也不参与开关（需求明确排除）。
+function channelSwitchable(channel){return channel!=='opencode'&&channel!=='autoclaw'&&channel!=='raccoon';}
 // modelSwitchEffective 报告行的当前生效状态：人工覆盖优先，其次按倍率取默认态。
-// opencode 通道免费，不参与开关（row.switchable=false 时恒放行）。
+// 不参与开关的通道（row.switchable=false）恒放行。
+// row.defaultEnabled 标的是「这条通道的倍率不能拿来当停用依据」：trae 的倍率语义是
+// 「套餐额度的消耗率」（0.78 只说明它比 0.06 更吃额度），不是「这次要扣多少钱」。
+// 沿用「倍率非零即默认停用」会让 trae 全部模型一上线就显示已停用，等于整条通道默认关闭。
 function modelSwitchEffective(row){
  if(!row.switchable)return true;
  if(modelSwitchOverrides.has(row.id))return modelSwitchOverrides.get(row.id);
+ if(row.defaultEnabled)return true;
  return row.creditValue===0;
 }
 const modelChannels={zcode:{body:'zcode-models-body',empty:'zcode-models-empty',namePrefix:'GLM · '},
@@ -190,7 +198,9 @@ const modelChannels={zcode:{body:'zcode-models-body',empty:'zcode-models-empty',
  trae:{body:'trae-models-body',empty:'trae-models-empty',namePrefix:'Trae · '},
  raccoon:{body:'raccoon-models-body',empty:'raccoon-models-empty',namePrefix:'小浣熊 · '},
  core:{body:'core-models-body',empty:'core-models-empty',namePrefix:''}};
-const modelFailureLabels={timeout:'探测超时',access:'地区限制',error:'调用失败',model_error:'模型错误',auth:'未授权',rate_limit:'限流',empty:'空返回'};
+// alias_disabled / model_disabled 是别名测试在发出上游请求之前就判定的结果，
+// 与探测失败（真的打了上游才失败）区分开，页面上一眼能看出该去哪儿改。
+const modelFailureLabels={timeout:'探测超时',access:'地区限制',error:'调用失败',model_error:'模型错误',auth:'未授权',rate_limit:'限流',empty:'空返回',alias_disabled:'别名已停用',model_disabled:'模型已停用'};
 const modelProbeSources={probe:'探测',request:'真实请求'};
 // 公共模型名带通道前缀（opencode-OC · X / glm-X / opencode/x）与 realm 前缀（cn:/global:），去掉后作为跨源对齐键。
 function modelKey(id){return String(id||'').replace(/^opencode-OC · /,'').replace(/^OC · /,'').replace(/^opencode\//,'').replace(/^(?:cn|global):/,'').replace(/^glm-/,'').replace(/^qoder-/,'').replace(/^autoclaw-/,'').replace(/^trae-/,'').replace(/^raccoon-/,'').toLowerCase().replace(/[^a-z0-9\u4e00-\u9fa5]+/g,'');}
@@ -281,22 +291,33 @@ async function loadGlobalHeat(){
 }
 // loadModelSwitch 拉取人工覆盖表并重渲染各通道。开关功能未启用（无覆盖数据）时
 // 静默降级：所有模型按倍率默认态展示，不影响渲染。
+// applyModelSwitchState 用一份带 overrides 的响应刷新模型列表。整组开关端点
+// （route/switch）与 /admin/model-switch 都回这个字段，两处共用同一套渲染，
+// 不重复写一遍「重画每个通道」的循环。
+function applyModelSwitchState(state){
+ if(!state||typeof state.overrides!=='object'||!state.overrides)return false;
+ modelSwitchOverrides=new Map(Object.entries(state.overrides));
+ for(const channel of Object.keys(modelHeatSources)){const source=modelHeatSources[channel];renderModelTable(channel,source.list,source.health);}
+ return true;
+}
 async function loadModelSwitch(){
  try{
-  const state=await jsonAPI('model-switch');
-  modelSwitchOverrides=new Map(Object.entries(state.overrides||{}));
- }catch(error){modelSwitchOverrides=new Map();}
+  if(applyModelSwitchState(await jsonAPI('model-switch')))return;
+ }catch(error){/* 端点缺失时按默认态渲染，不打断页面 */}
+ modelSwitchOverrides=new Map();
  for(const channel of Object.keys(modelHeatSources)){const source=modelHeatSources[channel];renderModelTable(channel,source.list,source.health);}
 }
-// modelSwitchAction 切换单个模型并落盘，成功后刷新覆盖表重渲染。
+// modelSwitchAction 切换单个模型并落盘。走整组端点：指向这个模型的别名会一起变，
+// 与别名表的开关保持同一状态（用户口径：操作一边，另一边同步）。
 async function modelSwitchAction(btn){
  const enable=btn.dataset.action==='enable-model';
  const model=btn.dataset.model;
  btn.disabled=true;
  try{
-  const state=await jsonAPI('model-switch',{model,enabled:enable});
-  modelSwitchOverrides=new Map(Object.entries(state.overrides||{}));
-  for(const channel of Object.keys(modelHeatSources)){const source=modelHeatSources[channel];renderModelTable(channel,source.list,source.health);}
+  const state=await jsonAPI('route/switch',{model,enabled:enable});
+  applyModelSwitchState(state);
+  // 别名页读的是同一份配置，同步缓存里的别名状态，切过去不会看到旧值。
+  if(routesState&&Array.isArray(state.aliases))routesState.aliases=state.aliases;
   notice(`${model} 已${enable?'启用':'停用'}`);
  }catch(e){
   notice(e.message);
@@ -314,7 +335,9 @@ function channelModelRows(channel,list,health){
  const caps=new Map();
  if(health&&Array.isArray(health.models))for(const item of health.models){if(item&&item.name)caps.set(modelKey(item.name),item);}
  const rows=new Map();
- const switchable=channel!=='opencode'&&channel!=='autoclaw'&&channel!=='trae'&&channel!=='raccoon';
+ const switchable=channelSwitchable(channel);
+ // trae 参与开关，但倍率只用于展示与排序，不做默认停用依据（见 modelSwitchEffective）。
+ const defaultEnabled=channel==='trae';
  // 去重身份始终按 id（core 用完整公共名，其余通道用跨源对齐键），展示名不参与身份判定：
  // 目录条目可能带 name（如小浣熊的上游真实展示名），只改行标签，不改选路键与探测对齐。
  // upstreamName 单独留一份：行标签是给人看的，id 是选路与别名表单里真正在用的那个（问题4）。
@@ -341,7 +364,7 @@ function channelModelRows(channel,list,health){
   const result=row.result;
   const variants=[...new Set([...modelVariantNames(result),...modelVariantNames(row.cap)])];
   const ms=result?Number(result.durationMs):NaN;
-  return{key:row.key,label:row.label,upstreamName:row.upstreamName,id:row.id,switchable,credits:row.credits,creditValue:row.creditValue,accounts:row.accounts,tier:row.tier,state:modelProbeState(result),
+  return{key:row.key,label:row.label,upstreamName:row.upstreamName,id:row.id,switchable,defaultEnabled,credits:row.credits,creditValue:row.creditValue,accounts:row.accounts,tier:row.tier,state:modelProbeState(result),
    caps:modelCapabilityBadges(row.cap,row.efforts&&row.efforts.length?['推理']:null),
    limit:modelLimitText(row.cap),
    variants:variants.length?`档位 ${variants.join(' / ')}`:'',
@@ -362,7 +385,8 @@ function creditSort(a,b){
  if(bv==null)return -1;
  return av-bv;
 }
-// probeSort 是 opencode 通道的原排序：免费通道不采集倍率，保持「探测状态 → 耗时」口径。
+// probeSort 是不参与开关的免费通道（opencode/autoclaw/raccoon）的原排序：
+// 这些通道不采集倍率，保持「探测状态 → 耗时」口径。trae 有倍率，走 creditSort。
 function probeSort(a,b){
  return a.state.order-b.state.order||((a.durationMs??Infinity)-(b.durationMs??Infinity));
 }
@@ -378,7 +402,7 @@ function renderModelTable(channel,list,health){
  modelHeatSources[channel]={list,health};
  const body=$(config.body);body.replaceChildren();
  const rows=channelModelRows(channel,list,health);
- const cols=(channel==='opencode'||channel==='autoclaw'||channel==='trae'||channel==='raccoon')?8:10;
+ const cols=(channel==='opencode'||channel==='autoclaw'||channel==='raccoon')?8:10;
  const appendRow=row=>{
   const tr=document.createElement('tr');
   // 只有异常行抬底色：可用/未知是常态，整表染色等于没染色，失败行反而被淹掉。
@@ -386,7 +410,7 @@ function renderModelTable(channel,list,health){
   // tier 徽标排在能力徽标之前：它说「这个模型属于哪一档」，与「能不能调通」是两件事。
   const caps=row.tier?['Agent',...row.caps]:row.caps;
   tr.append(modelLabelCell(row),chipsCell(caps,[row.limit,row.variants].filter(Boolean).join(' · ')),badgeCell(row.state.label,row.state.tone),numCell(row.duration,row.source),numCell(row.speed),cell(row.note),modelHeatCell(row.key),globalHeatCell(row.key));
-  // opencode 免费通道不采集倍率、不加开关列；其余通道追加「积分消耗」与「操作」两列。
+  // opencode/autoclaw/raccoon 免费通道不采集倍率、不加开关列；其余通道追加「积分消耗」与「操作」两列。
   if(row.switchable){ tr.append(creditCell(row),switchOpCell(row)); }
   body.append(tr);
  };
@@ -2018,7 +2042,7 @@ renderAccess();
 // auto_preview, aliases, channels}；POST /admin/route/save 接收
 // {models:[{alias,channel,model,enabled,note}], auto_fallback}。
 // 路由判定完全在服务端，页面只负责展示与编辑；保存即生效，无需重启。
-const routeChannelLabels={core:'核心账号池',glm:'GLM 通道',qoder:'Qoder 通道',opencode:'OpenCode 通道',autoclaw:'AutoClaw 通道',trae:'Trae 通道'};
+const routeChannelLabels={core:'核心账号池',glm:'GLM 通道',qoder:'Qoder 通道',opencode:'OpenCode 通道',autoclaw:'AutoClaw 通道',trae:'Trae 通道',raccoon:'小浣熊通道'};
 function routeChannelLabel(channel){return routeChannelLabels[channel]||channel||'—';}
 async function loadRoutes(){
  if(!csrf)return;
@@ -2056,27 +2080,132 @@ function renderRoutes(state){
  renderRouteExample(state);
  renderCapabilities();
 }
+// routeAliasStateCell 一列里并排两个徽章：启停态（与模型表同口径）与探测结论。
+// 两者是不同维度的东西——「已启用」是配置态，「不可用」是运行态——合成一个徽章
+// 会丢信息：启用着但从没测过、和启用着但调不通，要做的下一步完全不同。
+// 停用中只给启停徽章：配置上就没开，旧探测结论拿来显示只会误导。
+function routeAliasStateCell(entry){
+ const td=document.createElement('td');
+ const row=document.createElement('span');row.className='badge-row';
+ const enabled=document.createElement('span');enabled.className='badge'+(entry.enabled?' ok':' idle');
+ enabled.textContent=entry.enabled?'已启用':'已停用';
+ row.append(enabled);
+ if(entry.enabled){
+  const run=modelProbeState(entry.probe);
+  const probe=document.createElement('span');probe.className='badge'+(run.tone?' '+run.tone:'');
+  probe.textContent=run.label;
+  row.append(probe);
+ }
+ td.append(row);
+ return td;
+}
+// routeModelCell 渲染「真实模型」列：正文只放真实模型名，对外模型 ID 收进 title，
+// 鼠标悬停即可对照。两个名字本来就是同一条目的两个视角，并排两列会把表撑宽近一倍。
+function routeModelCell(entry){
+ const td=cell(entry.model);
+ td.title=`对外模型 ID：${entry.public_model||entry.model}`;
+ return td;
+}
+// routeAliasNameCell 在别名后面挂一对排序把手。顺序就是 routes.json 的数组顺序，
+// 点一下即重排并整表保存；首行禁上移、末行禁下移，避免点了没反应。
+function routeAliasNameCell(entry,index,total){
+ const td=document.createElement('td');
+ const name=document.createElement('span');name.textContent=entry.alias;td.append(name);
+ const order=document.createElement('span');order.className='route-order';
+ const up=document.createElement('button');up.type='button';up.className='quiet route-move';up.textContent='↑';up.title='上移';up.disabled=index===0;
+ up.addEventListener('click',()=>moveRouteAlias(index,-1));
+ const down=document.createElement('button');down.type='button';down.className='quiet route-move';down.textContent='↓';down.title='下移';down.disabled=index===total-1;
+ down.addEventListener('click',()=>moveRouteAlias(index,1));
+ order.append(up,down);td.append(order);
+ return td;
+}
 function renderRouteAliases(aliases){
  const body=$('routes-alias-body');body.replaceChildren();
  $('routes-alias-empty').hidden=aliases.length>0;
- for(const entry of aliases){
+ aliases.forEach((entry,index)=>{
   const tr=document.createElement('tr');
-  // 状态说「已启用/已停用」，与模型表同口径：同一行的操作列还有一颗「停用/启用」按钮，
-  // 两边都写「启用/停用」会让状态与动作分不清。
-  tr.append(cell(entry.alias),channelCell(routeChannelLabel(entry.channel),entry.channel),cell(entry.model),cell(entry.public_model),badgeCell(entry.enabled?'已启用':'已停用',entry.enabled?'ok':'idle'),cell(entry.note||'—'));
+  tr.append(routeAliasNameCell(entry,index,aliases.length),channelCell(routeChannelLabel(entry.channel),entry.channel),routeModelCell(entry),routeAliasStateCell(entry),numCell(speedText(entry.probe)),cell(entry.note||'—'));
   const actions=document.createElement('td');
+  actions.className='route-actions';
+  // 启停走整组端点：服务端会把「这个真实模型 + 所有指向它的别名」一次写成同一
+  // 状态，所以模型列表里同一个模型的开关会跟着变，反之亦然。
+  const toggle=document.createElement('button');toggle.className='secondary';toggle.textContent=entry.enabled?'停用':'启用';
+  toggle.addEventListener('click',()=>routeAliasSwitch(entry,!entry.enabled));
+  // 测试真发一条最小对话，失败把上游原文带回页面。
+  const test=document.createElement('button');test.className='secondary route-test';test.textContent='测试';
+  test.addEventListener('click',()=>routeAliasTest(entry,test));
   const edit=document.createElement('button');edit.className='secondary';edit.textContent='编辑';edit.addEventListener('click',()=>startRouteEdit(entry));
-  const toggle=document.createElement('button');toggle.className='secondary';toggle.textContent=entry.enabled?'停用':'启用';toggle.addEventListener('click',()=>saveRouteAliases(currentRouteAliases().map(item=>item.alias===entry.alias?{...item,enabled:!entry.enabled}:item)));
   const remove=document.createElement('button');remove.className='quiet';remove.textContent='删除';let removeArmed=false;
   remove.addEventListener('click',()=>{
    if(!removeArmed){removeArmed=true;remove.textContent='再次点击确认删除';return;}
    saveRouteAliases(currentRouteAliases().filter(item=>item.alias!==entry.alias));
   });
-  actions.append(edit,toggle,remove);tr.append(actions);body.append(tr);
- }
+  actions.append(toggle,test,edit,remove);tr.append(actions);body.append(tr);
+ });
 }
+// moveRouteAlias 上下移动一条别名并整表保存；越界直接忽略（按钮本身也已禁用）。
+function moveRouteAlias(index,delta){
+ const list=currentRouteAliases();
+ const target=index+delta;
+ if(target<0||target>=list.length)return;
+ const moved=list.splice(index,1)[0];
+ list.splice(target,0,moved);
+ void saveRouteAliases(list);
+}
+// routeAliasSwitch 改一个别名的启停。走整组端点：服务端同时改模型开关表与所有
+// 指向该模型的别名，响应里同时带回 aliases 与 overrides，一次刷新两边。
+async function routeAliasSwitch(entry,enabled){
+ if(routesBusy)return;
+ routesBusy=true;
+ try{
+  const state=await jsonAPI('route/switch',{model:entry.public_model||entry.model,enabled});
+  renderRoutes(state);
+  applyModelSwitchState(state);
+  notice(`${entry.alias} 已${enabled?'启用':'停用'}`);
+ }catch(error){notice(error.message);}
+ finally{routesBusy=false;}
+}
+// routeAliasTest 对单个别名发一条最小对话。失败不吞：页面提示 + console.error
+// 打出完整结论，方便直接复制排查。
+async function routeAliasTest(entry,button){
+ if(button.disabled)return;
+ const label=button.textContent;button.disabled=true;button.textContent='测试中…';
+ try{
+  const result=await jsonAPI('route/test',{alias:entry.alias});
+  if(result&&result.ok===true){
+   const speed=speedText(result);
+   notice(`${entry.alias} 可用 · ${formatProbeDuration(result.durationMs)}${speed!=='—'?` · ${speed}`:''}`);
+  }else{
+   console.error(`[别名测试] ${entry.alias} 失败`,result);
+   notice(`${entry.alias} 测试失败：${routeTestDetail(result)}`);
+  }
+  // 结论已写回服务端探测缓存，重拉一次状态让状态与速度列跟着更新。
+  await loadRoutes();
+ }catch(error){
+  console.error(`[别名测试] ${entry.alias} 请求失败`,error);
+  notice(`${entry.alias} 测试失败：${error.message}`);
+ }finally{button.disabled=false;button.textContent=label;}
+}
+// routeTestDetail 拼失败原因：优先用上游/服务端给的原文，没有再退回分类标签。
+function routeTestDetail(result){
+ const raw=result&&typeof result.error==='string'?result.error:'';
+ if(raw)return raw;
+ const category=result&&typeof result.category==='string'?result.category:'';
+ return modelFailureLabels[category]||category||'未知原因';
+}
+// currentRouteAliases 把服务端下发的别名还原成保存用的形态。fallbacks 与 strategy
+// 必须原样带上：页面没有编辑候选链的控件，而 route/save 是全量替换语义，不透传
+// 就等于「改个备注或换个顺序会顺手清空候选链」。
 function currentRouteAliases(){
- return ((routesState&&routesState.aliases)||[]).map(entry=>({alias:entry.alias,channel:entry.channel,model:entry.model,enabled:entry.enabled!==false,note:entry.note||''}));
+ return ((routesState&&routesState.aliases)||[]).map(entry=>({
+  alias:entry.alias,
+  channel:entry.channel,
+  model:entry.model,
+  fallbacks:Array.isArray(entry.fallbacks)?entry.fallbacks.map(item=>({channel:item.channel,model:item.model})):[],
+  strategy:entry.strategy||'priority',
+  enabled:entry.enabled!==false,
+  note:entry.note||''
+ }));
 }
 function renderRouteChannels(channels){
  const container=$('routes-channels');container.replaceChildren();
@@ -2218,7 +2347,7 @@ function capPool(){
   for(const model of channel.models||[]){
    const cost=capCost(model,channel.channel,costs);
    out.push({channel:channel.channel,model,row:capByKeys.get(modelKey(model))||null,cost,
-    gate:modelSwitchEffective({id:model,switchable:channel.channel!=='opencode'&&channel.channel!=='autoclaw'&&channel.channel!=='trae'&&channel.channel!=='raccoon',creditValue:cost.known?cost.value:null})});
+    gate:modelSwitchEffective({id:model,switchable:channelSwitchable(channel.channel),defaultEnabled:channel.channel==='trae',creditValue:cost.known?cost.value:null})});
   }
  }
  return out;

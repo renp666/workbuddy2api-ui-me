@@ -109,6 +109,10 @@ test('task truth and all run statuses are formatted without guessing', () => {
   }
 });
 
+// testConsole 是注入 vm 上下文的 console 替身：前端只在「测试失败」分支调用它，
+// 用例靠这个数组断言「失败原因确实抛出到了控制台日志」，而不是只弹了句提示。
+const consoleCalls=[];
+const testConsole={log:(...args)=>consoleCalls.push(['log',...args]),warn:(...args)=>consoleCalls.push(['warn',...args]),error:(...args)=>consoleCalls.push(['error',...args])};
 function taskFixture(fetch, cryptoImpl={randomUUID:()=> '11111111-2222-4333-8444-555555555555'}) {
   const elements=new Map();
   function element(tag='div') {
@@ -122,6 +126,9 @@ function taskFixture(fetch, cryptoImpl={randomUUID:()=> '11111111-2222-4333-8444
   const opened=[];
   const ctx=vm.createContext({document:{getElementById:get,querySelectorAll:selector=>selector==='[data-protocol]'?protocolButtons:selector==='[data-refresh-for]'?railButtons:[],createElement:element,hidden:false,handlers:{},addEventListener(name,fn){this.handlers[name]=fn;}},
     location:{origin:'http://console.test'},AbortController,TextDecoder,TextEncoder,Option:function(text,value){return {textContent:text,value};},
+    // app.js 的失败分支会 console.error 打完整结论；上下文里没有 console 时，
+    // 一旦走到那条分支就是 ReferenceError，会把真正的失败原因盖掉。
+    console:testConsole,
     setInterval(){},clearTimeout(){},setTimeout(){},fetch,crypto:cryptoImpl,navigator:{clipboard:{writeText:async()=>{}}},window:{scrollTo(){},open(url){const w={closed:false,location:{href:url||''},close(){this.closed=true;}};opened.push(w);return w;}}});
   vm.runInContext(readFileSync(__dirname+'/web/app.js','utf8'),ctx);
   vm.runInContext("csrf='active-csrf';page='workbuddy';workbuddyView='tasks';taskState={items:[{id:'checkin',enabled:true,hours:[9,21],timezone:'Asia/Shanghai',next_at:null}],active_run:null,latest_runs:[]};",ctx);
@@ -2038,7 +2045,7 @@ test('credit column shows the multiplier, defaults the switch from it, and sorts
   const posts=[];
   const {ctx,get}=taskFixture((url,options={})=>{
     if(url==='/admin/models')return Promise.resolve({ok:true,status:200,json:async()=>({data:models})});
-    if(url==='/admin/model-switch'){posts.push(JSON.parse(options.body));return Promise.resolve({ok:true,status:200,json:async()=>({enabled:true,overrides:{'cn:paid':true,'cn:free':false}})});}
+    if(url==='/admin/model-switch'||url==='/admin/route/switch'){posts.push(JSON.parse(options.body));return Promise.resolve({ok:true,status:200,json:async()=>({enabled:true,overrides:{'cn:paid':true,'cn:free':false}})});}
     return new Promise(()=>{});
   });
   await vm.runInContext("renderModelTable('core',[{id:'cn:paid',credits:'x3.47'},{id:'cn:free',credits:'x0.00'},{id:'cn:unknown'}])",ctx);
@@ -2059,6 +2066,27 @@ test('credit column shows the multiplier, defaults the switch from it, and sorts
   // 人工覆盖优先于倍率默认态，并重渲染。
   assert.deepEqual(get('core-models-body').children.map(tr=>tr.children[0].textContent),['cn:free','cn:paid','cn:unknown']);
   assert.deepEqual(get('core-models-body').children.map(tr=>tr.children[9].children[0].textContent),['已停用','已启用','已停用'],'manual override must beat the credit default');
+});
+
+test('trae 有倍率但不按倍率默认停用：补出积分与开关两列，默认全启用，只认显式停用',async()=>{
+  // trae 的倍率来自上游 consumption_rate，语义是「套餐额度的消耗率」——0.78 只说明它比
+  // 0.06 更吃额度，不是「这次要扣多少钱」。沿用 core 的「倍率非零即默认停用」会让整条
+  // trae 通道一上线就显示已停用，所以这里断言默认态必须全是「已启用」。
+  const {ctx,get}=taskFixture(()=>new Promise(()=>{}));
+  await vm.runInContext("renderModelTable('trae',[{id:'trae-GLM-5.3',credits:'x0.78'},{id:'trae-Seed-Code',credits:'x0.06'},{id:'trae-unknown'}])",ctx);
+  const rows=get('trae-models-body').children;
+  assert.deepEqual(rows.map(tr=>tr.children.length),[10,10,10],'trae 模型表要补出「积分消耗」「操作」两列，共 10 列');
+  assert.deepEqual(rows.map(tr=>tr.children[0].textContent),['trae-Seed-Code','trae-GLM-5.3','trae-unknown'],'trae 按倍率升序，未知倍率排最后');
+  assert.deepEqual(rows.map(tr=>tr.children[8].textContent),['×0.06','×0.78','未知'],'积分消耗列要显示上游倍率，未公布的写「未知」而不是 0');
+  assert.deepEqual(rows.map(tr=>tr.children[9].children[0].textContent),['已启用','已启用','已启用'],'trae 模型默认必须全部启用，不能被倍率判成停用');
+  assert.deepEqual(rows.map(tr=>tr.children[9].children[2].dataset.action),['disable-model','disable-model','disable-model'],'默认启用时按钮应提供「停用」');
+  // 人工覆盖仍要生效：显式停用优先于「默认启用」。
+  await vm.runInContext("modelSwitchOverrides=new Map([['trae-GLM-5.3',false]])",ctx);
+  await vm.runInContext("renderModelTable('trae',[{id:'trae-GLM-5.3',credits:'x0.78'},{id:'trae-Seed-Code',credits:'x0.06'}])",ctx);
+  assert.deepEqual(get('trae-models-body').children.map(tr=>tr.children[9].children[0].textContent),['已启用','已停用'],'显式停用必须盖过 trae 的默认启用');
+  // 免费三家仍不参与开关：不加这两列，免得把「免费」和「有倍率」混成一档。
+  await vm.runInContext("renderModelTable('autoclaw',[{id:'autoclaw-auto'}])",ctx);
+  assert.equal(get('autoclaw-models-body').children[0].children.length,8,'autoclaw 必须仍然豁免积分与开关两列');
 });
 
 test('cn: and global: variants of the same name stay separate rows with their own credits and accounts',async()=>{
@@ -2582,16 +2610,28 @@ test('credit rule parsing matches the server and never invents a zero',()=>{
   assert.equal(vm.runInContext("parseCreditRule(undefined)",ctx),null);
 });
 
-function routeFixture(routeState, capState={available:false, rows:[]}, switches={}) {
+// switches 是「人工覆盖表」的初始值（可为空），mock 会跟着整组端点一起改它，
+// 这样「点一下开关 → 两处状态都变」才有可观测的状态迁移，而不是每次回同一份快照。
+function routeFixture(routeState, capState={available:false, rows:[]}, switches={}, testResult={ok:true,durationMs:1200,ttftMs:400,tokensPerSec:21.5,source:'probe'}) {
   const response=body=>({ok:true,status:200,json:async()=>body});
   const posts=[];
+  const overrides={...switches};
   const {ctx,get}=taskFixture((url,options={})=>{
     if(url==='/admin/session')return new Promise(()=>{});
     if(url==='/admin/status')return response({total:0,healthy:0,cooling:0,disabled:0,accounts:[]});
     if(url==='/admin/models')return response({data:[]});
     if(url==='/admin/route')return response(routeState);
     if(url==='/admin/route/save'){posts.push(JSON.parse(options.body));return response(routeState);}
-    if(url==='/admin/model-switch')return response({enabled:true,overrides:switches});
+    // 服务端 setGroupSwitch 是原子的：一次写模型开关表 + 所有指向该模型的别名。
+    // mock 照抄这个语义，否则「操作一边另一边同步」根本测不出来。
+    if(url==='/admin/route/switch'){
+      const body=JSON.parse(options.body);posts.push(body);
+      overrides[body.model]=body.enabled;
+      const aliases=(routeState.aliases||[]).map(entry=>(entry.public_model||entry.model)===body.model?{...entry,enabled:body.enabled}:entry);
+      return response({...routeState,aliases,overrides:{...overrides}});
+    }
+    if(url==='/admin/model-switch')return response({enabled:true,overrides:{...overrides}});
+    if(url==='/admin/route/test'){posts.push(JSON.parse(options.body));return response(testResult);}
     if(url==='/admin/capabilities')return response(capState);
     throw new Error('unexpected '+url);
   });
@@ -2648,9 +2688,16 @@ test('Agent 接入 tab renders auto preview, alias table, channel sources and a 
   assert.equal(get('routes-default-fallback').textContent,'cn:auto');
   const rows=get('routes-alias-body').children;
   assert.equal(rows.length,1,'alias row missing');
-  assert.deepEqual(rows[0].children.slice(0,6).map(td=>td.textContent),['my-fast','OpenCode 通道','OC · Free','opencode-OC · Free','','日常']);
-  assert.equal(rows[0].children[4].children[0].textContent,'已启用','alias state badge');
-  assert.equal(rows[0].children[4].children[0].className,'badge ok');
+  // 列序：别名（带排序把手）/ 通道 / 真实模型 / 状态 / 速度 / 说明 / 操作。
+  assert.equal(rows[0].children[0].children[0].textContent,'my-fast','别名列第一格是名字，排序把手挂在它后面');
+  assert.equal(rows[0].children[1].textContent,'OpenCode 通道');
+  assert.equal(rows[0].children[2].textContent,'OC · Free','真实模型列只写真实模型名');
+  assert.equal(rows[0].children[2].title,'对外模型 ID：opencode-OC · Free','对外模型 ID 收进 title，悬停即见');
+  assert.equal(rows[0].children[3].children[0].children[0].textContent,'已启用','alias state badge');
+  assert.equal(rows[0].children[3].children[0].children[0].className,'badge ok');
+  assert.equal(rows[0].children[3].children[0].children[1].textContent,'未探测','没探测结论时写未探测，不能冒充可用');
+  assert.equal(rows[0].children[4].textContent,'—','没有探测结论时速度留破折号，不伪造');
+  assert.equal(rows[0].children[5].textContent,'日常');
   // Only enabled channels are offered; the disabled qoder channel must not be selectable.
   assert.deepEqual(get('routes-alias-channel').children.map(option=>option.value),['core','opencode']);
   const channelTitles=get('routes-channels').children.map(article=>article.children[0].textContent);
@@ -2680,8 +2727,8 @@ test('Agent 接入 tab posts the whole alias list when adding an alias',async()=
 // modelOptionValues 读「指向哪个模型」下拉里当前有哪些项，用来断言候选是否只属于当前通道。
 const modelOptionValues=get=>get('routes-alias-model').children.map(option=>option.value);
 const customOption='__custom__';
-function aliasFixture(routeState){
-  return routeFixture(Object.assign({enabled:true,auto_model:'gateway-auto',auto_fallback:'',default_auto_fallback:'cn:auto',auto_preview:{},aliases:[]},routeState));
+function aliasFixture(routeState, testResult){
+  return routeFixture(Object.assign({enabled:true,auto_model:'gateway-auto',auto_fallback:'',default_auto_fallback:'cn:auto',auto_preview:{},aliases:[]},routeState), undefined, {}, testResult);
 }
 
 test('别名表点「编辑」：滚到编辑栏、亮出编辑提示、模型名原样回填（问题1）',async()=>{
@@ -2691,7 +2738,7 @@ test('别名表点「编辑」：滚到编辑栏、亮出编辑提示、模型�
   await vm.runInContext('loadRoutes()',ctx);
   // 编辑栏在别名表下面：点「编辑」不滚过去，用户会以为没反应。
   let scrolls=0;get('routes-alias-panel').scrollIntoView=()=>scrolls++;
-  get('routes-alias-body').children[0].children[6].children[0].handlers.click();
+  get('routes-alias-body').children[0].children[6].children[2].handlers.click();
   assert.equal(scrolls,1,'点「编辑」没有把编辑栏滚进视野');
   assert.equal(get('routes-alias-editing').hidden,false,'编辑提示没亮');
   assert.equal(get('routes-alias-editing').textContent,'正在编辑「my-fast」');
@@ -2724,14 +2771,16 @@ test('别名指向清单外的模型时落到「自定义…」并回填，保�
   await vm.runInContext("signedIn({csrf:'c',global_enabled:true,zcode_enabled:false,qoder_enabled:false,opencode_enabled:false})",ctx);
   await vm.runInContext('loadRoutes()',ctx);
   // 别名可以指向当前没广播的模型，编辑时不能因为下拉里没有就把它悄悄改掉。
-  get('routes-alias-body').children[0].children[6].children[0].handlers.click();
+  get('routes-alias-body').children[0].children[6].children[2].handlers.click();
   assert.equal(get('routes-alias-model').value,customOption,'清单外的模型应落到「自定义…」');
   assert.equal(get('routes-alias-model-custom').hidden,false,'清单外的模型要亮出手动输入框');
   assert.equal(get('routes-alias-model-custom').value,'cn:retired','清单外的模型名被丢掉了');
   // 表单读的必须是手动输入框的值，否则会把自定义模型名存成哨兵串。
   get('routes-alias-model-custom').value='cn:brand-new';
   await get('routes-alias-form').handlers.submit({preventDefault(){}});
-  assert.deepEqual(posts[0].models,[{alias:'legacy',channel:'core',model:'cn:brand-new',enabled:true,note:''}]);
+  // fallbacks/strategy 必须原样透传：route/save 是全量替换，页面又还没有编辑候选链的
+  // 控件，不透传就等于「改个模型名顺手清空候选链」。
+  assert.deepEqual(posts[0].models,[{alias:'legacy',channel:'core',model:'cn:brand-new',fallbacks:[],strategy:'priority',enabled:true,note:''}]);
 });
 
 test('点「取消编辑」清掉编辑提示与表单，回到新增状态（问题1）',async()=>{
@@ -2739,12 +2788,142 @@ test('点「取消编辑」清掉编辑提示与表单，回到新增状态（�
     channels:[{channel:'core',enabled:true,reachable:true,models:['cn:workbuddy']}]});
   await vm.runInContext("signedIn({csrf:'c',global_enabled:true,zcode_enabled:false,qoder_enabled:false,opencode_enabled:false})",ctx);
   await vm.runInContext('loadRoutes()',ctx);
-  get('routes-alias-body').children[0].children[6].children[0].handlers.click();
+  get('routes-alias-body').children[0].children[6].children[2].handlers.click();
   get('routes-alias-reset').handlers.click();
   assert.equal(get('routes-alias-editing').hidden,true,'取消编辑后提示还挂着');
   assert.equal(get('routes-alias-name').value,'');
   assert.equal(get('routes-alias-model').value,'');
   assert.equal(get('routes-alias-model-custom').hidden,true);
+});
+
+// 别名表操作列顺序固定为：启停 / 测试 / 编辑 / 删除。下面几个用例都用这组下标，
+// 列序一旦改动就整片红，比散落的 children[6] 更好定位。
+const aliasActions=get=>get('routes-alias-body').children.map(tr=>tr.children[6].children);
+
+test('别名表↑↓把手重排整表并按新顺序保存（问题3）',async()=>{
+  const {ctx,get,posts}=aliasFixture({aliases:[
+    {alias:'first',channel:'core',model:'cn:workbuddy',public_model:'cn:workbuddy',enabled:true,note:''},
+    {alias:'second',channel:'core',model:'cn:strong',public_model:'cn:strong',enabled:true,note:''},
+    {alias:'third',channel:'core',model:'cn:other',public_model:'cn:other',enabled:true,note:''}],
+    channels:[{channel:'core',enabled:true,reachable:true,models:['cn:workbuddy','cn:strong','cn:other']}]});
+  await vm.runInContext("signedIn({csrf:'c',global_enabled:true,zcode_enabled:false,qoder_enabled:false,opencode_enabled:false})",ctx);
+  await vm.runInContext('loadRoutes()',ctx);
+  // 把手挂在别名名字后面，不额外占一列。
+  const order=index=>get('routes-alias-body').children[index].children[0].children[1];
+  assert.equal(order(0).children[0].textContent,'↑');
+  assert.equal(order(0).children[1].textContent,'↓');
+  assert.equal(order(0).children[0].title,'上移');
+  assert.equal(order(0).children[1].title,'下移');
+  // 首行禁上移、末行禁下移：点了没反应比按钮置灰更难排查。
+  assert.equal(order(0).children[0].disabled,true,'首行的「上移」没禁用');
+  assert.equal(order(0).children[1].disabled,false);
+  assert.equal(order(2).children[0].disabled,false);
+  assert.equal(order(2).children[1].disabled,true,'末行的「下移」没禁用');
+  // 越界点击必须原地不动，不能把首行搬到末尾（数组 splice 负下标的老坑）。
+  await order(0).children[0].handlers.click();
+  assert.equal(posts.length,0,'越界的「上移」也发了保存请求');
+  await order(0).children[1].handlers.click();
+  await flushMicrotasks();
+  assert.equal(posts.length,1,'排序没有落盘');
+  assert.deepEqual(posts[0].models.map(item=>item.alias),['second','first','third'],'排序结果没按新顺序整表保存');
+  // 整表替换语义下，顺序变了别的字段不能跟着丢。
+  assert.deepEqual(posts[0].models[1],{alias:'first',channel:'core',model:'cn:workbuddy',fallbacks:[],strategy:'priority',enabled:true,note:''});
+});
+
+test('别名表「测试」按钮真发一条最小对话，把耗时与速度写进提示（问题4）',async()=>{
+  const {ctx,get,posts}=aliasFixture({aliases:[{alias:'my-fast',channel:'opencode',model:'OC · Free',public_model:'opencode-OC · Free',enabled:true,note:''}],
+    channels:[{channel:'opencode',enabled:true,reachable:true,models:['opencode-OC · Free']}]},
+    {ok:true,durationMs:1200,ttftMs:400,tokensPerSec:21.5,source:'probe'});
+  await vm.runInContext("signedIn({csrf:'c',global_enabled:true,zcode_enabled:false,qoder_enabled:false,opencode_enabled:true})",ctx);
+  await vm.runInContext('loadRoutes()',ctx);
+  const [toggle,probe,edit,remove]=aliasActions(get)[0];
+  assert.deepEqual([toggle.textContent,probe.textContent,edit.textContent,remove.textContent],['停用','测试','编辑','删除'],'操作列顺序变了');
+  assert.equal(probe.className,'secondary route-test');
+  consoleCalls.length=0;
+  await probe.handlers.click();
+  // 按钮只认别名：真实模型与通道由服务端从 routes.json 里查，前端不重复传一遍。
+  assert.deepEqual(posts[0],{alias:'my-fast'},'测试请求没带别名或带了多余字段');
+  assert.equal(get('notice').textContent,'my-fast 可用 · 1.2 秒 · 21.5 tok/s');
+  assert.deepEqual(consoleCalls,[],'成功路径不该往控制台打日志');
+  // 按钮必须复原，否则测完一次就再也点不动。
+  assert.equal(probe.disabled,false);
+  assert.equal(probe.textContent,'测试');
+});
+
+test('别名表「测试」失败时把上游原文带进提示、完整结论打进控制台（问题4）',async()=>{
+  const {ctx,get,posts}=aliasFixture({aliases:[{alias:'broken',channel:'core',model:'cn:bad',public_model:'cn:bad',enabled:true,note:''}],
+    channels:[{channel:'core',enabled:true,reachable:true,models:['cn:bad']}]},
+    {ok:false,category:'timeout',error:'上游 30 秒无响应',durationMs:30000});
+  await vm.runInContext("signedIn({csrf:'c',global_enabled:true,zcode_enabled:false,qoder_enabled:false,opencode_enabled:false})",ctx);
+  await vm.runInContext('loadRoutes()',ctx);
+  consoleCalls.length=0;
+  await aliasActions(get)[0][1].handlers.click();
+  assert.deepEqual(posts[0],{alias:'broken'});
+  // 提示用上游原文（最具体），控制台给完整结论对象（可展开排查）。
+  assert.equal(get('notice').textContent,'broken 测试失败：上游 30 秒无响应');
+  const logged=consoleCalls.filter(call=>call[0]==='error');
+  assert.equal(logged.length,1,'测试失败没有打进控制台日志');
+  assert.equal(logged[0][1],'[别名测试] broken 失败');
+  assert.equal(logged[0][2].category,'timeout','控制台里没有完整结论对象');
+  assert.equal(logged[0][2].durationMs,30000);
+  assert.equal(aliasActions(get)[0][1].disabled,false,'失败后测试按钮卡在禁用态');
+});
+
+test('别名表「测试」请求本身报错时也抛到控制台，不静默（问题4）',async()=>{
+  const {ctx,get}=aliasFixture({aliases:[{alias:'gone',channel:'core',model:'cn:bad',public_model:'cn:bad',enabled:true,note:''}],
+    channels:[{channel:'core',enabled:true,reachable:true,models:['cn:bad']}]});
+  await vm.runInContext("signedIn({csrf:'c',global_enabled:true,zcode_enabled:false,qoder_enabled:false,opencode_enabled:false})",ctx);
+  await vm.runInContext('loadRoutes()',ctx);
+  // 把测试端点换成 500：JSON 能解析、response.ok=false，走 jsonAPI 的 throw 分支。
+  const original=ctx.fetch;
+  ctx.fetch=(url,options)=>url==='/admin/route/test'
+    ?Promise.resolve({ok:false,status:500,json:async()=>({error:'别名不存在'})})
+    :original(url,options);
+  consoleCalls.length=0;
+  await aliasActions(get)[0][1].handlers.click();
+  assert.equal(get('notice').textContent,'gone 测试失败：别名不存在');
+  const logged=consoleCalls.filter(call=>call[0]==='error');
+  assert.equal(logged.length,1,'请求失败没打进控制台日志');
+  assert.equal(logged[0][1],'[别名测试] gone 请求失败');
+  assert.equal(logged[0][2].message,'别名不存在');
+  assert.equal(aliasActions(get)[0][1].disabled,false);
+});
+
+test('别名表点「停用」走整组端点：模型名而非别名，一次写两边（问题1）',async()=>{
+  const {ctx,get,posts}=routeFixture({enabled:true,auto_model:'gateway-auto',auto_fallback:'',default_auto_fallback:'cn:auto',auto_preview:{},
+    aliases:[{alias:'my-fast',channel:'opencode',model:'OC · Free',public_model:'opencode-OC · Free',enabled:true,note:''}],
+    channels:[{channel:'opencode',enabled:true,reachable:true,models:['opencode-OC · Free']}]},
+    undefined,{'opencode-OC · Free':false});
+  await vm.runInContext("signedIn({csrf:'c',global_enabled:true,zcode_enabled:false,qoder_enabled:false,opencode_enabled:true})",ctx);
+  await vm.runInContext('loadRoutes()',ctx);
+  assert.equal(aliasActions(get)[0][0].textContent,'停用');
+  await aliasActions(get)[0][0].handlers.click();
+  // 关键：传的是「对外模型 ID」而不是别名——整组端点按模型名把模型开关表与
+  // 所有指向它的别名一起写，别名是别名、模型是模型，不能混。
+  assert.deepEqual(posts,[{model:'opencode-OC · Free',enabled:false}],'别名表启停没走整组端点或传错了键');
+  assert.equal(get('notice').textContent,'my-fast 已停用');
+  // 服务端回写的别名状态要立即生效：按钮翻面、徽章跟着变。
+  assert.equal(aliasActions(get)[0][0].textContent,'启用');
+  assert.equal(get('routes-alias-body').children[0].children[3].children[0].children[0].textContent,'已停用');
+});
+
+test('模型列表的开关与别名表同状态：一次点击同时刷新两处（问题1）',async()=>{
+  const {ctx,get,posts}=routeFixture({enabled:true,auto_model:'gateway-auto',auto_fallback:'',default_auto_fallback:'cn:auto',auto_preview:{},
+    aliases:[{alias:'daily',channel:'core',model:'cn:workbuddy',public_model:'cn:workbuddy',enabled:true,note:''}],
+    channels:[{channel:'core',enabled:true,reachable:true,models:['cn:workbuddy']}]},
+    undefined,{});
+  await vm.runInContext("signedIn({csrf:'c',global_enabled:true,zcode_enabled:false,qoder_enabled:false,opencode_enabled:false})",ctx);
+  await vm.runInContext('loadRoutes()',ctx);
+  await vm.runInContext("renderModelTable('core',[{id:'cn:workbuddy',credits:'x0.00'}],{modelResults:{}})",ctx);
+  const row=get('core-models-body').children[0];
+  assert.equal(row.children[9].children[0].textContent,'已启用','倍率为 0 的模型默认应启用');
+  const switchButton=row.children[9].children[2];
+  assert.equal(switchButton.dataset.action,'disable-model');
+  await ctx.document.handlers.click({target:{closest:sel=>sel.includes('disable-model')?switchButton:null}});
+  assert.deepEqual(posts,[{model:'cn:workbuddy',enabled:false}],'模型列表开关没走整组端点');
+  // 别名页读的是同一份配置：缓存必须同步，切过去不能看到旧值。
+  assert.equal(vm.runInContext('routesState.aliases[0].enabled',ctx),false,'模型列表改了开关，别名缓存没同步');
+  assert.equal(get('core-models-body').children[0].children[9].children[0].textContent,'已停用');
 });
 
 test('模型能力 TOP ranks only pool models and tiers them by real local cost',async()=>{
@@ -2898,7 +3077,7 @@ function probeFixture() {
     if(url==='/admin/probe')return response(started?states[Math.min(++index,states.length-1)]:{running:false,done:0,total:0,channels:{}});
     if(url.startsWith('/admin/usage'))return response({range:'month',items:[]});
     if(url==='/admin/heat')return response({available:false,ranks:[]});
-    if(url==='/admin/model-switch')return response({enabled:false,overrides:{}});
+    if(url==='/admin/model-switch'||url==='/admin/route/switch')return response({enabled:false,overrides:{}});
     throw new Error('unexpected '+url);
   });
   let poll;
@@ -2953,7 +3132,7 @@ function overviewFixture(items,zcodeStatus,extraStatuses,health) {
     if(url==='/admin/models')return response({data:[{id:'cn:workbuddy',realm:'cn'}]});
     if(url.startsWith('/admin/usage'))return response({range:'today',items});
     if(url==='/admin/heat')return response({available:false,ranks:[]});
-    if(url==='/admin/model-switch')return response({enabled:false,overrides:{}});
+    if(url==='/admin/model-switch'||url==='/admin/route/switch')return response({enabled:false,overrides:{}});
     if(url==='/admin/probe')return response({running:false,done:0,total:0,channels:{}});
     // 默认给一份空通道表：没传 health 的用例退回页签缓存口径，行为与改动前一致。
     if(url==='/admin/health')return response(health||{ok:true,checked_at:'2026-10-09T03:00:00+08:00',channels:[],history:[]});
@@ -3133,7 +3312,8 @@ test('overview page, probe buttons and the speed column exist in the page shell'
   }
   assert.ok(!html.includes('id="probe-opencode"'),'opencode must not get a manual probe button');
   // 允许表头带 class（数值列要挂 class="num" 才能和单元格同侧对齐），只认列名本身。
-  assert.equal((html.match(/<th[^>]*>速度<\/th>/g)||[]).length,7,'every model table must carry the speed column');
+  // 7 张通道模型表 + 别名表（别名也要显示速度），合计 8。
+  assert.equal((html.match(/<th[^>]*>速度<\/th>/g)||[]).length,8,'every model table and the alias table must carry the speed column');
   assert.match(html,/gateway-auto/,'routes page still advertises the bare auto name');
   // 改造后的界面契约：常驻无障碍播报区存在，逐节的营销小标题不再回来。
   assert.match(html,/id="announce"[^>]*aria-live="polite"/,'persistent live region missing');
@@ -3148,7 +3328,8 @@ test('alias delete asks for a second click before it writes the route file',asyn
     channels:[{channel:'core',enabled:true,reachable:true,models:['cn:workbuddy']}]});
   await vm.runInContext("signedIn({csrf:'c',global_enabled:true,zcode_enabled:false,qoder_enabled:false,opencode_enabled:false})",ctx);
   await vm.runInContext('loadRoutes()',ctx);
-  const remove=get('routes-alias-body').children[0].children[6].children[2];
+  // 操作列：启停 / 测试 / 编辑 / 删除（删除排最后，避免误点）。
+  const remove=get('routes-alias-body').children[0].children[6].children[3];
   assert.equal(remove.textContent,'删除');
   await remove.handlers.click({});
   assert.equal(posts.length,0,'the first click must not write the route file');
@@ -3218,7 +3399,7 @@ test('顶栏刷新点下去有可见反馈：飞行中禁用并改写文案，�
     if(url==='/admin/zcode'){await gate;return empty({enabled:false,control:false,logged_in:false,model_count:0,models:[],health:{}});}
     if(url==='/admin/models')return empty({data:[]});
     if(url==='/admin/status')return empty({total:0,healthy:0,cooling:0,disabled:0,accounts:[]});
-    if(url==='/admin/model-switch')return empty({enabled:true,overrides:{}});
+    if(url==='/admin/model-switch'||url==='/admin/route/switch')return empty({enabled:true,overrides:{}});
     return empty({});
   });
   get('realm').querySelector=()=>({disabled:false});
@@ -3662,14 +3843,15 @@ test('调用明细宽表首列吸左：横滑时仍能对上这一行是几点�
 test('旁路通道的能力备注与代码口径一致：写「不参与模型停用」的，正好是代码里被排除的那几条',()=>{
   const html=readFileSync(__dirname+'/web/index.html','utf8');
   const js=readFileSync(__dirname+'/web/app.js','utf8');
-  const modelNotes={autoclaw:'autoclaw-models-note',trae:'trae-models-note',raccoon:'raccoon-models-note',opencode:'opencode-models-note'};
+  // trae 不进 modelNotes：它有真实倍率、参与开关，备注口径与三家免费通道相反。
+  const modelNotes={autoclaw:'autoclaw-models-note',raccoon:'raccoon-models-note',opencode:'opencode-models-note'};
   const tag=id=>new RegExp('<p id="'+id+'"[^>]*>([\\s\\S]*?)</p>');
   // 从 app.js 现读「哪些通道不参与模型开关」，不在测试里再抄一份名单。
-  const stmt=js.match(/const switchable=([^;]+);/);
-  assert.ok(stmt,'app.js 里读不到 switchable 的判据，备注与代码的对齐没法现读（锚点写错了？）');
+  const stmt=js.match(/function channelSwitchable\(channel\)\{return ([^}]+)\}/);
+  assert.ok(stmt,'app.js 里读不到 channelSwitchable 的判据，备注与代码的对齐没法现读（锚点写错了？）');
   const exempt=[...stmt[1].matchAll(/channel!=='([a-z]+)'/g)].map(m=>m[1]).sort();
   assert.deepEqual(exempt,Object.keys(modelNotes).sort(),
-    '「不参与模型停用」的备注集合与代码里 switchable 的排除集合不一致：改了一边必须同时改另一边');
+    '「不参与模型停用」的备注集合与代码里 channelSwitchable 的排除集合不一致：改了一边必须同时改另一边');
   for(const [channel,id] of Object.entries(modelNotes)){
     const el=html.match(tag(id));
     assert.ok(el,`index.html 缺 ${id}：这条通道没说明为什么没有模型停用`);
@@ -3677,6 +3859,16 @@ test('旁路通道的能力备注与代码口径一致：写「不参与模型�
     assert.match(el[1],/不参与模型停用/,`${channel} 的模型备注没说明不参与停用`);
     assert.doesNotMatch(el[0],/hidden/,`${id} 的备注带了 hidden，等于没写`);
   }
+  // trae 反向断言：倍率只用于展示与排序，默认启用；不能再挂「免费/不参与停用」。
+  const traeNote=html.match(tag('trae-models-note'));
+  assert.ok(traeNote,'index.html 缺 trae-models-note：这条通道没说明倍率怎么用');
+  assert.match(traeNote[1],/consumption_rate/,`trae 的模型备注没说清倍率从哪个字段来`);
+  assert.match(traeNote[1],/默认启用/,`trae 的模型备注没说明模型默认启用`);
+  assert.doesNotMatch(traeNote[1],/免费/,`trae 不是免费通道，备注不能写「免费」`);
+  assert.doesNotMatch(traeNote[1],/不参与模型停用/,`trae 参与模型停用，备注不能写「不参与模型停用」`);
+  assert.doesNotMatch(traeNote[0],/hidden/,`trae-models-note 的备注带了 hidden，等于没写`);
+  // 隐藏本地自定义模型的承诺也要写在页面上，否则用户会去 IDE 里加的模型里找。
+  assert.match(traeNote[1],/自定义模型/,`trae 的模型备注没说明本地自定义模型为什么不列出来`);
   // 多账号旁路通道：必须写明没有「独锁」，否则用户会去找一个不存在的按钮。
   for(const id of ['autoclaw-accounts-note','trae-accounts-note','raccoon-accounts-note']){
     const el=html.match(tag(id));
