@@ -74,6 +74,35 @@ func TestRouteChannelOrderMatchesFrontend(t *testing.T) {
 	}
 }
 
+// TestReservedAliasPrefixesAreListedInAliasHint 守卫「别名表单的说明文字」与
+// route.go 的 reservedAliasPrefixes 不漂移。
+//
+// 背景：raccoon 通道接入时补了 raccoonModelPrefix，但别名表那句提示没跟着改——
+// 用户照提示起的名字会被服务端以「那是上游命名空间或通道前缀」拒掉，页面上却看不出
+// 哪里写错了。cn:/global: 同理，从一开始就没写进提示。这里从内嵌的 web/index.html
+// 现读提示原文逐项核对真源，前缀增删任一侧都会红。
+func TestReservedAliasPrefixesAreListedInAliasHint(t *testing.T) {
+	raw, err := webFiles.ReadFile("web/index.html")
+	if err != nil {
+		t.Fatalf("读取内嵌 web/index.html 失败：%v", err)
+	}
+	// 锚定「我的别名表」这一节的说明文字，避免命中页面别处的同名字符串。
+	re := regexp.MustCompile(`<h2>我的别名表</h2><span class="muted small">([\s\S]*?)</span>`)
+	m := re.FindStringSubmatch(string(raw))
+	if m == nil {
+		t.Fatalf("index.html 里找不到「我的别名表」的说明文字（锚点被改？）")
+	}
+	hint := m[1]
+	for _, prefix := range reservedAliasPrefixes {
+		if !strings.Contains(hint, ">"+prefix+"<") {
+			t.Errorf("别名提示没列出保留前缀 %q：服务端会拒掉以它开头的名字，用户看不出为什么", prefix)
+		}
+	}
+	if !strings.Contains(hint, ">"+autoModelName+"<") {
+		t.Errorf("别名提示没说明 %q 已被系统占用", autoModelName)
+	}
+}
+
 // readWebAppJS 读取内嵌的 web/app.js 源码文本。用内嵌 FS 而非磁盘路径，
 // 与生产同源，避免测试读到未打包的旧副本。
 func readWebAppJS(t *testing.T) string {
