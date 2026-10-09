@@ -2896,7 +2896,7 @@ $('raccoon-credits-refresh').addEventListener('click',async()=>{
 $('raccoon-import-form').addEventListener('submit',async event=>{
  event.preventDefault();if(raccoonBusy)return;
  const text=$('raccoon-import-json').value.trim();
- if(!text){$('raccoon-import-hint').textContent='请粘贴桌面端导出的凭证 JSON。';return;}
+ if(!text){$('raccoon-import-hint').textContent='请粘贴 auth.json 的完整内容。';return;}
  let payload;try{payload=JSON.parse(text);}catch{$('raccoon-import-hint').textContent='不是合法的 JSON，请粘贴完整凭证内容。';return;}
  const generation=sessionGeneration;raccoonBusy=true;$('raccoon-import').disabled=true;notice('');
  $('raccoon-import-hint').textContent='正在导入…';

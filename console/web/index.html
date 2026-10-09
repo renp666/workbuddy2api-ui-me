@@ -230,7 +230,7 @@
     </div>
    </div>
   </section>
-  <section class="page" data-page="raccoon" hidden><div class="page-heading"><div><h1>小浣熊通道</h1><p class="muted">可选的商汤小浣熊旁路（raccoon2api 容器）。账号凭据从桌面客户端导出后导入，积分与对话消费由容器自持，本控制台只负责查看、导入与控制。</p></div></div>
+  <section class="page" data-page="raccoon" hidden><div class="page-heading"><div><h1>小浣熊通道</h1><p class="muted">可选的商汤小浣熊旁路（raccoon2api 容器）。账号凭据取自桌面客户端登录态文件后导入，积分与对话消费由容器自持，本控制台只负责查看、导入与控制。</p></div></div>
    <p id="raccoon-disabled" class="empty" hidden>小浣熊通道未启用。在部署目录用 <code>deploy/compose.raccoon.yml</code> overlay 启动后，这里会显示通道状态、凭证导入、账号管理、模型列表与对话测试。</p>
    <div id="raccoon-content" hidden>
     <div class="trae-tabs" role="tablist" aria-label="小浣熊子页"><button id="raccoon-view-status" class="trae-tab active" role="tab" type="button">◫ 通道状态</button><button id="raccoon-view-import" class="trae-tab" role="tab" type="button">⇆ 凭证导入</button><button id="raccoon-view-models" class="trae-tab" role="tab" type="button">☰ 小浣熊模型</button><button id="raccoon-view-chat" class="trae-tab" role="tab" type="button">↗ 对话测试</button></div>
@@ -243,8 +243,8 @@
     </div>
     <div id="raccoon-pane-import" hidden>
     <article class="panel"><div class="section-title"><h2>凭证导入</h2></div>
-     <p class="muted small">小浣熊桌面客户端把登录态保存在本机，容器内没有网页登录入口。在桌面端登录后，把导出的凭证 JSON 完整粘贴到下面导入；同一账号已有更新的凭证时导入会被拒绝（409），不会覆盖。</p>
-     <form id="raccoon-import-form" class="inline-form"><label for="raccoon-import-json">凭证 JSON</label><input id="raccoon-import-json" autocomplete="off" placeholder="粘贴桌面端导出的凭证 JSON"><button id="raccoon-import" class="primary" type="submit">导入</button></form>
+     <p class="muted small">小浣熊桌面客户端把登录态保存在本机，容器内没有网页登录入口。在桌面端登录后，登录态写入 <code>~/.box-agent/config/auth.json</code>；Windows 下为 <code>%USERPROFILE%\.box-agent\config\auth.json</code>（即 <code>C:\Users\&lt;用户名&gt;\.box-agent\config\auth.json</code>，路径随客户端版本可能略有差异）。用文本编辑器打开该文件，复制其中的完整 JSON 内容粘贴到下面导入；同一账号已有更新的凭证时导入会被拒绝（409），不会覆盖。</p>
+     <form id="raccoon-import-form" class="inline-form"><label for="raccoon-import-json">凭证 JSON</label><input id="raccoon-import-json" autocomplete="off" placeholder="粘贴 auth.json 的完整内容"><button id="raccoon-import" class="primary" type="submit">导入</button></form>
      <p id="raccoon-import-hint" class="muted small" role="status" aria-live="polite"></p></article>
     </div>
     <div id="raccoon-pane-models" hidden>

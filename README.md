@@ -202,7 +202,7 @@ Trae 页签是带控制链路的完整页签：「通道状态」展示容器可
 
 本部署还可以并列挂一个 raccoon2api sidecar 容器（`deploy/raccoon2api/`，本仓参考 aimod-cc/agent2api 自建的纯 Go 源码），把小浣熊（xiaohuanxiong.com）的免费模型变成第七个模型来源。与前几条旁路相同，启用后仍是同一个 `:7863` 出口：控制台 `/v1/models` 会合并显示小浣熊模型（统一加 `raccoon-` 前缀并标注 `realm: raccoon`），客户端请求 `model` 以 `raccoon-` 开头时由 console 自动剥前缀转发给容器，其余模型仍走 WorkBuddy 账号池。
 
-小浣熊通道没有网页登录：桌面客户端的登录态依赖本机 DPAPI，容器内读不到，所以登录环节等价于**凭证导入**——在「凭证导入」子页粘贴从桌面端导出的凭证 JSON（容器里已有更新的凭据时返回 409，不会覆盖）。账号、积分与运行数据持久化在宿主 `runtime/raccoon/` 下；每日积分以账单核对为权威结果（失败降级为待核），通道无原生签到。
+小浣熊通道没有网页登录：桌面客户端的登录态依赖本机 DPAPI，容器内读不到，所以登录环节等价于**凭证导入**——在「凭证导入」子页粘贴桌面端登录态文件的完整 JSON 内容。该文件为 `~/.box-agent/config/auth.json`（Windows 为 `%USERPROFILE%\.box-agent\config\auth.json`，即 `C:\Users\<用户名>\.box-agent\config\auth.json`；路径随客户端版本可能略有差异），用文本编辑器打开复制即可。容器里已有更新的凭据时返回 409，不会覆盖。账号、积分与运行数据持久化在宿主 `runtime/raccoon/` 下；每日积分以账单核对为权威结果（失败降级为待核），通道无原生签到。
 
 ```bash
 docker compose -f docker-compose.yml -f deploy/compose.raccoon.yml up -d
