@@ -19,6 +19,8 @@ let probeSnapshot = {running:false,done:0,total:0,channels:{}}, probeTarget = ''
 // modelsGroupByAccount：core 模型表是否按可用账号分层展示（默认开）。
 let modelsGroupByAccount = true;
 let overviewUsageRange = 'today', overviewUsageChannel = 'all', overviewUsageItems = [], overviewGeneration = 0;
+// healthState 是 GET /admin/health 的最近一轮结论（console 自己探的「网关 + 七通道」）。
+let healthState = null, healthGeneration = 0, healthPollTimer;
 let selectedTaskRun, historyGeneration = 0, historyLoading = false, taskHistoryKey;
 const taskIntents = new Map(), taskReads = new Set();
 function newConversation() { return `web-${Date.now()}-${Math.random().toString(36).slice(2)}`; }
@@ -51,7 +53,7 @@ function signedOut() {
  raccoonModels=[];raccoonHistory=[];raccoonStatus=null;raccoonEnabled=false;raccoonBusy=false;raccoonView='status';raccoonAccounts=[];$('raccoon-model').replaceChildren();clearMessages($('raccoon-messages'));$('raccoon-prompt').value='';$('raccoon-usage').textContent='用量将在上游返回后显示';$('raccoon-disabled').hidden=true;$('raccoon-content').hidden=true;$('nav-raccoon').classList.remove('nav-muted');$('raccoon-health-wrap').hidden=true;$('raccoon-health-body').replaceChildren();$('raccoon-accounts-body').replaceChildren();$('raccoon-import-json').value='';$('raccoon-import-hint').textContent='';
  routesState=null;routesBusy=false;routesEditing=null;modelSwitchOverrides=new Map();capState=null;capByKeys=new Map();capDim='coding';capCategory='';capFilter='';$('routes-disabled').hidden=true;$('routes-content').hidden=true;$('routes-alias-body').replaceChildren();$('routes-channels').replaceChildren();$('routes-model-options').replaceChildren();$('routes-example').textContent='';$('routes-alias-name').value='';$('routes-alias-model').value='';$('routes-alias-note').value='';$('routes-auto-fallback').value='';$('cap-filter').value='';
  probeSnapshot={running:false,done:0,total:0,channels:{}};probeTarget='';probeBusy=false;clearTimeout(probeTimer);probeTimer=undefined;for(const n of Object.keys(probeChannelNames)){$('probe-'+n+'-progress').hidden=true;$('probe-'+n+'-progress').textContent='';}
- overviewUsageItems=[];overviewGeneration++;
+ overviewUsageItems=[];overviewGeneration++;healthState=null;healthGeneration++;clearTimeout(healthPollTimer);healthPollTimer=undefined;
  pinState={cn:null,global:null};lastStatus=null;renderPinBanner();
 }
 async function signedIn(session) {
@@ -69,7 +71,7 @@ async function signedIn(session) {
  traeEnabled = !!session.trae_enabled; $('nav-trae').classList.toggle('nav-muted', !traeEnabled);
  raccoonEnabled = !!session.raccoon_enabled; $('nav-raccoon').classList.toggle('nav-muted', !raccoonEnabled);
  await refreshStatus(); await refreshModels(); await loadPins();
- void loadModelHeat(); void loadModelSwitch(); void loadGlobalHeat(); void loadOverview(true); void restoreProbe();
+ void loadModelHeat(); void loadModelSwitch(); void loadGlobalHeat(); void loadOverview(true); void restoreProbe(); void loadHealth(true);
 }
 const pageNames = {overview:'运行概览',workbuddy:'WorkBuddy 通道',zcode:'Zcode 通道',qoder:'Qoder 通道',opencode:'OpenCode 通道',ccr:'CCR 网关',autoclaw:'AutoClaw 通道',trae:'Trae 通道',raccoon:'小浣熊通道',usage:'调用统计',routes:'Agent 接入',access:'API 接入'};
 const workbuddyNames = {accounts:'账号管理',tasks:'自动任务',models:'模型列表',chat:'对话测试'};
@@ -88,6 +90,7 @@ function renderBreadcrumb() {
 function showPage(value) {
  if (page === 'workbuddy' && value !== 'workbuddy') stopTaskReads(true);
  if (page === 'zcode' && value !== 'zcode') stopZcodePoll();
+ if (page === 'overview' && value !== 'overview') stopHealthPoll();
  page = value;
  document.querySelectorAll('[data-page]').forEach(el => el.hidden = el.dataset.page !== page);
  document.querySelectorAll('.nav').forEach(el => el.classList.toggle('active', el.dataset.view === page));
@@ -101,7 +104,7 @@ function showPage(value) {
  if (page !== 'access') { $('api-key').value = ''; $('api-key').type = 'password'; }
  if (page === 'workbuddy') setWorkBuddyView(workbuddyView);
  if (page === 'workbuddy' && workbuddyView === 'tasks') loadTaskPage();
- if (page === 'overview') loadOverview();
+ if (page === 'overview') { loadOverview(); loadHealth(); loadMissingChannelStatuses(); scheduleHealthPoll(); }
  if (page === 'usage') { loadUsage(); loadUsageDaily(); }
  if (page === 'zcode') loadZcode();
  if (page === 'qoder') loadQoder();
@@ -113,12 +116,7 @@ function showPage(value) {
  if (page === 'routes') loadRoutes();
  // The access tab lists GLM and Qoder channel models too; fetch statuses once lazily
  // so its select is complete even when the operator never opens those tabs.
- if (page === 'access' && zcodeEnabled && !zcodeStatus) loadZcode();
- if (page === 'access' && qoderEnabled && !qoderStatus) loadQoder();
- if (page === 'access' && opencodeEnabled && !opencodeStatus) loadOpenCode();
- if (page === 'access' && autoclawEnabled && !autoclawStatus) loadAutoClaw();
- if (page === 'access' && traeEnabled && !traeStatus) loadTrae();
- if (page === 'access' && raccoonEnabled && !raccoonStatus) loadRaccoon();
+ if (page === 'access') loadMissingChannelStatuses();
 }
 document.querySelectorAll('[data-view]').forEach(button => button.addEventListener('click', () => {
  showPage(button.dataset.view);
@@ -495,14 +493,58 @@ async function restoreProbe(){
  }catch{/* 旧核心无端点时静默降级 */}
 }
 // ── 运行概览：通道总览 + 全/单通道用量 ──
-// 概览只在登录与进入页面时拉一次用量账本（core 本地、廉价）；旁路通道的状态与模型数
-// 直接复用各页签已加载的缓存（zcodeStatus 等），未访问过的通道如实标「未加载」，
-// 不在登录时额外打旁路状态接口（保持登录轻量与既有懒加载约定）。
+// 通道可达性读 console 自己的后台探活（GET /admin/health，一轮覆盖「网关 + 七通道」）：
+// 服务端主动探，与操作者有没有点开某个通道页签无关，所以七个通道的状态同时准确、同时刷新。
+// 此前这里只读各页签缓存，没访问过就显示「未加载」，于是出现「WorkBuddy 有值、其他通道没有」
+// ——那是加载时机造成的假缺口，不是数据缺失。模型数不在探活结论里，仍取页签缓存，
+// 进入概览时按需补拉（loadMissingChannelStatuses）。两者都不伪造在线。
+const healthChannelKeys={core:'workbuddy',glm:'zcode',qoder:'qoder',opencode:'opencode',autoclaw:'autoclaw',trae:'trae',raccoon:'raccoon'};
+function healthChannelResult(channel){
+ if(!healthState||!Array.isArray(healthState.channels))return null;
+ return healthState.channels.find(item=>healthChannelKeys[item.channel]===channel)||null;
+}
+function healthCheckedAtText(){
+ const at=healthState&&healthState.checked_at?new Date(healthState.checked_at):null;
+ return at&&!Number.isNaN(at.getTime())?at.toLocaleTimeString('zh-CN',{timeZone:'Asia/Shanghai',hour12:false}):'';
+}
+async function loadHealth(quiet){
+ if(!csrf)return;
+ const generation=healthGeneration;
+ try{
+  const data=await jsonAPI('health');
+  if(generation!==healthGeneration)return;
+  healthState=data;
+  if(page==='overview')renderOverview();
+ }catch(error){if(!quiet&&generation===healthGeneration)notice(error.message);}
+}
+// 服务端后台探活是 30 秒一轮（healthProbeInterval），前端跟着同一节奏刷新；
+// 只在概览页可见时轮询，离开即停，不给别的页面加负担。
+function healthPageVisible(){return page==='overview'&&csrf&&!document.hidden;}
+function scheduleHealthPoll(){
+ clearTimeout(healthPollTimer);healthPollTimer=undefined;
+ if(healthPageVisible())healthPollTimer=setTimeout(async()=>{await loadHealth(true);scheduleHealthPoll();},30000);
+}
+function stopHealthPoll(){clearTimeout(healthPollTimer);healthPollTimer=undefined;}
+// 概览与接入页都要「各通道的模型数」，两处共用：只补还没加载过的通道，已有的不重复打。
+function loadMissingChannelStatuses(){
+ if(zcodeEnabled&&!zcodeStatus)void loadZcode();
+ if(qoderEnabled&&!qoderStatus)void loadQoder();
+ if(opencodeEnabled&&!opencodeStatus)void loadOpenCode();
+ if(autoclawEnabled&&!autoclawStatus)void loadAutoClaw();
+ if(traeEnabled&&!traeStatus)void loadTrae();
+ if(raccoonEnabled&&!raccoonStatus)void loadRaccoon();
+}
 function overviewChannelStatus(channel){
+ const result=healthChannelResult(channel);
+ if(result&&!result.enabled)return{label:'未启用',tone:'idle'};
  if(channel==='workbuddy'){
+  // core 的探活只回答「桥接通不通」，账号池里有没有账号是另一件事，两者一起读才准。
+  if(result&&!result.reachable)return{label:'不可达',tone:'bad'};
   if(!lastStatus)return{label:'未知',tone:'unknown'};
   return lastStatus.total?{label:'运行中',tone:'ok'}:{label:'等待账号',tone:'idle'};
  }
+ if(result)return result.reachable?{label:'在线',tone:'ok'}:{label:'不可达',tone:'bad'};
+ // 探活还没出结论（或部署没开探活）时退回页签缓存，仍如实标「未加载」，不伪造在线。
  const st=channel==='zcode'?zcodeStatus:channel==='qoder'?qoderStatus:channel==='autoclaw'?autoclawStatus:channel==='trae'?traeStatus:channel==='raccoon'?raccoonStatus:opencodeStatus;
  if(!st)return{label:'未加载',tone:'unknown'};
  if(!st.enabled)return{label:'未启用',tone:'idle'};
@@ -515,6 +557,8 @@ function overviewChannelModelCount(channel){
  return Number(st.model_count)||0;
 }
 function renderOverview(){
+ const stamp=$('overview-health-stamp');
+ if(stamp){const at=healthCheckedAtText();stamp.textContent=at?`每个通道一行；状态由网关自探，最近一轮 ${at}`:'每个通道一行；状态由网关自探，等待首次结论';}
  const body=$('overview-channels-body');body.replaceChildren();
  const byChannel=new Map();
  for(const e of overviewUsageItems){const c=usageChannelOf(e);if(!byChannel.has(c))byChannel.set(c,[]);byChannel.get(c).push(e);}
@@ -792,7 +836,7 @@ async function refreshModels() {
 function updateModelHint() { const realm=$('model').value.startsWith('global:')?'global':'cn'; $('model-hint').textContent=accounts.some(a=>(a.realm||'cn')===realm&&!a.disabled)?'模型列表可能包含静态候选；是否可调用以实际回答为准。':'当前没有此版本的已启用账号，请先添加对应账号。'; }
 function updateEfforts() { const model=modelList.find(m=>m.id===$('model').value),previous=$('effort').value;$('effort').replaceChildren(new Option('默认',''));for(const e of model?.reasoning_supported_efforts||[])$('effort').append(new Option(e,e));$('effort').value=model?.reasoning_supported_efforts?.includes(previous)?previous:'';$('effort').disabled=!!activeRequest||protocol==='anthropic'||!model?.reasoning_supported_efforts?.length;updateModelHint(); }
 $('model').addEventListener('change',updateEfforts);
-$('refresh').addEventListener('click',async()=>{await refreshStatus();await refreshModels();});
+$('refresh').addEventListener('click',async()=>{await refreshStatus();await refreshModels();await loadHealth();});
 setInterval(()=>{if(csrf&&!document.hidden){refreshStatus();void loadPins();}},15000);
 
 const taskNames={checkin:'签到',travel:'猫猫旅行',activity:'活跃上报',keepalive:'Token 保活',school:'开学季',cat:'夜猫子'};

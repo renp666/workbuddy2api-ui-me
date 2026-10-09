@@ -2839,7 +2839,7 @@ test('probe start rejects while a run is in flight and keeps the old conclusions
   assert.equal(get('core-models-body').children[0].children[4].textContent,'40.0 tok/s','rejected start wiped cached conclusions');
 });
 
-function overviewFixture(items,zcodeStatus,extraStatuses) {
+function overviewFixture(items,zcodeStatus,extraStatuses,health) {
   const response=body=>({ok:true,status:200,json:async()=>body});
   const extras=extraStatuses||{};
   const {ctx,get}=taskFixture((url)=>{
@@ -2850,6 +2850,8 @@ function overviewFixture(items,zcodeStatus,extraStatuses) {
     if(url==='/admin/heat')return response({available:false,ranks:[]});
     if(url==='/admin/model-switch')return response({enabled:false,overrides:{}});
     if(url==='/admin/probe')return response({running:false,done:0,total:0,channels:{}});
+    // 默认给一份空通道表：没传 health 的用例退回页签缓存口径，行为与改动前一致。
+    if(url==='/admin/health')return response(health||{ok:true,checked_at:'2026-10-09T03:00:00+08:00',channels:[],history:[]});
     if(url==='/admin/zcode')return response(zcodeStatus);
     if(url==='/admin/autoclaw'&&extras.autoclaw)return response(extras.autoclaw);
     if(url==='/admin/trae'&&extras.trae)return response(extras.trae);
@@ -2905,6 +2907,30 @@ test('overview aggregates every enabled channel and filters the metric cards by 
   assert.equal(get('overview-usage-tokens').textContent,'30');
   assert.equal(get('overview-usage-credit').textContent,'—','all-missing credit must not read as zero');
   assert.equal(get('overview-channels-body').children.length,7,'channel table must stay full while metrics are filtered');
+});
+
+test('概览通道状态读网关自探结论：没点开过页签的通道也必须有准确状态',async()=>{
+  const items=[{ts:1000,uid:'u1',account:'a',model:'cn:m',mode:'sync',prompt_tokens:1,completion_tokens:1,credit:0}];
+  const health={ok:false,checked_at:'2026-10-09T03:20:00+08:00',history:[],channels:[
+    {channel:'core',enabled:true,reachable:true,latency_ms:3},
+    {channel:'glm',enabled:true,reachable:true,latency_ms:4},
+    {channel:'qoder',enabled:true,reachable:false,latency_ms:3000,detail:'模型目录不可达'},
+    {channel:'opencode',enabled:false,reachable:false},
+    {channel:'autoclaw',enabled:true,reachable:true},
+    {channel:'trae',enabled:true,reachable:true},
+    {channel:'raccoon',enabled:true,reachable:true},
+  ]};
+  const {ctx,get}=overviewFixture(items,{enabled:true,reachable:true,model_count:3},null,health);
+  await vm.runInContext("signedIn({csrf:'c',global_enabled:true,zcode_enabled:true,qoder_enabled:true,opencode_enabled:true,autoclaw_enabled:true,trae_enabled:true,raccoon_enabled:true})",ctx);
+  // 刻意不访问任何旁路页签：状态必须来自网关自探，而不是页签缓存的「未加载」。
+  await vm.runInContext('loadHealth()',ctx);
+  await vm.runInContext('loadOverview()',ctx);
+  await new Promise(r=>setImmediate(r));
+  const rows=get('overview-channels-body').children;
+  const text=td=>td.children.length?td.children[0].textContent:td.textContent;
+  assert.deepEqual(rows.map(tr=>text(tr.children[1])),['运行中','在线','不可达','未启用','在线','在线','在线'],
+    '通道状态没有读网关自探结论，仍在按页签加载时机显示「未加载」');
+  assert.match(get('overview-health-stamp').textContent,/最近一轮/,'自探时间戳缺失，看不出状态是不是实时的');
 });
 
 test('overview hides channels the deployment never enabled',async()=>{
