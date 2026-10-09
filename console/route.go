@@ -12,6 +12,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -45,14 +46,69 @@ const autoModelName = "gateway-auto"
 // 不做静默迁移，避免把旧语义当成新语义路由。
 const routeFileVersion = 1
 
-// routeEntry 借鉴 LiteLLM model_list 的数据模型：一条「对外别名 → 真实上游」的
-// 映射。Alias 是客户端写进请求 model 字段的名字，Channel+Model 决定实际去哪。
-type routeEntry struct {
-	Alias   string       `json:"alias"`
+// routeTarget 是别名候选链上的一跳：通道 + 该通道的模型名。模型名允许写成
+// 通道原生裸名，也允许写成已带公共前缀的对外形态，出口统一走 publicModel 的
+// 幂等换算，两种写法都能正确分流。
+type routeTarget struct {
 	Channel routeChannel `json:"channel"`
 	Model   string       `json:"model"`
-	Enabled bool         `json:"enabled"`
-	Note    string       `json:"note,omitempty"`
+}
+
+// 别名选路策略。
+const (
+	// strategyPriority 恒用候选链第一跳（主目标）。这是默认值，也是引入候选链
+	// 之前的行为，保证存量配置升级后路由结果一字不变。
+	strategyPriority = "priority"
+	// strategyHealth 用探测结论在候选链内挑 band 最优的一跳，实现「同一类模型
+	// 跨通道热备」；链上没有任何探测结论时按链序回退到主目标，不随机挑。
+	strategyHealth = "health"
+)
+
+// maxRouteTargets 是单个别名的候选链长度上限（主目标 + 备用）。8 跳足够覆盖
+// 「一个模型在六条通道各有部署」的极端情况，同时防止失控配置拖慢每次请求解析。
+const maxRouteTargets = 8
+
+// routeEntry 借鉴 LiteLLM model_list 的数据模型：一条「对外别名 → 真实上游」的
+// 映射。Alias 是客户端写进请求 model 字段的名字，Channel+Model 是主目标；
+// Fallbacks 是同一别名的备用链路，与主目标一起构成候选链。
+type routeEntry struct {
+	Alias     string        `json:"alias"`
+	Channel   routeChannel  `json:"channel"`
+	Model     string        `json:"model"`
+	Fallbacks []routeTarget `json:"fallbacks,omitempty"`
+	Strategy  string        `json:"strategy,omitempty"`
+	Enabled   bool          `json:"enabled"`
+	Note      string        `json:"note,omitempty"`
+}
+
+// strategy 返回生效的策略。空值与未知值一律按 priority 处理——配置里写错策略名
+// 不该让整个别名失效，退化成「恒用主目标」是更安全的默认。
+func (e routeEntry) strategy() string {
+	if e.Strategy == strategyHealth {
+		return strategyHealth
+	}
+	return strategyPriority
+}
+
+// targets 返回完整候选链：主目标在链首，备用按配置顺序在后。
+func (e routeEntry) targets() []routeTarget {
+	out := make([]routeTarget, 0, 1+len(e.Fallbacks))
+	out = append(out, routeTarget{Channel: e.Channel, Model: e.Model})
+	return append(out, e.Fallbacks...)
+}
+
+// publicModel 把一跳换算成该通道对外的公共模型名（幂等）。
+func (t routeTarget) publicModel() string { return t.Channel.publicModel(t.Model) }
+
+// nativeModel 返回一跳的通道原生模型名（剥掉公共前缀）。探测结论按原生名存候选
+// （见 appendProbeEntries），比对时必须用同一形态，否则 qoder-qwen3.8-flash 这类
+// 公共名永远匹配不上它的探测结论。
+func (t routeTarget) nativeModel() string {
+	public := t.publicModel()
+	if prefix := t.Channel.prefix(); prefix != "" {
+		return strings.TrimPrefix(public, prefix)
+	}
+	return public
 }
 
 // routeFile 是落盘到 console 可写目录的路由配置。
@@ -213,27 +269,64 @@ func validateRouteEntries(models []routeEntry) error {
 				return fmt.Errorf("别名 %q 不能以 %q 开头，那是上游命名空间或通道前缀，会遮蔽同名真实模型", alias, reserved)
 			}
 		}
-		switch entry.Channel {
-		case channelCore, channelGLM, channelQoder, channelOpenCode, channelAutoClaw, channelTrae, channelRaccoon:
-		default:
-			return fmt.Errorf("别名 %q 的通道必须是 core、glm、qoder、opencode、autoclaw、trae 或 raccoon", alias)
+		if err := validateRouteStrategy(entry); err != nil {
+			return fmt.Errorf("别名 %q %s", alias, err)
 		}
 		model := strings.TrimSpace(entry.Model)
-		if !validRouteName(model, 128, routeModelChars) {
-			return fmt.Errorf("别名 %q 的模型名不合法：只允许字母、数字、点、下划线、冒号、连字符、空格、中点和斜杠，长度 1-128", alias)
+		if err := validateTarget(entry.Channel, model); err != nil {
+			return fmt.Errorf("别名 %q %s", alias, err)
 		}
-		// core 的模型 ID 由上游以 cn:/global: 命名空间下发，缺前缀的裸名字
-		// core 一定不认；反之旁路通道收不到带命名空间的名字。
-		if entry.Channel == channelCore {
-			if !strings.HasPrefix(model, "cn:") && !strings.HasPrefix(model, "global:") {
-				return fmt.Errorf("别名 %q 指向 core 时模型名须带 cn: 或 global: 前缀", alias)
+		if len(entry.Fallbacks) > maxRouteTargets-1 {
+			return fmt.Errorf("别名 %q 的备用链路不得超过 %d 条", alias, maxRouteTargets-1)
+		}
+		// 候选链去重：主目标与备用之间、备用彼此之间都不能指向同一跳。重复跳只会
+		// 在 health 策略里制造无意义的并列，及早拒绝好过运行时静默容忍。
+		seenTargets := map[routeTarget]bool{{Channel: entry.Channel, Model: model}: true}
+		for j, fb := range entry.Fallbacks {
+			fbModel := strings.TrimSpace(fb.Model)
+			if err := validateTarget(fb.Channel, fbModel); err != nil {
+				return fmt.Errorf("别名 %q 第 %d 条备用：%s", alias, j+1, err)
 			}
-		} else if strings.Contains(model, ":") {
-			return fmt.Errorf("别名 %q 指向 %s 时模型名不能含冒号（那是 core 的命名空间）", alias, entry.Channel)
+			key := routeTarget{Channel: fb.Channel, Model: fbModel}
+			if seenTargets[key] {
+				return fmt.Errorf("别名 %q 的候选链含重复目标：%s + %s", alias, fb.Channel, fbModel)
+			}
+			seenTargets[key] = true
 		}
 		if len(entry.Note) > 200 {
 			return fmt.Errorf("别名 %q 的备注不得超过 200 字", alias)
 		}
+	}
+	return nil
+}
+
+// validateRouteStrategy 校验选路策略取值。空串合法（按 priority 生效）。
+func validateRouteStrategy(entry routeEntry) error {
+	switch entry.Strategy {
+	case "", strategyPriority, strategyHealth:
+		return nil
+	}
+	return fmt.Errorf("的策略只能是 %s 或 %s", strategyPriority, strategyHealth)
+}
+
+// validateTarget 校验一跳「通道 + 模型名」。core 的模型 ID 由上游以 cn:/global:
+// 命名空间下发，缺前缀的裸名字 core 一定不认；反之旁路通道收不到带命名空间的名字。
+// 主目标与每一条备用共用这套口径，避免两处判断漂移。
+func validateTarget(channel routeChannel, model string) error {
+	switch channel {
+	case channelCore, channelGLM, channelQoder, channelOpenCode, channelAutoClaw, channelTrae, channelRaccoon:
+	default:
+		return errors.New("通道必须是 core、glm、qoder、opencode、autoclaw、trae 或 raccoon")
+	}
+	if !validRouteName(model, 128, routeModelChars) {
+		return errors.New("模型名不合法：只允许字母、数字、点、下划线、冒号、连字符、空格、中点和斜杠，长度 1-128")
+	}
+	if channel == channelCore {
+		if !strings.HasPrefix(model, "cn:") && !strings.HasPrefix(model, "global:") {
+			return errors.New("指向 core 时模型名须带 cn: 或 global: 前缀")
+		}
+	} else if strings.Contains(model, ":") {
+		return fmt.Errorf("指向 %s 时模型名不能含冒号（那是 core 的命名空间）", channel)
 	}
 	return nil
 }
@@ -269,11 +362,21 @@ func validRouteName(s string, max int, allowed string) bool {
 }
 
 // normalizeRoutes去掉别名与模型名两端的空白，让校验与落盘用的是同一份规范化值。
+// 候选链上的每一跳按同样口径处理，否则页面上带尾空格的备用条目会校验失败。
 func normalizeRoutes(models []routeEntry) []routeEntry {
 	out := make([]routeEntry, 0, len(models))
 	for _, entry := range models {
 		entry.Alias = strings.TrimSpace(entry.Alias)
 		entry.Model = strings.TrimSpace(entry.Model)
+		entry.Strategy = strings.TrimSpace(entry.Strategy)
+		if len(entry.Fallbacks) > 0 {
+			fbs := make([]routeTarget, 0, len(entry.Fallbacks))
+			for _, fb := range entry.Fallbacks {
+				fb.Model = strings.TrimSpace(fb.Model)
+				fbs = append(fbs, fb)
+			}
+			entry.Fallbacks = fbs
+		}
 		out = append(out, entry)
 	}
 	return out
@@ -472,6 +575,9 @@ func (s *routeStore) reload() routeFile {
 		logRouteWarn("路由配置校验失败，沿用上一份配置：", err)
 		return s.snapshotFile()
 	}
+	// 校验时按去空白后的值判断，内存里也必须落同一份规范化值：否则手工编辑过的
+	// 文件里带尾空格的别名能通过校验，却在 lookup 时永远匹配不上请求。
+	file.Models = normalizeRoutes(file.Models)
 	if err := validateAutoFallback(file.AutoFallback); err != nil {
 		logRouteWarn("auto 回退配置非法，沿用上一份配置：", err)
 		return s.snapshotFile()
@@ -725,14 +831,18 @@ type routeDecision struct {
 	Alias       string       // 客户端原本请求的模型名
 	Reason      string
 	Fallback    bool // auto 没有可选链路、已回退核心通道
+	// TargetIndex 是命中的候选链下标：0=主目标，>0=第几条备用，-1=不适用（如 auto）。
+	TargetIndex int
 }
 
 // resolveAlias 把客户端请求的模型名解析成一条具体链路。返回 false 表示这个
 // model 不是别名也不是 auto，调用方应继续走既有前缀分流。
 //
-// 解析规则只有两条：
-//  1. 普通别名 → 配置里那一条固定的 通道+模型。
-//  2. auto → 在探测结论里挑最优；完全没有探测结论时回退到核心通道（主账号池）。
+// 解析规则：
+//  1. 别名 + priority（默认）→ 候选链第一跳（主目标），与引入候选链之前完全一致。
+//  2. 别名 + health → 在该别名自己的候选链内用探测结论挑 band 最优的一跳；
+//     链上没有任何结论时按链序取主目标。
+//  3. auto → 在全部通道的探测结论里挑最优；完全没有结论时回退核心通道。
 //
 // 路由功能未启用（未配置可写配置文件）时一律返回 false，出口与现状完全一致。
 func (h *server) resolveAlias(ctx context.Context, model string) (routeDecision, bool) {
@@ -746,12 +856,85 @@ func (h *server) resolveAlias(ctx context.Context, model string) (routeDecision,
 	if !ok {
 		return routeDecision{}, false
 	}
+	return h.resolveEntry(ctx, entry), true
+}
+
+// resolveEntry 在一条别名自己的候选链上选一跳。
+//
+// priority 恒取链首，不看探测结论——这是「我就要这条链路」的显式表达，不能被
+// 探测抖动改变。health 才引入探测结论，且只在链内比较，不会跳到链外。
+func (h *server) resolveEntry(ctx context.Context, entry routeEntry) routeDecision {
+	chain := entry.targets()
+	primary := chain[0]
+	if entry.strategy() != strategyHealth {
+		return routeDecision{
+			RoutedModel: primary.publicModel(),
+			Channel:     primary.Channel,
+			Alias:       entry.Alias,
+			Reason:      "别名命中配置",
+			TargetIndex: 0,
+		}
+	}
+	index, band, found := h.pickChainTarget(ctx, chain)
+	if !found {
+		return routeDecision{
+			RoutedModel: primary.publicModel(),
+			Channel:     primary.Channel,
+			Alias:       entry.Alias,
+			Reason:      "别名无可用探测结论，按链序用主目标",
+			TargetIndex: 0,
+		}
+	}
+	reason := fmt.Sprintf("别名选中第 %d 跳（%s）", index+1, probeBandLabel(band))
+	if index > 0 {
+		reason = fmt.Sprintf("别名主目标不可用，切第 %d 跳备用（%s）", index+1, probeBandLabel(band))
+	}
 	return routeDecision{
-		RoutedModel: entry.publicModel(),
-		Channel:     entry.Channel,
+		RoutedModel: chain[index].publicModel(),
+		Channel:     chain[index].Channel,
 		Alias:       entry.Alias,
-		Reason:      "别名命中配置",
-	}, true
+		Reason:      reason,
+		TargetIndex: index,
+	}
+}
+
+// pickChainTarget 在候选链里挑一跳：优先 band 最小的（可用 → 仅对话），band 相同时
+// 取链序靠前的，因此「主目标可用就用主目标」是天然结果，只有它确实不可用才轮到备用。
+//
+// band=3（探测失败）不作为候选——把已知不可用的链路放进竞争等于制造随机故障。
+// 链上没有任何一跳有探测结论时返回 found=false，由调用方按链序回退，与 resolveAuto
+// 的克制口径一致。
+func (h *server) pickChainTarget(ctx context.Context, chain []routeTarget) (int, int, bool) {
+	candidates, haveData := h.probes.get(ctx, h)
+	if !haveData {
+		return 0, 0, false
+	}
+	bestIndex, bestBand := -1, 0
+	for i, target := range chain {
+		band, ok := probeBandFor(candidates, target)
+		if !ok || band > 1 {
+			continue
+		}
+		if bestIndex < 0 || band < bestBand {
+			bestIndex, bestBand = i, band
+		}
+	}
+	if bestIndex < 0 {
+		return 0, 0, false
+	}
+	return bestIndex, bestBand, true
+}
+
+// probeBandFor 在探测结论里查一跳的档位。比对用通道原生名，与 appendProbeEntries
+// 存入候选时的形态保持一致。
+func probeBandFor(candidates map[routeChannel][]probeCandidate, target routeTarget) (int, bool) {
+	native := target.nativeModel()
+	for _, candidate := range candidates[target.Channel] {
+		if candidate.Model == native {
+			return candidate.Band, true
+		}
+	}
+	return 0, false
 }
 
 func (h *server) resolveAuto(ctx context.Context) routeDecision {
@@ -780,6 +963,7 @@ func (h *server) resolveAuto(ctx context.Context) routeDecision {
 			Alias:       autoModelName,
 			Reason:      reason,
 			Fallback:    true,
+			TargetIndex: -1,
 		}
 	}
 	sortCandidates(pool)
@@ -789,6 +973,7 @@ func (h *server) resolveAuto(ctx context.Context) routeDecision {
 		Channel:     best.Channel,
 		Alias:       autoModelName,
 		Reason:      fmt.Sprintf("auto 选中 %s（%s）", best.Model, probeBandLabel(best.Band)),
+		TargetIndex: -1,
 	}
 }
 
@@ -852,6 +1037,11 @@ func (p *prismHeaderWriter) WriteHeader(code int) {
 	header.Set("X-Prism-Routed-Model", p.decision.RoutedModel)
 	header.Set("X-Prism-Channel", string(p.decision.Channel))
 	header.Set("X-Prism-Reason", p.decision.Reason)
+	// TargetIndex 只在别名候选链上有意义（0=主目标，>0=第几条备用）；auto 用 -1
+	// 表示不适用，此时不下发该头，避免调用方把 auto 也当成一条链去解释。
+	if p.decision.TargetIndex >= 0 {
+		header.Set("X-Prism-Target-Index", strconv.Itoa(p.decision.TargetIndex))
+	}
 	if p.decision.Fallback {
 		header.Set("X-Prism-Fallback", "core")
 	}
@@ -908,13 +1098,20 @@ func (h *server) writeRouteState(w http.ResponseWriter, r *http.Request) {
 	autoFallback := ""
 	if h.routes != nil {
 		for _, entry := range h.routes.snapshot() {
+			chain := make([]map[string]any, 0, 1+len(entry.Fallbacks))
+			for _, target := range entry.targets() {
+				chain = append(chain, routeTargetState(target))
+			}
 			aliases = append(aliases, map[string]any{
-				"alias":       entry.Alias,
-				"channel":     string(entry.Channel),
-				"model":       entry.Model,
+				"alias":        entry.Alias,
+				"channel":      string(entry.Channel),
+				"model":        entry.Model,
 				"public_model": entry.publicModel(),
-				"enabled":     entry.Enabled,
-				"note":        entry.Note,
+				"fallbacks":    routeTargetStates(entry.Fallbacks),
+				"chain":        chain,
+				"strategy":     entry.strategy(),
+				"enabled":      entry.Enabled,
+				"note":         entry.Note,
 			})
 		}
 		channels = h.routeCatalog(r.Context())
@@ -925,21 +1122,41 @@ func (h *server) writeRouteState(w http.ResponseWriter, r *http.Request) {
 			"channel":      string(decision.Channel),
 			"reason":       decision.Reason,
 			"fallback":     decision.Fallback,
+			"target_index": decision.TargetIndex,
 		}
 	}
 	writeJSON(w, 200, map[string]any{
-		"enabled":        h.routes != nil,
-		"auto_model":     autoModelName,
-		"auto_fallback":  autoFallback,
+		"enabled":               h.routes != nil,
+		"auto_model":            autoModelName,
+		"auto_fallback":         autoFallback,
 		"default_auto_fallback": defaultAutoFallback,
-		"auto_preview":   preview,
-		"aliases":        aliases,
-		"channels":       channels,
+		"auto_preview":          preview,
+		"aliases":               aliases,
+		"channels":              channels,
 		// model_costs 只覆盖 core 通道（公共模型名 → credits 原始串）：glm- / qoder-
 		// 旁路上游不公布倍率，opencode / autoclaw / trae 是免费通道，前端各自判定，
 		// 缺失不等于零价。
 		"model_costs": h.consoleCreditRules(r.Context()),
 	})
+}
+
+// routeTargetState 把一跳序列化成页面认识的形态：原生模型名与公共模型名都给，
+// 页面据此展示，不必自己拼前缀（前缀规则只应该有一处实现）。
+func routeTargetState(target routeTarget) map[string]any {
+	return map[string]any{
+		"channel":      string(target.Channel),
+		"model":        target.Model,
+		"public_model": target.publicModel(),
+	}
+}
+
+// routeTargetStates 序列化备用链路；无备用时返回空切片而不是 null，前端可直接遍历。
+func routeTargetStates(fallbacks []routeTarget) []map[string]any {
+	out := make([]map[string]any, 0, len(fallbacks))
+	for _, target := range fallbacks {
+		out = append(out, routeTargetState(target))
+	}
+	return out
 }
 
 // routeChannelCatalog 是单个通道的模型目录快照。

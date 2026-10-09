@@ -262,7 +262,10 @@ func TestAliasEntriesAppearInPublicModels(t *testing.T) {
 		alias         bool
 	}{}
 	for _, item := range list.Data {
-		byID[item.ID] = struct{ realm, routed string; alias bool }{item.Realm, item.RoutedModel, item.Alias}
+		byID[item.ID] = struct {
+			realm, routed string
+			alias         bool
+		}{item.Realm, item.RoutedModel, item.Alias}
 	}
 	// 既有真实条目仍在（C2：不删不改）。
 	if _, ok := byID["cn:free"]; !ok {
@@ -824,5 +827,382 @@ func TestModelSwitchDisabledWithoutRouteFile(t *testing.T) {
 	// 未启用路由时倍率>0 的模型也不该被拦，出口与现状一致。
 	if rec := gateChat(h, "cn:paid"); rec.Code != 200 {
 		t.Fatalf("gate must be inert without route file: %d %s", rec.Code, rec.Body)
+	}
+}
+
+// ocHealthHandler 造一个 opencode 上游：/health 按给定 JSON 回探测结论，
+// 其余路径回一句固定文本。opencode 是免费通道、不受积分开关约束，因此候选链
+// 的选路用例都建在它上面，不必先手工放行模型。
+func ocHealthHandler(t *testing.T, health string, seen *string, mu *sync.Mutex) http.HandlerFunc {
+	t.Helper()
+	return func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/health" {
+			fmt.Fprint(w, health)
+			return
+		}
+		if r.URL.Path == "/v1/chat/completions" && seen != nil {
+			mu.Lock()
+			*seen = modelOf(t, r)
+			mu.Unlock()
+		}
+		fmt.Fprint(w, `{"opencode":true}`)
+	}
+}
+
+// chatViaAlias 经公共出口发一次别名请求，返回响应与 opencode 实际收到的模型名。
+func chatViaAlias(t *testing.T, h http.Handler, alias string, seen *string, mu *sync.Mutex) *httptest.ResponseRecorder {
+	t.Helper()
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, httptest.NewRequest("POST", "/v1/chat/completions", strings.NewReader(chatBody(alias))))
+	if rec.Code != 200 {
+		t.Fatalf("status=%d body=%s", rec.Code, rec.Body)
+	}
+	return rec
+}
+
+// TestAliasPriorityStrategyUsesPrimary 默认策略 priority 必须无视探测结论，恒用
+// 候选链第一跳。这是「我就要这条链路」的显式表达，不能被探测抖动改变；也是存量
+// 配置升级后的既有行为。
+func TestAliasPriorityStrategyUsesPrimary(t *testing.T) {
+	var mu sync.Mutex
+	var seen string
+	h, _ := routeConsole(t, func(w http.ResponseWriter, r *http.Request) {
+		fmt.Fprint(w, `{"core":true}`)
+	}, ocHealthHandler(t, `{"phase":"ready","modelResults":{
+		"OC · Bad":{"ok":false,"error":"boom"},
+		"OC · Good":{"ok":true,"category":"available","durationMs":100}
+	}}`, &seen, &mu))
+	entry := routeEntry{
+		Alias:     "daily",
+		Channel:   channelOpenCode,
+		Model:     "OC · Bad",
+		Fallbacks: []routeTarget{{Channel: channelOpenCode, Model: "OC · Good"}},
+		Enabled:   true,
+	}
+	if got := saveRoutes(t, h, []routeEntry{entry}, ""); got.Code != 200 {
+		t.Fatalf("save: %d %s", got.Code, got.Body)
+	}
+	rec := chatViaAlias(t, h, "daily", &seen, &mu)
+	mu.Lock()
+	defer mu.Unlock()
+	if seen != "OC · Bad" {
+		t.Fatalf("priority 应恒用主目标，实际转发 %q", seen)
+	}
+	if got := rec.Header().Get("X-Prism-Target-Index"); got != "0" {
+		t.Fatalf("target index=%q, want 0", got)
+	}
+}
+
+// TestAliasHealthStrategyPicksAvailableFallback 是热备的核心用例：主目标探测失败
+// 时必须自动切到链上可用的备用，且别名不变、客户端无感。
+func TestAliasHealthStrategyPicksAvailableFallback(t *testing.T) {
+	var mu sync.Mutex
+	var seen string
+	h, _ := routeConsole(t, func(w http.ResponseWriter, r *http.Request) {
+		fmt.Fprint(w, `{"core":true}`)
+	}, ocHealthHandler(t, `{"phase":"ready","modelResults":{
+		"OC · Bad":{"ok":false,"error":"boom"},
+		"OC · Good":{"ok":true,"category":"available","durationMs":100}
+	}}`, &seen, &mu))
+	entry := routeEntry{
+		Alias:     "daily",
+		Channel:   channelOpenCode,
+		Model:     "OC · Bad",
+		Fallbacks: []routeTarget{{Channel: channelOpenCode, Model: "OC · Good"}},
+		Strategy:  strategyHealth,
+		Enabled:   true,
+	}
+	if got := saveRoutes(t, h, []routeEntry{entry}, ""); got.Code != 200 {
+		t.Fatalf("save: %d %s", got.Code, got.Body)
+	}
+	rec := chatViaAlias(t, h, "daily", &seen, &mu)
+	mu.Lock()
+	defer mu.Unlock()
+	if seen != "OC · Good" {
+		t.Fatalf("health 应切到可用备用，实际转发 %q", seen)
+	}
+	if got := rec.Header().Get("X-Prism-Target-Index"); got != "1" {
+		t.Fatalf("target index=%q, want 1", got)
+	}
+	if got := rec.Header().Get("X-Prism-Channel"); got != "opencode" {
+		t.Fatalf("channel=%q", got)
+	}
+	if got := rec.Header().Get("X-Prism-Routed-Model"); got != "opencode-OC · Good" {
+		t.Fatalf("routed=%q", got)
+	}
+}
+
+// TestAliasHealthStrategyNoProbeDataUsesPrimary 通道活着但还没有逐模型结论时，
+// health 必须按链序退回主目标，不随机挑、也不因为「没有结论」就报错。
+func TestAliasHealthStrategyNoProbeDataUsesPrimary(t *testing.T) {
+	var mu sync.Mutex
+	var seen string
+	h, _ := routeConsole(t, func(w http.ResponseWriter, r *http.Request) {
+		fmt.Fprint(w, `{"core":true}`)
+	}, ocHealthHandler(t, `{"phase":"ready"}`, &seen, &mu))
+	entry := routeEntry{
+		Alias:     "daily",
+		Channel:   channelOpenCode,
+		Model:     "OC · Primary",
+		Fallbacks: []routeTarget{{Channel: channelOpenCode, Model: "OC · Backup"}},
+		Strategy:  strategyHealth,
+		Enabled:   true,
+	}
+	if got := saveRoutes(t, h, []routeEntry{entry}, ""); got.Code != 200 {
+		t.Fatalf("save: %d %s", got.Code, got.Body)
+	}
+	rec := chatViaAlias(t, h, "daily", &seen, &mu)
+	mu.Lock()
+	defer mu.Unlock()
+	if seen != "OC · Primary" {
+		t.Fatalf("无探测结论时应按链序用主目标，实际 %q", seen)
+	}
+	if got := rec.Header().Get("X-Prism-Target-Index"); got != "0" {
+		t.Fatalf("target index=%q, want 0", got)
+	}
+	if reason := rec.Header().Get("X-Prism-Reason"); !strings.Contains(reason, "按链序") {
+		t.Fatalf("reason=%q，应说明按链序回退", reason)
+	}
+}
+
+// TestAliasFallbackChainOrderPreserved 两条备用都可用时取链序靠前的，不按探测
+// 耗时排序——链序是管理员的意图，耗时只是通道质量的参考。
+func TestAliasFallbackChainOrderPreserved(t *testing.T) {
+	var mu sync.Mutex
+	var seen string
+	// Second 明显更快，但排在 First 之后，必须先选 First。
+	h, _ := routeConsole(t, func(w http.ResponseWriter, r *http.Request) {
+		fmt.Fprint(w, `{"core":true}`)
+	}, ocHealthHandler(t, `{"phase":"ready","modelResults":{
+		"OC · Bad":{"ok":false,"error":"boom"},
+		"OC · First":{"ok":true,"category":"available","durationMs":900},
+		"OC · Second":{"ok":true,"category":"available","durationMs":10}
+	}}`, &seen, &mu))
+	entry := routeEntry{
+		Alias:   "daily",
+		Channel: channelOpenCode,
+		Model:   "OC · Bad",
+		Fallbacks: []routeTarget{
+			{Channel: channelOpenCode, Model: "OC · First"},
+			{Channel: channelOpenCode, Model: "OC · Second"},
+		},
+		Strategy: strategyHealth,
+		Enabled:  true,
+	}
+	if got := saveRoutes(t, h, []routeEntry{entry}, ""); got.Code != 200 {
+		t.Fatalf("save: %d %s", got.Code, got.Body)
+	}
+	rec := chatViaAlias(t, h, "daily", &seen, &mu)
+	mu.Lock()
+	defer mu.Unlock()
+	if seen != "OC · First" {
+		t.Fatalf("同档应取链序靠前者，实际 %q", seen)
+	}
+	if got := rec.Header().Get("X-Prism-Target-Index"); got != "1" {
+		t.Fatalf("target index=%q, want 1", got)
+	}
+}
+
+// TestValidateRouteEntriesRejectsBadFallbackChains 候选链的校验必须和主目标同口径，
+// 且拒绝重复跳与非法策略。
+func TestValidateRouteEntriesRejectsBadFallbackChains(t *testing.T) {
+	cases := []struct {
+		name string
+		in   []routeEntry
+	}{
+		{"备用与主目标重复", []routeEntry{{Alias: "a", Channel: channelCore, Model: "cn:auto", Enabled: true,
+			Fallbacks: []routeTarget{{Channel: channelCore, Model: "cn:auto"}}}}},
+		{"备用之间重复", []routeEntry{{Alias: "a", Channel: channelCore, Model: "cn:auto", Enabled: true,
+			Fallbacks: []routeTarget{{Channel: channelQoder, Model: "q"}, {Channel: channelQoder, Model: "q"}}}}},
+		{"备用 core 缺命名空间", []routeEntry{{Alias: "a", Channel: channelCore, Model: "cn:auto", Enabled: true,
+			Fallbacks: []routeTarget{{Channel: channelCore, Model: "auto"}}}}},
+		{"备用旁路带冒号", []routeEntry{{Alias: "a", Channel: channelCore, Model: "cn:auto", Enabled: true,
+			Fallbacks: []routeTarget{{Channel: channelQoder, Model: "cn:auto"}}}}},
+		{"备用通道非法", []routeEntry{{Alias: "a", Channel: channelCore, Model: "cn:auto", Enabled: true,
+			Fallbacks: []routeTarget{{Channel: "bogus", Model: "x"}}}}},
+		{"备用模型名为空", []routeEntry{{Alias: "a", Channel: channelCore, Model: "cn:auto", Enabled: true,
+			Fallbacks: []routeTarget{{Channel: channelQoder, Model: "  "}}}}},
+		{"策略非法", []routeEntry{{Alias: "a", Channel: channelCore, Model: "cn:auto", Enabled: true, Strategy: "random"}}},
+	}
+	for _, tc := range cases {
+		if err := validateRouteEntries(tc.in); err == nil {
+			t.Errorf("%s: 期望校验失败", tc.name)
+		}
+	}
+}
+
+// TestValidateRouteEntriesAcceptsFallbackChain 合法候选链必须放行，且链长有上限。
+func TestValidateRouteEntriesAcceptsFallbackChain(t *testing.T) {
+	ok := []routeEntry{{
+		Alias:   "daily",
+		Channel: channelCore,
+		Model:   "global:deepseek-v4.1-flash",
+		Fallbacks: []routeTarget{
+			{Channel: channelAutoClaw, Model: "autoclaw-glm-5.3-flash"},
+			{Channel: channelQoder, Model: "qwen3.8-flash"},
+		},
+		Strategy: strategyHealth,
+		Enabled:  true,
+	}}
+	if err := validateRouteEntries(ok); err != nil {
+		t.Fatalf("合法候选链被拒：%v", err)
+	}
+	// 空策略合法，按 priority 生效；未知策略同样退化为 priority。
+	if entry := (routeEntry{Alias: "x", Channel: channelCore, Model: "cn:auto"}); entry.strategy() != strategyPriority {
+		t.Fatalf("空策略应按 priority，得到 %q", entry.strategy())
+	}
+	if entry := (routeEntry{Strategy: "bogus"}); entry.strategy() != strategyPriority {
+		t.Fatalf("未知策略应退化为 priority，得到 %q", entry.strategy())
+	}
+	// 超过上限要拒。
+	tooMany := []routeEntry{{Alias: "x", Channel: channelCore, Model: "cn:auto", Enabled: true}}
+	for i := 0; i < maxRouteTargets; i++ {
+		tooMany[0].Fallbacks = append(tooMany[0].Fallbacks, routeTarget{Channel: channelQoder, Model: fmt.Sprintf("m%d", i)})
+	}
+	if err := validateRouteEntries(tooMany); err == nil {
+		t.Fatalf("候选链超过 %d 跳应被拒", maxRouteTargets)
+	}
+}
+
+// TestAliasFallbacksSurviveSaveAndReload 候选链与策略必须完整落盘并能重读，
+// 否则重启一次热备配置就丢了。
+func TestAliasFallbacksSurviveSaveAndReload(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "routes.json")
+	store := newRouteStore(path)
+	want := routeEntry{
+		Alias:   "daily",
+		Channel: channelCore,
+		Model:   "global:deepseek-v4.1-flash",
+		Fallbacks: []routeTarget{
+			{Channel: channelAutoClaw, Model: "autoclaw-glm-5.3-flash"},
+			{Channel: channelQoder, Model: "qwen3.8-flash"},
+		},
+		Strategy: strategyHealth,
+		Enabled:  true,
+	}
+	if err := store.save([]routeEntry{want}, ""); err != nil {
+		t.Fatal(err)
+	}
+	reloaded := newRouteStore(path)
+	got, ok := reloaded.lookup("daily")
+	if !ok {
+		t.Fatal("别名未落盘")
+	}
+	if got.strategy() != strategyHealth {
+		t.Fatalf("策略丢失：%q", got.strategy())
+	}
+	if len(got.Fallbacks) != 2 {
+		t.Fatalf("备用链路丢失：%+v", got.Fallbacks)
+	}
+	if got.Fallbacks[0] != (routeTarget{Channel: channelAutoClaw, Model: "autoclaw-glm-5.3-flash"}) {
+		t.Fatalf("第 1 条备用错位：%+v", got.Fallbacks[0])
+	}
+	if got.Fallbacks[1] != (routeTarget{Channel: channelQoder, Model: "qwen3.8-flash"}) {
+		t.Fatalf("第 2 条备用错位：%+v", got.Fallbacks[1])
+	}
+	// targets() 的链首必须仍是主目标。
+	if got.targets()[0].publicModel() != "global:deepseek-v4.1-flash" {
+		t.Fatalf("链首不是主目标：%+v", got.targets()[0])
+	}
+}
+
+// TestRouteTargetPublicModelIsIdempotent 备用链的模型名允许写成裸名或已带公共
+// 前缀的形态，两者必须换算成同一个公共名与同一个原生名——否则会拼出
+// qoder-qoder-x 这种双前缀，或让探测结论永远匹配不上。
+func TestRouteTargetPublicModelIsIdempotent(t *testing.T) {
+	bare := routeTarget{Channel: channelQoder, Model: "qwen3.8-flash"}
+	prefixed := routeTarget{Channel: channelQoder, Model: "qoder-qwen3.8-flash"}
+	if bare.publicModel() != prefixed.publicModel() {
+		t.Fatalf("公共名不一致：%q vs %q", bare.publicModel(), prefixed.publicModel())
+	}
+	if bare.publicModel() != "qoder-qwen3.8-flash" {
+		t.Fatalf("公共名=%q", bare.publicModel())
+	}
+	if bare.nativeModel() != "qwen3.8-flash" || prefixed.nativeModel() != "qwen3.8-flash" {
+		t.Fatalf("原生名不一致：%q vs %q", bare.nativeModel(), prefixed.nativeModel())
+	}
+	// core 的命名空间由上游自带，prefix 为空，两个名字都原样保留。
+	core := routeTarget{Channel: channelCore, Model: "global:deepseek-v4.1-flash"}
+	if core.publicModel() != "global:deepseek-v4.1-flash" || core.nativeModel() != "global:deepseek-v4.1-flash" {
+		t.Fatalf("core 跳被改写：%q / %q", core.publicModel(), core.nativeModel())
+	}
+}
+
+// TestAliasWithFallbacksAdvertisesPrimaryOnly /v1/models 只广告别名本身与主目标，
+// 不把整条候选链摊开——客户端选的是别名，备用是服务端内部的事。
+func TestAliasWithFallbacksAdvertisesPrimaryOnly(t *testing.T) {
+	h, _ := routeConsole(t, func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/v1/models" {
+			fmt.Fprint(w, `{"object":"list","data":[{"id":"cn:free","object":"model","credits":"x0.00"}]}`)
+			return
+		}
+		fmt.Fprint(w, `{"core":true}`)
+	}, nil)
+	entry := routeEntry{
+		Alias:     "daily",
+		Channel:   channelCore,
+		Model:     "cn:free",
+		Fallbacks: []routeTarget{{Channel: channelCore, Model: "cn:free2"}},
+		Strategy:  strategyHealth,
+		Enabled:   true,
+	}
+	if got := saveRoutes(t, h, []routeEntry{entry}, ""); got.Code != 200 {
+		t.Fatalf("save: %d %s", got.Code, got.Body)
+	}
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, httptest.NewRequest("GET", "/v1/models", nil))
+	if rec.Code != 200 {
+		t.Fatalf("models: %d %s", rec.Code, rec.Body)
+	}
+	var list struct {
+		Data []struct {
+			ID          string `json:"id"`
+			Alias       bool   `json:"alias"`
+			RoutedModel string `json:"routed_model"`
+		} `json:"data"`
+	}
+	if json.Unmarshal(rec.Body.Bytes(), &list) != nil {
+		t.Fatalf("models body not JSON: %s", rec.Body)
+	}
+	var found bool
+	for _, item := range list.Data {
+		if item.ID == "daily" {
+			found = true
+			if !item.Alias || item.RoutedModel != "cn:free" {
+				t.Fatalf("别名条目应只广告主目标：%+v", item)
+			}
+		}
+		// 备用目标不该作为独立模型名出现在列表里。
+		if item.ID == "cn:free2" {
+			t.Fatalf("备用目标不应被广告：%s", rec.Body)
+		}
+	}
+	if !found {
+		t.Fatalf("别名未出现在 /v1/models：%s", rec.Body)
+	}
+}
+
+// TestAliasWithoutFallbacksKeepsLegacyBehavior 不写 fallbacks/strategy 的存量条目
+// 必须与引入候选链之前完全一致：恒用主目标、target index 为 0。
+func TestAliasWithoutFallbacksKeepsLegacyBehavior(t *testing.T) {
+	var mu sync.Mutex
+	var seen string
+	h, _ := routeConsole(t, func(w http.ResponseWriter, r *http.Request) {
+		fmt.Fprint(w, `{"core":true}`)
+	}, ocHealthHandler(t, `{"phase":"ready","modelResults":{
+		"OC · Only":{"ok":true,"category":"available","durationMs":50}
+	}}`, &seen, &mu))
+	entry := routeEntry{Alias: "legacy", Channel: channelOpenCode, Model: "OC · Only", Enabled: true}
+	if got := saveRoutes(t, h, []routeEntry{entry}, ""); got.Code != 200 {
+		t.Fatalf("save: %d %s", got.Code, got.Body)
+	}
+	rec := chatViaAlias(t, h, "legacy", &seen, &mu)
+	mu.Lock()
+	defer mu.Unlock()
+	if seen != "OC · Only" {
+		t.Fatalf("存量条目应恒用主目标，实际 %q", seen)
+	}
+	if got := rec.Header().Get("X-Prism-Target-Index"); got != "0" {
+		t.Fatalf("target index=%q, want 0", got)
 	}
 }
