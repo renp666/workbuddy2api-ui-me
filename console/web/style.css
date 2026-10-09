@@ -30,7 +30,9 @@
  --ch-workbuddy:#4f52d6;--ch-zcode:#0a7f96;--ch-qoder:#7a3fc4;--ch-opencode:#c4356f;--ch-autoclaw:#8a5a00;--ch-trae:#3f7a1e;--ch-raccoon:#a14e2c;
  --ch-workbuddy-ink:#3d40a8;--ch-zcode-ink:#076b80;--ch-qoder-ink:#6a36ab;--ch-opencode-ink:#b02f63;--ch-autoclaw-ink:#6e4700;--ch-trae-ink:#326219;--ch-raccoon-ink:#86401f;
  --ch-workbuddy-wash:#eef0fa;--ch-zcode-wash:#e6f4f7;--ch-qoder-wash:#f2ecfb;--ch-opencode-wash:#fbeaf1;--ch-autoclaw-wash:#faf3e2;--ch-trae-wash:#edf4e7;--ch-raccoon-wash:#f8efe8;
- /* --ch-lit 是暗底（机架面 --sidebar）上的文字版，同样由那条测试实测过 4.5:1。 */
+ /* --ch-lit 是暗底（机架面 --sidebar）上的文字版，同样由那条测试实测过 4.5:1。
+    概览卡片改走浅色内容区后，这一版留给机架面（侧栏/顶栏）用：色值与对比度一并保留，
+    免得哪天要在暗底上写通道名时再回头配一遍。 */
  --ch-workbuddy-lit:#8f92ff;--ch-zcode-lit:#4fd6e8;--ch-qoder-lit:#b78cf5;--ch-opencode-lit:#ff8fb8;--ch-autoclaw-lit:#e8b45a;--ch-trae-lit:#9ad86a;--ch-raccoon-lit:#e89a6a;
  /* 谱线按色相排（靛→紫罗兰→琥珀→赭→草→青→玫红），不是 usageChannelOrder 的通道顺序：
     隔色相邻会断成几段色条，顺色相才读成一道连续的光。列表顺序仍以通道为准。
@@ -226,30 +228,30 @@ code{font-family:var(--font-mono);font-size:.92em}
    所以只压字号与颜色，不动 32px 的主读数。letter-spacing 归零，免得继承主值的紧排。 */
 .metrics strong small{display:inline-block;font-size:12px;font-weight:600;letter-spacing:0;color:var(--muted);margin-left:6px;vertical-align:2px}
 
-/* ---------- 通道机架（运行概览招牌） ---------- */
-/* 概览顶部这块不是"四张卡片"，是一根机架里并排的四束光：底色与顶栏同族，
-   顶沿一条谱线切出四段，读数用白、通道名用各自的亮版通道色（暗底实测靛 6.89、
-   青 10.81、紫罗兰 7.21、玫红 8.80，全部 ≥4.5）。浅色 wash 在暗底上会糊成一片，
-   所以这里一律走 --ch-lit 亮版，浅色区那套 --ch-ink 深版不在这个面上用。 */
-.channel-cards{position:relative;display:grid;grid-template-columns:repeat(auto-fit,minmax(240px,1fr));background:var(--sidebar);border:1px solid #1d2038;border-radius:var(--radius-lg);overflow:hidden;margin-bottom:26px}
-.channel-cards::before{content:"";position:absolute;left:0;right:0;top:0;height:3px;background:var(--spectrum);z-index:1}
-.channel-card{background:transparent;border:0;border-left:1px solid #1d2038;border-radius:0;padding:20px 20px 18px;display:flex;flex-direction:column;gap:12px;transition:background .14s ease}
-.channel-card:first-child{border-left:0}
-.channel-card:hover{background:#141731}
-.channel-card.warn{background:#191305}
-.channel-card.bad{background:#1b0d11}
-.channel-card.warn:hover,.channel-card.bad:hover{background:#221a08}
-.channel-card.bad:hover{background:#240f14}
+/* ---------- 通道卡片（运行概览顶部） ---------- */
+/* 七张卡片是同一组信息的七份：顶沿一条本色细带、名字用本色文字版，其余一律回到
+   内容区那套白面 + 语义徽章。此前这里是页面里唯一一块暗底，七种亮色同时压在深底上，
+   既与周围的浅色面板打架，也让主次分不出来；通道色现在只留在识别位上，状态交给徽章。
+   卡片各自独立成块（不再连成一根机架），因为七张卡片无论怎么排都会有一行不满，
+   连成一体会把那半行读成缺口。 */
+.channel-cards{display:grid;grid-template-columns:repeat(auto-fit,minmax(230px,1fr));gap:12px;margin-bottom:26px}
+.channel-card{position:relative;background:var(--surface);border:1px solid var(--line);border-radius:var(--radius-lg);padding:16px 18px;display:flex;flex-direction:column;gap:12px;overflow:hidden;transition:border-color .14s ease,box-shadow .14s ease}
+/* 顶沿本色细带：一张卡片一束光，与表格里 .ch-name 的色点认的是同一条通道。 */
+.channel-card::before{content:"";position:absolute;left:0;right:0;top:0;height:3px;background:var(--ch)}
+.channel-card:hover{border-color:var(--ch);box-shadow:0 1px 2px rgba(23,26,43,.06)}
+/* 告警与不可达只压一点描边色，不整块换底：底色一旦跟着状态走，七张卡片就不再是一组。 */
+.channel-card.warn{border-color:#e7d3a6}
+.channel-card.bad{border-color:#eec3c9}
 .channel-card-head{display:flex;align-items:center;justify-content:space-between;gap:10px}
-.channel-card-name{font-size:13px;font-weight:700;color:var(--ch-lit);letter-spacing:-.1px}
+.channel-card-name{font-size:13px;font-weight:700;color:var(--ch-ink);letter-spacing:-.1px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .channel-card-stats{display:grid;grid-template-columns:repeat(2,1fr);gap:8px 14px}
-.channel-card-stats div{display:flex;flex-direction:column}
-.channel-card-stats span{font-size:11px;color:var(--sidebar-muted)}
-.channel-card-stats strong{font-family:var(--font-mono);font-size:18px;font-weight:700;letter-spacing:-.6px;color:#fff;font-variant-numeric:tabular-nums}
-/* Actions sit under the stats rather than pinned to the card floor: a bypass
-   channel reports one stat where WorkBuddy reports five, and pinning turns that
-   difference into a hole in the middle of the short cards. */
-.channel-card-actions{display:flex;flex-wrap:wrap;gap:8px}
+.channel-card-stats div{display:flex;flex-direction:column;min-width:0}
+.channel-card-stats span{font-size:11px;color:var(--muted)}
+.channel-card-stats strong{font-family:var(--font-mono);font-size:16px;font-weight:700;letter-spacing:-.5px;color:var(--ink);font-variant-numeric:tabular-nums;overflow-wrap:anywhere}
+/* 入口吸到卡片底沿：七张卡片统计格一样多，吸底不会在短卡片中间留洞，
+   反而让一排卡片的按钮落在同一条基线上。 */
+.channel-card-actions{display:flex;flex-wrap:wrap;gap:8px;margin-top:auto}
+.channel-card-actions button{padding:7px 12px;font-size:12px}
 
 /* ---------- 每日趋势折线图 ---------- */
 .trend-panel{padding:18px}

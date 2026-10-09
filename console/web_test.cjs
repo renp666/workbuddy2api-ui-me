@@ -2952,14 +2952,16 @@ test('overview channel cards summarize each enabled channel and jump to its tab'
   await vm.runInContext('loadOverview()',ctx);
   await new Promise(r=>setImmediate(r));
   const cards=get('overview-cards').children;
-  // 机架上的每个仓位顶着自己的通道色：卡片必须挂 ch-<通道>，否则 --ch-lit 在名称上解析不出来。
+  // 每张卡片顶着自己那束通道色：卡片必须挂 ch-<通道>，否则顶沿细带与名字色解析不出来。
   assert.deepEqual(cards.map(c=>c.className),['channel-card ch-workbuddy','channel-card ch-zcode'],'通道卡片没有挂通道类');
-  assert.deepEqual(cards.map(c=>c.children[0].children[1].className),['badge rail-state ok','badge rail-state ok'],'机架上的状态徽章没走深底那一套');
-  assert.deepEqual(cards.map(c=>c.children[2].children[0].className),['rail-btn','rail-btn'],'机架上的入口按钮不该是白底 secondary');
+  assert.deepEqual(cards.map(c=>c.children[0].children[1].className),['badge ok','badge ok'],'卡片状态徽章没走语义色那一套');
+  assert.deepEqual(cards.map(c=>c.children[2].children[0].className),['secondary','secondary'],'卡片入口该是内容区的 secondary 按钮');
   assert.deepEqual(cards.map(c=>c.children[0].children[0].textContent),['WorkBuddy','GLM（Zcode）'],'cards must follow enabled channels');
+  // 七张卡片固定六格：前四项七通道同一组口径，后两项是该通道自己的账号/凭据口径。
   const stats=card=>card.children[1].children.map(d=>d.children[0].textContent+':'+d.children[1].textContent);
-  assert.deepEqual(stats(cards[0]),['账号:1','可用:1','冷却 / 禁用:0 / 0','在途:0','模型:1'],'workbuddy card must mirror the account pool snapshot');
-  assert.deepEqual(stats(cards[1]),['模型:3','套餐:—'],'zcode card without plan must show dash');
+  assert.deepEqual(stats(cards[0]),['模型:1','调用:1','Tokens:3','积分:0.00','账号:1','可用:1'],'workbuddy card must mirror the account pool snapshot');
+  assert.deepEqual(stats(cards[1]),['模型:3','调用:0','Tokens:0','积分:0.00','套餐:—','凭据:—'],'zcode card must keep the same six slots and show dashes for what it lacks');
+  assert.equal(cards[1].children[1].children.length,6,'卡片格数不一致，网格拉伸后短卡片底部会空出一块');
   assert.equal(cards[1].children[0].children[1].textContent,'在线');
   cards[1].children[2].children[0].handlers.click();
   assert.equal(vm.runInContext('page',ctx),'zcode','card shortcut did not navigate');
@@ -3230,7 +3232,7 @@ test('通道色只有一处真源：app.js 不再自带调色板，每条通道�
     assert.ok(contrastRatio(cssToken(css,'ch-'+channel+'-ink'),cssToken(css,'ch-'+channel+'-wash'))>=4.5,
       `${channel} 的通道名（ink 落在自己的 wash 上）对比度不到 4.5:1`);
     assert.ok(contrastRatio(cssToken(css,'ch-'+channel+'-lit'),sidebar)>=4.5,
-      `${channel} 的机架卡名（lit 落在 --sidebar 上）对比度不到 4.5:1`);
+      `${channel} 的暗底文字版（lit 落在 --sidebar 上）对比度不到 4.5:1`);
   }
 });
 
@@ -3335,16 +3337,22 @@ test('通道分布的占比条：分母是整个范围，10% 一档取整，最�
   assert.match(cssRuleBody(readFileSync(__dirname+'/web/style.css','utf8'),'.share'),/margin:[^;}]*auto/,'占比条没有靠右，会落在数值格的左边缘');
 });
 
-test('机架面（暗底）用深底亮字那一套：五档徽章与通道名都有 lit 版，浅色 wash 不许出现在机架上',()=>{
+test('通道卡片走内容区那套白面：通道色只做识别，状态交给语义徽章',()=>{
   const css=readFileSync(__dirname+'/web/style.css','utf8');
-  assert.match(cssRuleBody(css,'.channel-cards'),/background:var\(--sidebar\)/,'概览顶部没有落成机架暗底');
-  assert.match(cssRuleBody(css,'.channel-cards::before'),/background:var\(--spectrum\)/,'机架顶沿缺谱线');
+  // 卡片底色必须回到内容区同一套白面：此前这里是页面里唯一一块暗底，七种亮色压在深底上，
+  // 既与周围的浅色面板打架，也分不出主次。
+  assert.match(cssRuleBody(css,'.channel-card'),/background:var\(--surface\)/,'通道卡片没有回到内容区白面');
+  // 顶沿本色细带：一张卡片一束光，与表格里 .ch-name 的色点认的是同一条通道。
+  assert.match(cssRuleBody(css,'.channel-card::before'),/background:var\(--ch\)/,'通道卡片顶沿缺本色细带');
+  assert.match(cssRuleBody(css,'.channel-card-name'),/color:var\(--ch-ink\)/,'通道名没有用浅底上的本色文字版');
+  assert.match(cssRuleBody(css,'.channel-card-stats strong'),/color:var\(--ink\)/,'卡片读数不是浅底上的深字，会读不清');
+  // 卡片必须各自成块：七张卡片无论怎么排都会有一行不满，连成一根机架会把那半行读成缺口。
+  assert.match(cssRuleBody(css,'.channel-cards'),/gap:12px/,'卡片没有留缝，最后一行不满时会连成一块缺口');
+  // 顶栏与侧栏仍是机架面：谱线还在，暗底徽章那一套也还得在（顶栏 #service-state 用）。
   assert.match(cssRuleBody(css,'.topbar::after'),/background:var\(--spectrum\)/,'顶栏下沿缺谱线');
   assert.match(cssRuleBody(css,'.sidebar::after'),/background:var\(--spectrum-v\)/,'侧栏右沿缺竖向谱线');
-  assert.match(cssRuleBody(css,'.channel-card-name'),/color:var\(--ch-lit\)/,'机架上的通道名没用暗底专用的亮版');
-  assert.match(cssRuleBody(css,'.channel-card-stats strong'),/color:#fff/,'机架读数不是白字，暗底上会读不清');
   for(const tone of ['ok','warn','bad','idle','unknown'])
-    assert.ok(css.includes(`.badge.rail-state.${tone}{`),`缺 .badge.rail-state.${tone}，机架上的该档位会退回浅紫胶囊`);
+    assert.ok(css.includes(`.badge.rail-state.${tone}{`),`缺 .badge.rail-state.${tone}，顶栏状态徽章会退回浅紫胶囊`);
 });
 
 function ccrFixture(statuses,linkBody={ui_url:'http://127.0.0.1:3458/?ccr_web_token=zzz'}) {

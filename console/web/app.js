@@ -545,14 +545,14 @@ function overviewChannelStatus(channel){
  }
  if(result)return result.reachable?{label:'在线',tone:'ok'}:{label:'不可达',tone:'bad'};
  // 探活还没出结论（或部署没开探活）时退回页签缓存，仍如实标「未加载」，不伪造在线。
- const st=channel==='zcode'?zcodeStatus:channel==='qoder'?qoderStatus:channel==='autoclaw'?autoclawStatus:channel==='trae'?traeStatus:channel==='raccoon'?raccoonStatus:opencodeStatus;
+ const st=channelStatusOf(channel);
  if(!st)return{label:'未加载',tone:'unknown'};
  if(!st.enabled)return{label:'未启用',tone:'idle'};
  return st.reachable?{label:'在线',tone:'ok'}:{label:'不可达',tone:'bad'};
 }
 function overviewChannelModelCount(channel){
  if(channel==='workbuddy')return modelList.length;
- const st=channel==='zcode'?zcodeStatus:channel==='qoder'?qoderStatus:channel==='autoclaw'?autoclawStatus:channel==='trae'?traeStatus:channel==='raccoon'?raccoonStatus:opencodeStatus;
+ const st=channelStatusOf(channel);
  if(!st||!st.enabled)return null;
  return Number(st.model_count)||0;
 }
@@ -591,21 +591,39 @@ function renderOverview(){
 // cardStats/cardActions 描述每张通道卡片的统计行与快捷入口。WorkBuddy 卡片直接读账号池
 // 快照（lastStatus/accounts），旁路卡片复用各页签已加载的状态缓存，缺失时如实显示「—」，
 // 不伪造在线或凭据态；未启用的通道不渲染卡片（与通道总览表同一口径）。
-function cardStats(c){
- if(c==='workbuddy'){
-  const flight=accounts.reduce((n,a)=>n+(a.in_flight||0),0);
-  return [['账号',String(lastStatus?lastStatus.total:0)],['可用',lastStatus?String(lastStatus.healthy):'—'],['冷却 / 禁用',lastStatus?`${lastStatus.cooling} / ${lastStatus.disabled}`:'—'],['在途',String(flight)],['模型',String(modelList.length)]];
- }
+// channelStatusOf 取某通道已加载的状态缓存（各页签共用同一份），未加载返回 null。
+// 这层映射只写一次，卡片、通道总览、模型数都从这里取，别再各摆一串三元。
+function channelStatusOf(channel){
+ return channel==='zcode'?zcodeStatus:channel==='qoder'?qoderStatus:channel==='opencode'?opencodeStatus:channel==='autoclaw'?autoclawStatus:channel==='trae'?traeStatus:channel==='raccoon'?raccoonStatus:null;
+}
+// cardStats 描述每张通道卡片的统计格。前四项是七条通道共有的同一组口径
+// （模型 / 调用 / Tokens / 积分），后两项是该通道自己的账号或凭据口径。
+// 固定六格是为了让七张卡片一样高：此前 WorkBuddy 报五项、旁路只报两项，
+// 网格拉伸后短卡片底部会空出一大块，那正是「不协调」的来源。
+// 缺失一律给「—」，不伪造在线，也不把未观测当 0。
+function cardStats(c,s){
  const count=overviewChannelModelCount(c);
- const out=[['模型',count===null?'—':String(count)]];
- const st=c==='zcode'?zcodeStatus:c==='qoder'?qoderStatus:c==='autoclaw'?autoclawStatus:c==='trae'?traeStatus:c==='raccoon'?raccoonStatus:opencodeStatus;
- if(c==='zcode'&&st&&st.enabled)out.push(['套餐',st.plan==='coding-plan'?'Coding':st.plan==='start-plan'?'Start':'—']);
- if(c==='qoder'&&st&&st.enabled)out.push(['凭据',st.control?(st.logged_in?'已登录':'未登录'):'PAT']);
- if(c==='opencode'&&st&&st.enabled)out.push(['阶段',st.health&&st.health.phase?st.health.phase:'—']);
- if(c==='autoclaw'&&st&&st.enabled)out.push(['账号',st.health?`${st.health.healthy} / ${st.health.total}`:'—']);
- if(c==='trae'&&st&&st.enabled)out.push(['账号',Array.isArray(st.accounts)?`${st.accounts.filter(a=>a.enabled&&!a.disabled&&!a.cooling).length} / ${st.accounts.length}`:'—']);
- if(c==='raccoon'&&st&&st.enabled)out.push(['账号',Array.isArray(st.accounts)?`${st.accounts.filter(a=>a.enabled&&!a.disabled&&!a.cooling).length} / ${st.accounts.length}`:'—']);
- return out;
+ const tokens=usageTokenTotal(s);
+ return [
+  ['模型',count===null?'—':String(count)],
+  ['调用',String(s.calls)],
+  ['Tokens',tokens==null?'—':formatTokens(tokens)],
+  ['积分',formatCreditGroup(s.credit,s.creditMissing,s.calls)],
+ ].concat(cardAccountStats(c));
+}
+// cardAccountStats 各通道自己的账号/凭据口径：有账号池的报「账号 / 可用」，
+// 没有账号池的报它实际具备的那两件事（套餐与凭据、阶段与免登录）。
+// 七张卡片的第二行因此始终是「同一类问题」，横向扫一排就能比。
+function cardAccountStats(c){
+ if(c==='workbuddy')return [['账号',lastStatus?String(lastStatus.total):'—'],['可用',lastStatus?String(lastStatus.healthy):'—']];
+ const st=channelStatusOf(c),on=!!(st&&st.enabled);
+ if(c==='zcode')return [['套餐',on?(st.plan==='coding-plan'?'Coding':st.plan==='start-plan'?'Start':'—'):'—'],['凭据',on?(st.control?(st.logged_in?'已登录':'未登录'):'—'):'—']];
+ if(c==='qoder')return [['凭据',on?(st.control?(st.logged_in?'已登录':'未登录'):'PAT'):'—'],['控制端',on?(st.reachable?'在线':'不可达'):'—']];
+ if(c==='opencode')return [['阶段',on&&st.health&&st.health.phase?st.health.phase:'—'],['账号','免登录']];
+ if(c==='autoclaw')return [['账号',on&&st.health?`${st.health.healthy} / ${st.health.total}`:'—'],['可用',on&&st.health?String(st.health.healthy):'—']];
+ const list=on&&Array.isArray(st.accounts)?st.accounts:[];
+ const usable=list.filter(a=>a.enabled&&!a.disabled&&!a.cooling).length;
+ return [['账号',list.length?String(list.length):'—'],['可用',list.length?String(usable):'—']];
 }
 function cardActions(c){
  if(c==='workbuddy')return [{label:'◎ 账号管理',view:'workbuddy',sub:'accounts'},{label:'↗ 对话测试',view:'workbuddy',sub:'chat'}];
@@ -616,7 +634,7 @@ function cardActions(c){
 function cardStatus(c){
  const base=overviewChannelStatus(c);
  if(c==='workbuddy')return base;
- const st=c==='zcode'?zcodeStatus:c==='qoder'?qoderStatus:c==='autoclaw'?autoclawStatus:c==='trae'?traeStatus:c==='raccoon'?raccoonStatus:opencodeStatus;
+ const st=channelStatusOf(c);
  if(!st||!st.enabled||!st.control)return base;
  if(!st.logged_in)return{label:'未登录',tone:'warn'};
  if(c==='zcode'&&!st.proxy_running)return{label:'未启用',tone:'idle'};
@@ -624,22 +642,24 @@ function cardStatus(c){
 }
 function renderCards(){
  const wrap=$('overview-cards');if(!wrap)return;wrap.replaceChildren();
+ const byChannel=new Map();
+ for(const e of overviewUsageItems){const c=usageChannelOf(e);if(!byChannel.has(c))byChannel.set(c,[]);byChannel.get(c).push(e);}
  for(const c of usageChannelOrder){
   const enabled=c==='workbuddy'||(c==='zcode'&&zcodeEnabled)||(c==='qoder'&&qoderEnabled)||(c==='opencode'&&opencodeEnabled)||(c==='autoclaw'&&autoclawEnabled)||(c==='trae'&&traeEnabled)||(c==='raccoon'&&raccoonEnabled);
   if(!enabled)continue;
   const status=cardStatus(c);
-  // 机架上的每个仓位顶着自己的通道色，状态徽章走暗底那一套深底亮字；
-  // 告警与不可达只是把仓位底色压深一点，未启用/未加载是中性事实，保持平静。
+  // 每张卡片顶沿一条本色细带、名字用本色文字版，其余回到内容区那套白面与语义徽章：
+  // 通道色只做识别，状态一律交给徽章。告警与不可达只压一点描边色，不整块换底。
   const card=document.createElement('article');card.className='channel-card ch-'+c+(status.tone==='bad'?' bad':status.tone==='warn'?' warn':'');
   const head=document.createElement('div');head.className='channel-card-head';
   const name=document.createElement('span');name.className='channel-card-name';name.textContent=usageChannelNames[c];
-  const badge=document.createElement('span');badge.className='badge rail-state'+(status.tone?' '+status.tone:'');badge.textContent=status.label;
+  const badge=document.createElement('span');badge.className='badge'+(status.tone?' '+status.tone:'');badge.textContent=status.label;
   head.append(name,badge);card.append(head);
   const stats=document.createElement('div');stats.className='channel-card-stats';
-  for(const [k,v] of cardStats(c)){const d=document.createElement('div');const s=document.createElement('span');s.textContent=k;const strong=document.createElement('strong');strong.textContent=v;d.append(s,strong);stats.append(d);}
+  for(const [k,v] of cardStats(c,summarizeUsage(byChannel.get(c)||[]))){const d=document.createElement('div');const s=document.createElement('span');s.textContent=k;const strong=document.createElement('strong');strong.textContent=v;d.append(s,strong);stats.append(d);}
   card.append(stats);
   const actions=document.createElement('div');actions.className='channel-card-actions';
-  for(const a of cardActions(c)){const btn=document.createElement('button');btn.className='rail-btn';btn.textContent=a.label;btn.addEventListener('click',()=>{if(a.sub&&a.view==='workbuddy')setWorkBuddyView(a.sub);showPage(a.view);});actions.append(btn);}
+  for(const a of cardActions(c)){const btn=document.createElement('button');btn.className='secondary';btn.textContent=a.label;btn.addEventListener('click',()=>{if(a.sub&&a.view==='workbuddy')setWorkBuddyView(a.sub);showPage(a.view);});actions.append(btn);}
   card.append(actions);
   wrap.append(card);
  }
