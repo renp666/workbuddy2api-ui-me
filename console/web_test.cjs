@@ -2631,7 +2631,12 @@ function routeFixture(routeState, capState={available:false, rows:[]}, switches=
       return response({...routeState,aliases,overrides:{...overrides}});
     }
     if(url==='/admin/model-switch')return response({enabled:true,overrides:{...overrides}});
-    if(url==='/admin/route/test'){posts.push(JSON.parse(options.body));return response(testResult);}
+    // testResult 可以是固定结论，也可以是 (alias)=>结论 的函数：一键测试要按别名
+    // 给出不同结果，才能测出「哪几条红、汇总怎么算」。
+    if(url==='/admin/route/test'){
+      const body=JSON.parse(options.body);posts.push(body);
+      return response(typeof testResult==='function'?testResult(body.alias):testResult);
+    }
     if(url==='/admin/capabilities')return response(capState);
     throw new Error('unexpected '+url);
   });
@@ -2924,6 +2929,127 @@ test('模型列表的开关与别名表同状态：一次点击同时刷新两�
   // 别名页读的是同一份配置：缓存必须同步，切过去不能看到旧值。
   assert.equal(vm.runInContext('routesState.aliases[0].enabled',ctx),false,'模型列表改了开关，别名缓存没同步');
   assert.equal(get('core-models-body').children[0].children[9].children[0].textContent,'已停用');
+});
+
+test('一键测试：去重、跳过停用，跑完把汇总写在进度条上（问题4）',async()=>{
+  const {ctx,get,posts}=aliasFixture({aliases:[
+    {alias:'a-ok',channel:'core',model:'cn:x',public_model:'cn:x',enabled:true,note:''},
+    {alias:'a-dup',channel:'core',model:'cn:x',public_model:'cn:x',enabled:true,note:''},
+    {alias:'b-off',channel:'core',model:'cn:y',public_model:'cn:y',enabled:false,note:''},
+    {alias:'c-ok',channel:'opencode',model:'OC · Free',public_model:'opencode-OC · Free',enabled:true,note:''}],
+    channels:[{channel:'core',enabled:true,reachable:true,models:['cn:x','cn:y']},
+      {channel:'opencode',enabled:true,reachable:true,models:['opencode-OC · Free']}]},
+    ()=>({ok:true,durationMs:900,ttftMs:200,tokensPerSec:33,source:'probe'}));
+  await vm.runInContext("signedIn({csrf:'c',global_enabled:true,zcode_enabled:false,qoder_enabled:false,opencode_enabled:true})",ctx);
+  await vm.runInContext('loadRoutes()',ctx);
+  const button=get('routes-alias-test-all');
+  // DOM shim 不解析 HTML，按钮的字面文案由下面那条读 index.html 的用例守住；
+  // 这里先把文案填成真实值，才能验「跑完要复原」。
+  button.textContent='⚡ 一键测试';
+  consoleCalls.length=0;
+  await button.handlers.click();
+  // a-dup 与 a-ok 同通道同模型 ⇒ 只测一次（探测结论本来就按通道+模型名存，重复测白烧额度）；
+  // b-off 停用 ⇒ 跳过，不能算进「失败」平白吓人。
+  assert.deepEqual(posts.map(item=>item.alias).sort(),['a-ok','c-ok'],'去重或跳过停用的口径不对');
+  assert.deepEqual(posts.map(item=>Object.keys(item)),[['alias'],['alias']],'一键测试只该传别名');
+  assert.equal(get('notice').textContent,'一键测试完成：2 个全部可用');
+  assert.equal(get('routes-alias-test-progress').textContent,'测试完成 · 可用 2 · 失败 0 · 跳过 1 个已停用');
+  assert.equal(get('routes-alias-test-progress').hidden,false);
+  assert.deepEqual(consoleCalls,[],'全部可用不该往控制台打日志');
+  // 按钮必须复原，否则只能测一次。
+  assert.equal(button.disabled,false);
+  assert.equal(button.textContent,'⚡ 一键测试');
+  // 批量跑完单条「测试」要重新可点（loadRoutes 在标志放开之后才重渲染）。
+  assert.equal(aliasActions(get).every(row=>row[1].disabled===false),true,'批量结束后单测按钮还锁着');
+});
+
+test('一键测试：失败逐条汇总，完整结论打进控制台（问题4）',async()=>{
+  const {ctx,get}=aliasFixture({aliases:[
+    {alias:'good',channel:'core',model:'cn:x',public_model:'cn:x',enabled:true,note:''},
+    {alias:'bad-timeout',channel:'core',model:'cn:y',public_model:'cn:y',enabled:true,note:''},
+    {alias:'bad-gate',channel:'core',model:'cn:z',public_model:'cn:z',enabled:true,note:''}],
+    channels:[{channel:'core',enabled:true,reachable:true,models:['cn:x','cn:y','cn:z']}]},
+    alias=>alias==='good'?{ok:true,durationMs:900,tokensPerSec:33}
+      :alias==='bad-timeout'?{ok:false,category:'timeout',error:'上游 30 秒无响应'}
+      :{ok:false,category:'model_disabled',error:'目标模型 cn:z 已停用，先在模型列表启用再测'});
+  await vm.runInContext("signedIn({csrf:'c',global_enabled:true,zcode_enabled:false,qoder_enabled:false,opencode_enabled:false})",ctx);
+  await vm.runInContext('loadRoutes()',ctx);
+  consoleCalls.length=0;
+  await get('routes-alias-test-all').handlers.click();
+  assert.equal(get('notice').textContent,'一键测试完成：1 个可用，2 个失败（原因见状态列与控制台日志）');
+  const text=get('routes-alias-test-progress').textContent;
+  assert.match(text,/^测试完成 · 可用 1 · 失败 2 · 失败：/,'汇总没把失败条目点名列出来');
+  // 并发跑完的先后顺序不定，断言集合而不是顺序。
+  assert.deepEqual(text.split('失败：')[1].split('、').sort(),['bad-gate','bad-timeout']);
+  const logged=consoleCalls.filter(call=>call[0]==='error');
+  assert.equal(logged.length,1,'失败清单没打进控制台日志');
+  assert.equal(logged[0][1],'[一键测试] 失败清单');
+  // failures 是在 vm 上下文里建的数组：必须用 Array.from 搬到宿主 realm，
+  // 否则 deepEqual 会因为跨 realm 原型不同而报「结构相同但引用不等」。
+  assert.deepEqual(Array.from(logged[0][2],item=>item.alias).sort(),['bad-gate','bad-timeout']);
+  // 结论对象要带模型名与完整 result，才够拿来排查。
+  const timeout=logged[0][2].find(item=>item.alias==='bad-timeout');
+  assert.equal(timeout.model,'cn:y');
+  assert.equal(timeout.result.error,'上游 30 秒无响应');
+  assert.equal(timeout.result.category,'timeout');
+});
+
+test('一键测试：请求本身炸了也算一条失败，不让进度卡住（问题4）',async()=>{
+  const {ctx,get}=aliasFixture({aliases:[{alias:'boom',channel:'core',model:'cn:x',public_model:'cn:x',enabled:true,note:''}],
+    channels:[{channel:'core',enabled:true,reachable:true,models:['cn:x']}]});
+  await vm.runInContext("signedIn({csrf:'c',global_enabled:true,zcode_enabled:false,qoder_enabled:false,opencode_enabled:false})",ctx);
+  await vm.runInContext('loadRoutes()',ctx);
+  const original=ctx.fetch;
+  ctx.fetch=(url,options)=>url==='/admin/route/test'
+    ?Promise.reject(new TypeError('Failed to fetch'))
+    :original(url,options);
+  consoleCalls.length=0;
+  await get('routes-alias-test-all').handlers.click();
+  assert.equal(get('notice').textContent,'一键测试完成：0 个可用，1 个失败（原因见状态列与控制台日志）');
+  assert.equal(get('routes-alias-test-progress').textContent,'测试完成 · 可用 0 · 失败 1 · 失败：boom');
+  assert.equal(consoleCalls.filter(call=>call[0]==='error')[0][2][0].result.error,'Failed to fetch');
+  assert.equal(get('routes-alias-test-all').disabled,false,'异常路径把按钮锁死了');
+});
+
+test('一键测试：没有可测的别名时直说，不发请求（问题4）',async()=>{
+  const {ctx,get,posts}=aliasFixture({aliases:[],channels:[{channel:'core',enabled:true,reachable:true,models:[]}]});
+  await vm.runInContext("signedIn({csrf:'c',global_enabled:true,zcode_enabled:false,qoder_enabled:false,opencode_enabled:false})",ctx);
+  await vm.runInContext('loadRoutes()',ctx);
+  await get('routes-alias-test-all').handlers.click();
+  assert.deepEqual(posts,[],'一个别名都没有还发了测试请求');
+  assert.equal(get('notice').textContent,'还没有可测试的别名：先在下面添加一个');
+  assert.equal(get('routes-alias-test-progress').textContent,'','没跑起来却写了进度');
+});
+
+test('一键测试跑着的时候：单条测试锁住，改别名与启停都被拦下并说明原因（问题4）',async()=>{
+  const {ctx,get,posts}=aliasFixture({aliases:[{alias:'my-fast',channel:'core',model:'cn:workbuddy',public_model:'cn:workbuddy',enabled:true,note:''}],
+    channels:[{channel:'core',enabled:true,reachable:true,models:['cn:workbuddy']}]});
+  await vm.runInContext("signedIn({csrf:'c',global_enabled:true,zcode_enabled:false,qoder_enabled:false,opencode_enabled:false})",ctx);
+  await vm.runInContext('loadRoutes()',ctx);
+  // 批量测试是异步长跑，这里只验「跑着的时候别的入口关不关」，直接置位标志再重渲染。
+  vm.runInContext('routeTestBusy=true;renderRouteAliases(routesState.aliases)',ctx);
+  const [toggle,probe]=aliasActions(get)[0];
+  assert.equal(probe.disabled,true,'批量测试进行中，单测按钮还亮着');
+  assert.equal(probe.title,'一键测试进行中，请等它跑完');
+  await probe.handlers.click();
+  assert.deepEqual(posts,[],'批量进行中还发了单测请求');
+  // 启停按钮没禁用，所以必须给出为什么点了没反应。
+  await toggle.handlers.click();
+  assert.deepEqual(posts,[],'批量进行中还改了启停');
+  assert.equal(get('notice').textContent,'一键测试正在进行，等它跑完再改启停');
+  // 排序 / 删除 / 改备注都走 saveRouteAliases，同样要拦。
+  await vm.runInContext('saveRouteAliases(currentRouteAliases())',ctx);
+  assert.deepEqual(posts,[],'批量进行中还整表保存了别名');
+  assert.equal(get('notice').textContent,'一键测试正在进行，等它跑完再改别名');
+});
+
+test('一键测试按钮长在「我的别名表」表头，进度条紧随其后（问题4）',()=>{
+  const html=readFileSync(__dirname+'/web/index.html','utf8');
+  const head=html.match(/<h2>我的别名表<\/h2>[\s\S]*?<\/div>/)[0];
+  assert.match(head,/id="routes-alias-test-all"[^>]*>⚡ 一键测试<\/button>/,'别名表表头没有一键测试按钮');
+  assert.match(head,/多个别名指向同一个模型时只测一次/,'没交代去重口径');
+  assert.match(head,/已停用的跳过/,'没交代跳过口径');
+  assert.match(html,/<p id="routes-alias-test-progress" class="muted small" role="status" aria-live="polite" hidden><\/p>/,'进度条缺 aria-live 或默认没藏起来');
 });
 
 test('模型能力 TOP ranks only pool models and tiers them by real local cost',async()=>{

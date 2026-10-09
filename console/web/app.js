@@ -14,7 +14,7 @@ let ccrStatus = null, ccrEnabled = false, ccrBusy = false;
 let autoclawModels = [], autoclawHistory = [], autoclawStatus = null, autoclawBusy = false, autoclawView = 'status', autoclawEnabled = false, autoclawAccounts = [], autoclawLoginBusy = false, autoclawCodeTimer = null;
 let traeModels = [], traeHistory = [], traeStatus = null, traeBusy = false, traeView = 'status', traeEnabled = false, traeAccounts = [], traeLoginBusy = false, traePollTimer = null, traeAuthURL = '';
 let raccoonModels = [], raccoonHistory = [], raccoonStatus = null, raccoonBusy = false, raccoonView = 'status', raccoonEnabled = false, raccoonAccounts = [];
-let routesState = null, routesBusy = false, routesEditing = null;
+let routesState = null, routesBusy = false, routesEditing = null, routeTestBusy = false;
 let probeSnapshot = {running:false,done:0,total:0,channels:{}}, probeTarget = '', probeTimer, probeBusy = false;
 // modelsGroupByAccount：core 模型表是否按可用账号分层展示（默认开）。
 let modelsGroupByAccount = true;
@@ -63,7 +63,7 @@ function signedOut() {
  autoclawModels=[];autoclawHistory=[];autoclawStatus=null;autoclawEnabled=false;autoclawBusy=false;autoclawLoginBusy=false;autoclawView='status';autoclawAccounts=[];clearTimeout(autoclawCodeTimer);autoclawCodeTimer=null;$('autoclaw-model').replaceChildren();clearMessages($('autoclaw-messages'));$('autoclaw-prompt').value='';$('autoclaw-usage').textContent='用量将在上游返回后显示';$('autoclaw-disabled').hidden=true;$('autoclaw-content').hidden=true;$('nav-autoclaw').classList.remove('nav-muted');$('autoclaw-health-wrap').hidden=true;$('autoclaw-health-body').replaceChildren();$('autoclaw-accounts-body').replaceChildren();$('autoclaw-phone').value='';$('autoclaw-code').value='';$('autoclaw-oauth-url').value='';$('autoclaw-login-hint').textContent='';$('autoclaw-global-hint').textContent='';const sc=$('autoclaw-sendcode');sc.disabled=false;sc.textContent='发送验证码';
  traeModels=[];traeHistory=[];traeStatus=null;traeEnabled=false;traeBusy=false;traeLoginBusy=false;traeView='status';traeAccounts=[];traeAuthURL='';clearTimeout(traePollTimer);traePollTimer=null;$('trae-model').replaceChildren();clearMessages($('trae-messages'));$('trae-prompt').value='';$('trae-usage').textContent='用量将在上游返回后显示';$('trae-disabled').hidden=true;$('trae-content').hidden=true;$('nav-trae').classList.remove('nav-muted');$('trae-health-wrap').hidden=true;$('trae-health-body').replaceChildren();$('trae-accounts-body').replaceChildren();$('trae-auth-row').hidden=true;$('trae-login-hint').textContent='';$('trae-import-url').value='';$('trae-import-hint').textContent='';$('trae-schedule-body').replaceChildren();$('trae-schedule-hint').textContent='';$('trae-usage-body').replaceChildren();
  raccoonModels=[];raccoonHistory=[];raccoonStatus=null;raccoonEnabled=false;raccoonBusy=false;raccoonView='status';raccoonAccounts=[];$('raccoon-model').replaceChildren();clearMessages($('raccoon-messages'));$('raccoon-prompt').value='';$('raccoon-usage').textContent='用量将在上游返回后显示';$('raccoon-disabled').hidden=true;$('raccoon-content').hidden=true;$('nav-raccoon').classList.remove('nav-muted');$('raccoon-health-wrap').hidden=true;$('raccoon-health-body').replaceChildren();$('raccoon-accounts-body').replaceChildren();$('raccoon-import-json').value='';$('raccoon-import-hint').textContent='';
- routesState=null;routesBusy=false;routesEditing=null;modelSwitchOverrides=new Map();capState=null;capByKeys=new Map();capDim='coding';capCategory='';capFilter='';$('routes-disabled').hidden=true;$('routes-content').hidden=true;$('routes-alias-body').replaceChildren();$('routes-channels').replaceChildren();$('routes-alias-model').replaceChildren();$('routes-alias-model-custom').value='';$('routes-alias-model-custom').hidden=true;$('routes-alias-editing').hidden=true;$('routes-alias-editing').textContent='';$('routes-example').textContent='';$('routes-alias-name').value='';$('routes-alias-model').value='';$('routes-alias-note').value='';$('routes-auto-fallback').value='';$('cap-filter').value='';
+ routesState=null;routesBusy=false;routesEditing=null;routeTestBusy=false;modelSwitchOverrides=new Map();capState=null;capByKeys=new Map();capDim='coding';capCategory='';capFilter='';$('routes-alias-test-progress').hidden=true;$('routes-alias-test-progress').textContent='';$('routes-disabled').hidden=true;$('routes-content').hidden=true;$('routes-alias-body').replaceChildren();$('routes-channels').replaceChildren();$('routes-alias-model').replaceChildren();$('routes-alias-model-custom').value='';$('routes-alias-model-custom').hidden=true;$('routes-alias-editing').hidden=true;$('routes-alias-editing').textContent='';$('routes-example').textContent='';$('routes-alias-name').value='';$('routes-alias-model').value='';$('routes-alias-note').value='';$('routes-auto-fallback').value='';$('cap-filter').value='';
  probeSnapshot={running:false,done:0,total:0,channels:{}};probeTarget='';probeBusy=false;clearTimeout(probeTimer);probeTimer=undefined;for(const n of Object.keys(probeChannelNames)){$('probe-'+n+'-progress').hidden=true;$('probe-'+n+'-progress').textContent='';}
 $('refresh-stamp').hidden=true;$('refresh-stamp').textContent='';
  overviewUsageItems=[];overviewGeneration++;healthState=null;healthGeneration++;clearTimeout(healthPollTimer);healthPollTimer=undefined;
@@ -1511,7 +1511,9 @@ function renderZcode(status){
  for(const id of zcodeModels)$('zcode-model').append(new Option(id,id));
  if(zcodeModels.includes(previous))$('zcode-model').value=previous;
  renderModelTable('zcode',status.models,status.health);
- $('zcode-models-note').hidden=plan!=='start-plan';
+ // 备注的显隐由服务端下发的判据决定，不再自己拿 plan 猜：权益过滤时 plan 仍是
+ // start-plan，只看 plan 会把「按权益裁短」说成「按档位只留 flash」，与事实不符。
+ $('zcode-models-note').hidden=!status.model_filter;
  $('zcode-model').disabled=!zcodeModels.length||!!activeRequest;
  $('zcode-send').disabled=!zcodeModels.length||!!activeRequest;
  zcodeActionControls();
@@ -2131,8 +2133,11 @@ function renderRouteAliases(aliases){
   // 状态，所以模型列表里同一个模型的开关会跟着变，反之亦然。
   const toggle=document.createElement('button');toggle.className='secondary';toggle.textContent=entry.enabled?'停用':'启用';
   toggle.addEventListener('click',()=>routeAliasSwitch(entry,!entry.enabled));
-  // 测试真发一条最小对话，失败把上游原文带回页面。
+  // 测试真发一条最小对话，失败把上游原文带回页面。批量测试跑着的时候一并禁用：
+  // 两个请求会抢同一份上游额度，结论还会互相覆盖。
   const test=document.createElement('button');test.className='secondary route-test';test.textContent='测试';
+  test.disabled=routeTestBusy;
+  if(routeTestBusy)test.title='一键测试进行中，请等它跑完';
   test.addEventListener('click',()=>routeAliasTest(entry,test));
   const edit=document.createElement('button');edit.className='secondary';edit.textContent='编辑';edit.addEventListener('click',()=>startRouteEdit(entry));
   const remove=document.createElement('button');remove.className='quiet';remove.textContent='删除';let removeArmed=false;
@@ -2155,6 +2160,9 @@ function moveRouteAlias(index,delta){
 // routeAliasSwitch 改一个别名的启停。走整组端点：服务端同时改模型开关表与所有
 // 指向该模型的别名，响应里同时带回 aliases 与 overrides，一次刷新两边。
 async function routeAliasSwitch(entry,enabled){
+ // 批量测试跑着的时候不让改启停：改完那半批的结论就对不上新的启停态了，
+ // 用户会看到一张自相矛盾的表。按钮没禁用，所以要说清为什么点了没反应。
+ if(routeTestBusy){notice('一键测试正在进行，等它跑完再改启停');return;}
  if(routesBusy)return;
  routesBusy=true;
  try{
@@ -2168,6 +2176,8 @@ async function routeAliasSwitch(entry,enabled){
 // routeAliasTest 对单个别名发一条最小对话。失败不吞：页面提示 + console.error
 // 打出完整结论，方便直接复制排查。
 async function routeAliasTest(entry,button){
+ // 批量测试进行中时这个按钮已经被渲染成禁用态（见 renderRouteAliases）：两个请求
+ // 会抢同一份上游额度，结论还会互相覆盖。这里不再重复解释，进度条就挂在表头上方。
  if(button.disabled)return;
  const label=button.textContent;button.disabled=true;button.textContent='测试中…';
  try{
@@ -2192,6 +2202,70 @@ function routeTestDetail(result){
  if(raw)return raw;
  const category=result&&typeof result.category==='string'?result.category:'';
  return modelFailureLabels[category]||category||'未知原因';
+}
+// routeTestConcurrency 是「一键测试」同时打出去的上游请求数。取 2 与后端批量探测的
+// probeConcurrency 同档：上游就是同一批账号，页面上开得比后端还猛只会互相挤。
+const routeTestConcurrency=2;
+// routeTestCandidates 挑出「一键测试」真正要跑的条目：
+//  - 已停用的别名跳过并如实计数。服务端对停用别名直接回 alias_disabled，测了也不出结论，
+//    把它算进「失败」会平白吓人一跳。
+//  - 多个别名指向同一个通道同一个模型时只测一次。探测结论本来就按「通道 + 公共模型名」
+//    存（见后端 aliasProbe），重复测只是白烧上游额度。
+function routeTestCandidates(aliases){
+ const seen=new Set(),list=[],skipped=[];
+ for(const entry of aliases||[]){
+  if(entry.enabled===false){skipped.push(entry.alias);continue;}
+  const key=`${entry.channel}::${entry.public_model||entry.model}`;
+  if(seen.has(key))continue;
+  seen.add(key);list.push(entry);
+ }
+ return{list,skipped};
+}
+// routeAliasTestAll 把当前启用的别名逐个跑一遍，进度与结论都落在页面上。
+// 结束后统一 loadRoutes()：批量测试的价值就在于「一眼看出哪几条红了」，
+// 而红绿读的是服务端刚写回的探测缓存，所以必须重拉一次状态。
+async function routeAliasTestAll(button){
+ if(routeTestBusy||routesBusy)return;
+ const aliases=(routesState&&routesState.aliases)||[];
+ const{list,skipped}=routeTestCandidates(aliases);
+ if(!list.length){notice('还没有可测试的别名：先在下面添加一个');return;}
+ routeTestBusy=true;
+ const label=button.textContent;button.disabled=true;button.textContent='测试中…';
+ // 重渲染一次，让「测试」单条按钮跟着进入禁用态。
+ renderRouteAliases(aliases);
+ const progress=$('routes-alias-test-progress');progress.hidden=false;
+ const skippedText=skipped.length?` · 跳过 ${skipped.length} 个已停用`:'';
+ const failures=[];let ok=0,done=0;
+ const update=()=>{progress.textContent=`正在测试 ${done}/${list.length} · 可用 ${ok} · 失败 ${failures.length}${skippedText}`;};
+ update();
+ try{
+  const queue=list.slice();
+  const worker=async()=>{
+   while(queue.length){
+    const entry=queue.shift();
+    let result;
+    try{result=await jsonAPI('route/test',{alias:entry.alias});}
+    // 请求本身炸了（网络断、会话过期）也要算一条失败并留下原因，不能让进度卡住。
+    catch(error){result={ok:false,category:'request_failed',error:error.message};}
+    if(result&&result.ok===true)ok++;
+    else failures.push({alias:entry.alias,model:entry.public_model||entry.model,result});
+    done++;update();
+   }
+  };
+  await Promise.all(Array.from({length:Math.min(routeTestConcurrency,list.length)},worker));
+ }finally{
+  // 先放开标志再刷新：loadRoutes 会重渲染别名表，带着旧标志渲染的话
+  // 单条「测试」按钮会一直停在禁用态。
+  routeTestBusy=false;
+  try{await loadRoutes();}catch(error){/* 刷新失败不影响下面已拿到的汇总 */}
+  progress.textContent=`测试完成 · 可用 ${ok} · 失败 ${failures.length}${skippedText}`
+   +(failures.length?` · 失败：${failures.map(item=>item.alias).join('、')}`:'');
+  if(failures.length)console.error('[一键测试] 失败清单',failures);
+  notice(failures.length
+   ?`一键测试完成：${ok} 个可用，${failures.length} 个失败（原因见状态列与控制台日志）`
+   :`一键测试完成：${list.length} 个全部可用`);
+  button.disabled=false;button.textContent=label;
+ }
 }
 // currentRouteAliases 把服务端下发的别名还原成保存用的形态。fallbacks 与 strategy
 // 必须原样带上：页面没有编辑候选链的控件，而 route/save 是全量替换语义，不透传
@@ -2273,6 +2347,9 @@ function renderRouteExample(state){
  $('routes-example').textContent=`curl ${location.origin}/v1/chat/completions \\\n  -H "Authorization: Bearer <你的 API Key>" \\\n  -H "Content-Type: application/json" \\\n  -d '${JSON.stringify(body,null,2)}'`;
 }
 async function saveRouteAliases(models){
+ // 排序、删除、改备注都走这里。批量测试跑着的时候一律先拦下：整表替换会换掉
+ // 正在被测的别名集合，后半批的结论就没法对号入座了。
+ if(routeTestBusy){notice('一键测试正在进行，等它跑完再改别名');return;}
  if(routesBusy)return;
  const generation=sessionGeneration;routesBusy=true;$('routes-alias-save').disabled=true;
  try{
@@ -2511,6 +2588,7 @@ $('routes-alias-form').addEventListener('submit',async event=>{
  await saveRouteAliases(models);
 });
 $('routes-alias-reset').addEventListener('click',resetRouteEdit);
+$('routes-alias-test-all').addEventListener('click',()=>routeAliasTestAll($('routes-alias-test-all')));
 $('routes-fallback-form').addEventListener('submit',async event=>{event.preventDefault();await saveRouteAliases(currentRouteAliases());});
 // 换通道必须整份换候选（问题3）：旧通道的模型留在下拉里就会选串。传 '' 让下拉回到「请选择模型…」。
 $('routes-alias-channel').addEventListener('change',()=>fillRouteModelOptions($('routes-alias-channel').value,''));
