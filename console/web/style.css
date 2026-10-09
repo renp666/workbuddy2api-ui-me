@@ -362,6 +362,20 @@ td button,.channel-card-actions button,.task-actions button{padding:7px 12px;fon
 .share i.w1{width:10%}.share i.w2{width:20%}.share i.w3{width:30%}.share i.w4{width:40%}.share i.w5{width:50%}
 .share i.w6{width:60%}.share i.w7{width:70%}.share i.w8{width:80%}.share i.w9{width:90%}.share i.w10{width:100%}
 
+/* ---------- 宽表首列吸左 ---------- */
+/* 调用明细 11 列，窄视口下 .table-wrap 会横滑，滑到右边就丢了「这一行是几点」的锚点。
+   把首列（时间）吸在左边缘即可。吸住的单元格必须自带不透明底色——它身下压着同一行的
+   其它格，底色一旦透明就会透出来糊成一片；所以 hover / row-warn / row-bad 三套行底色
+   都要在首列上重写一遍。这三条同时压过上面通用的 tbody tr:hover 那条（选择器多一个类），
+   否则一进鼠标，首列的底色又被洗回透明。 */
+.sticky-first thead th:first-child{position:sticky;left:0;z-index:2}
+.sticky-first tbody td:first-child{position:sticky;left:0;z-index:1;background:var(--surface)}
+.sticky-first tbody tr:hover td:first-child{background:var(--bg-soft)}
+.sticky-first tbody tr.row-warn td:first-child{background:#fffcf6}
+.sticky-first tbody tr.row-warn:hover td:first-child{background:#fdf4e8}
+.sticky-first tbody tr.row-bad td:first-child{background:#fff7f8}
+.sticky-first tbody tr.row-bad:hover td:first-child{background:#fdeef0}
+
 /* ---------- 明细分页 ---------- */
 /* 当前页用实底靛蓝（白字实测 5.66:1），其余页保持白底描边：一眼能认出脚下是哪一页。 */
 .pager-bar{display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap;margin-top:12px}

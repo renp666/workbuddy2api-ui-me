@@ -3504,3 +3504,26 @@ test('CCR token mismatch is its own state, not a missing service',async()=>{
   assert.equal(get('ccr-start').disabled,true);
   assert.equal(get('ccr-stop').disabled,true);
 });
+
+test('调用明细宽表首列吸左：横滑时仍能对上这一行是几点，且吸住的底色不透',()=>{
+  const html=readFileSync(__dirname+'/web/index.html','utf8');
+  // 明细表 11 列，窄视口必横滑；首列（时间）要吸左，否则滑到右边就丢了行锚点。
+  assert.match(html,/<div class="panel table-wrap sticky-first"><table><thead><tr><th>时间<\/th>/,
+    '调用明细的 panel 没挂 sticky-first：11 列横滑后首列会跟着划走');
+  const css=readFileSync(__dirname+'/web/style.css','utf8');
+  assert.match(cssRuleBody(css,'.sticky-first tbody td:first-child'),/position:sticky/,'首列没有吸左');
+  assert.match(cssRuleBody(css,'.sticky-first tbody td:first-child'),/left:0/,'首列吸左没贴住左边缘');
+  assert.match(cssRuleBody(css,'.sticky-first thead th:first-child'),/position:sticky/,
+    '表头首列没跟着吸左，横滑后表头与数据错位');
+  // 吸住的单元格必须自带不透明底：它身下压着同一行其它格，透明就会透出来糊成一片。
+  for(const [selector,label] of [
+    ['.sticky-first tbody td:first-child','默认'],
+    ['.sticky-first tbody tr:hover td:first-child','hover'],
+    ['.sticky-first tbody tr.row-warn td:first-child','row-warn'],
+    ['.sticky-first tbody tr.row-warn:hover td:first-child','row-warn hover'],
+    ['.sticky-first tbody tr.row-bad td:first-child','row-bad'],
+    ['.sticky-first tbody tr.row-bad:hover td:first-child','row-bad hover'],
+  ]){
+    assert.match(cssRuleBody(css,selector),/background:/,label+' 状态下首列没有不透明底色，下面的格子会透出来');
+  }
+});

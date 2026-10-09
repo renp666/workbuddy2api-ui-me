@@ -277,7 +277,7 @@
    <div class="section-title"><h2>通道分布</h2><span class="muted small">按通道聚合所选范围；旁路通道用量由 console 观测后上报 core 账本</span></div>
    <div class="panel table-wrap"><table><thead><tr><th>通道</th><th class="num">调用次数</th><th class="num">输入 tokens</th><th class="num">输出 tokens</th><th class="num">积分</th></tr></thead><tbody id="usage-by-channel-body"></tbody></table><p id="usage-by-channel-empty" class="empty">所选范围内还没有调用记录。</p></div>
    <div class="section-title"><h2>调用明细</h2><span class="muted small">最近调用在最上方；来源只记录到 IP 网段，不保存完整地址</span></div>
-   <div class="panel table-wrap"><table><thead><tr><th>时间</th><th>通道</th><th>账号</th><th>模型</th><th>入口</th><th>方式</th><th class="num">输入 tokens</th><th class="num">输出 tokens</th><th class="num">积分</th><th>来源</th><th>客户端</th></tr></thead><tbody id="usage-body"></tbody></table><p id="usage-empty" class="empty">所选范围内还没有调用记录。</p><p id="usage-note" class="muted small" hidden></p></div>
+   <div class="panel table-wrap sticky-first"><table><thead><tr><th>时间</th><th>通道</th><th>账号</th><th>模型</th><th>入口</th><th>方式</th><th class="num">输入 tokens</th><th class="num">输出 tokens</th><th class="num">积分</th><th>来源</th><th>客户端</th></tr></thead><tbody id="usage-body"></tbody></table><p id="usage-empty" class="empty">所选范围内还没有调用记录。</p><p id="usage-note" class="muted small" hidden></p></div>
    <!-- 翻页只切下面的表格；上方指标条与通道分布始终按整个时间范围算。 -->
    <div id="usage-pager-bar" class="pager-bar" hidden><span id="usage-pager-info" class="muted small"></span><div class="pager-actions"><label class="muted small" for="usage-page-size">每页</label><select id="usage-page-size"><option value="30">30</option><option value="50" selected>50</option><option value="100">100</option></select><div id="usage-pager" class="pager"></div></div></div>
   </section>
