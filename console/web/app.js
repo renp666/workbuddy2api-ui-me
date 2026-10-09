@@ -720,6 +720,17 @@ async function loadOverview(quiet){
 }
 $('overview-usage-channel').addEventListener('change',event=>{overviewUsageChannel=event.target.value;renderOverview();});
 $('overview-usage-range').addEventListener('change',event=>{overviewUsageRange=event.target.value;overviewGeneration++;loadOverview();});
+// 冷却的两种成因，运维处置完全相反：硬冷却 = 积分耗尽（等签到或换号），
+// 软冷却 = 被限流（等着就行）。core 用 cool_kind 区分，页面此前只显示「冷却中」，
+// 两者长得一模一样，看不出该做什么。
+// 另：cool_remaining_sec 带 omitempty，熔断冷却时 core 会省略它——所以副行不能只在
+// 「有剩余秒数」时才出现，否则那类冷却连为什么在冷却都看不到。
+const coolKindLabels={hard_credit:'硬冷却（积分耗尽）',soft_rate:'软冷却（限流）'};
+function coolSubText(a){
+ const kind=coolKindLabels[a.cool_kind]||'';
+ const left=a.cool_remaining_sec?`约 ${Math.ceil(a.cool_remaining_sec/60)} 分钟后恢复`:'';
+ return [kind,left].filter(Boolean).join(' · ');
+}
 function renderAccounts(data) {
  lastStatus = data;
  accounts = data.accounts || [];
@@ -732,7 +743,7 @@ function renderAccounts(data) {
   const accountTone={'可用':'ok','冷却中':'warn','已禁用':'idle'}[state];
   const status=cell('');const badge=document.createElement('span');badge.className='badge '+accountTone;badge.textContent=state;status.append(badge);
   const limits=(a.rate_limited_models||[]).map(m => `${m.model} 至 ${new Date(m.until).toLocaleString()}`).join('；');
-  tr.append(cell(a.nickname||a.uid,`${a.realm === 'global'?'国际版':'国内版'} · ${a.uid}`),status,cell(a.credits_known ? formatCredit(a.credits) : a.credits>0 ? `${formatCredit(a.credits)}（历史）` : '待确认'),numCell(`${a.success_count||0} / ${a.err_total||0}`),numCell(String(a.in_flight)),cell(limits||a.disabled_reason||a.reason||'—', a.cool_remaining_sec ? `约 ${Math.ceil(a.cool_remaining_sec/60)} 分钟后恢复` : ''), pinOpCell(a));
+  tr.append(cell(a.nickname||a.uid,`${a.realm === 'global'?'国际版':'国内版'} · ${a.uid}`),status,cell(a.credits_known ? formatCredit(a.credits) : a.credits>0 ? `${formatCredit(a.credits)}（历史）` : '待确认'),numCell(`${a.success_count||0} / ${a.err_total||0}`),numCell(a.in_flight==null?'—':String(a.in_flight)),cell(limits||a.disabled_reason||a.reason||'—', coolSubText(a)), pinOpCell(a));
   $('accounts-body').append(tr);
  }
  updateModelHint();

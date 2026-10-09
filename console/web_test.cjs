@@ -720,6 +720,34 @@ test('account pin UI degrades silently when core lacks pin endpoints',async()=>{
   assert.equal(row.children[6].children.find(c=>c.tagName==='BUTTON').textContent,'锁定');
 });
 
+test('账号行的冷却副行：区分硬冷却/软冷却，且熔断冷却不再丢掉成因',async()=>{
+  const response=(status,body)=>({ok:status<400,status,json:async()=>body});
+  const accounts=[
+    {uid:'u1',nickname:'甲',realm:'cn',cooling:true,cool_kind:'hard_credit',cool_remaining_sec:180,in_flight:2,success_count:1,err_total:0},
+    {uid:'u2',nickname:'乙',realm:'cn',cooling:true,cool_kind:'soft_rate',in_flight:0,success_count:0,err_total:0},
+    {uid:'u3',nickname:'丙',realm:'cn',cooling:false,success_count:0,err_total:0},
+  ];
+  const {ctx,get}=taskFixture((url)=>{
+    if(url==='/admin/session')return new Promise(()=>{});
+    if(url==='/admin/status')return response(200,{total:3,healthy:1,cooling:2,disabled:0,accounts});
+    if(url==='/admin/models')return response(200,{data:[]});
+    if(url==='/admin/pin')return response(200,{pins:{cn:null,global:null}});
+    throw new Error('unexpected '+url);
+  });
+  get('realm').querySelector=()=>({disabled:false});
+  await vm.runInContext("signedIn({csrf:'c',global_enabled:true,zcode_enabled:false})",ctx);
+  const rows=get('accounts-body').children;
+  const sub=tr=>{const s=tr.children[5].children.find(n=>n.tagName==='SMALL');return s?s.textContent:'';};
+  const inFlight=tr=>tr.children[4].textContent;
+  assert.equal(sub(rows[0]),'硬冷却（积分耗尽） · 约 3 分钟后恢复','硬冷却没说出「积分耗尽」，运维会当成限流干等');
+  // 熔断冷却 core 不带 cool_remaining_sec；副行仍要说出成因，不能整段消失。
+  assert.equal(sub(rows[1]),'软冷却（限流）','没有剩余秒数时冷却成因整段丢了');
+  assert.equal(sub(rows[2]),'','没在冷却的账号不该有冷却副行');
+  assert.equal(inFlight(rows[0]),'2');
+  // in_flight 带 omitempty 的可能：缺省时不许把 undefined 印进表里。
+  assert.equal(inFlight(rows[2]),'—','在途缺省时印成了别的值（会显示 undefined）');
+});
+
 function zcodeFixture(zcodeStatus) {
   const response=body=>({ok:true,status:200,json:async()=>body});
   const {ctx,get,opened}=taskFixture(url=>{
