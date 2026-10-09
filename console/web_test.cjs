@@ -1788,6 +1788,12 @@ test('raccoon import form posts parsed credentials and explains a 409 skip',asyn
     throw new Error('unexpected '+url);
   };
   await vm.runInContext("signedIn({csrf:'c',global_enabled:true,zcode_enabled:false,qoder_enabled:false,opencode_enabled:false,autoclaw_enabled:false,trae_enabled:false,raccoon_enabled:true})",ctx);
+  // 直接粘贴文件路径是最常见的误用：拦在前端，不发请求，并指向「选择文件」按钮。
+  get('raccoon-import-json').value='C:\\Users\\Administrator\\.box-agent\\config\\auth.json';
+  await get('raccoon-import-form').handlers.submit({preventDefault(){}});
+  assert.equal(requests.length,0,'a pasted file path must not reach the bridge');
+  assert.match(get('raccoon-import-hint').textContent,/文件路径/);
+  assert.match(get('raccoon-import-hint').textContent,/选择 auth\.json 文件/);
   // 非法 JSON 在前端拦截，不发请求。
   get('raccoon-import-json').value='{not json';
   await get('raccoon-import-form').handlers.submit({preventDefault(){}});
@@ -1811,6 +1817,15 @@ test('raccoon import form posts parsed credentials and explains a 409 skip',asyn
   ctx.navigator.clipboard.writeText=async value=>{copied=value;};
   await get('raccoon-copy-path').handlers.click();
   assert.equal(copied,'%USERPROFILE%\\.box-agent\\config','copy-path button must copy the Windows path');
+  // 「选择 auth.json 文件」由浏览器本地读取填入输入框，不经过网络。
+  let readText=null;
+  ctx.FileReader=class{readAsText(file){readText=file.text;this.result=file.text;this.onload();}};
+  get('raccoon-file').files=[{name:'auth.json',text:'{"access_token":"t"}'}];
+  await get('raccoon-file').handlers.change();
+  assert.equal(readText,'{"access_token":"t"}','picked file must be read locally');
+  assert.equal(get('raccoon-import-json').value,'{"access_token":"t"}','picked file must fill the JSON box');
+  assert.match(get('raccoon-import-hint').textContent,/已读取 auth\.json/);
+  assert.equal(requests.length,2,'picking a file must not itself issue an import request');
 });
 
 test('access model select merges raccoon models and routes raccoon go-chat to the raccoon tab',async()=>{
