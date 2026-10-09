@@ -115,3 +115,59 @@ func TestTraeAuthorizeRouteIsPublic(t *testing.T) {
 		t.Fatalf("expected 409 from public /authorize, got %d: %s", w.Code, w.Body.String())
 	}
 }
+
+// trae 的「积分消耗」列数据来自 sidecar 的 /v1/models：sidecar 从上游
+// display_contact_config 解出倍率后放在 credits 字段，console 只做透传，
+// 不自己解析、也不补 0——上游没公布就是「未知」，补成 0 等于把「不知道」写成「免费」。
+func TestAdminTraeStatusPassesThroughCredits(t *testing.T) {
+	h := testConsoleWithTrae(t, func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/healthz":
+			fmt.Fprint(w, "ok")
+		case "/v1/models":
+			fmt.Fprint(w, `{"object":"list","data":[{"id":"Doubao-Seed-Evolving","name":"Seed-Evolving","credits":"x0.08"},{"id":"custom_model_gpt-6"}]}`)
+		case "/status", "/admin/api/accounts":
+			fmt.Fprint(w, `{"accounts":[]}`)
+		default:
+			t.Errorf("unexpected sidecar path %s", r.URL.Path)
+		}
+	})
+	cookie, csrf := login(t, h)
+	w := adminRequest(h, "GET", "/admin/trae", "", cookie, csrf)
+	if w.Code != 200 {
+		t.Fatalf("/admin/trae: %d %s", w.Code, w.Body.String())
+	}
+	var out struct {
+		Reachable  bool             `json:"reachable"`
+		ModelCount int              `json:"model_count"`
+		Models     []map[string]any `json:"models"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &out); err != nil {
+		t.Fatalf("not JSON: %s", w.Body.String())
+	}
+	if !out.Reachable {
+		t.Error("sidecar 答了 ok 却没被判成可达")
+	}
+	if out.ModelCount != 2 || len(out.Models) != 2 {
+		t.Fatalf("models=%d model_count=%d, want 2/2", len(out.Models), out.ModelCount)
+	}
+	byID := map[string]map[string]any{}
+	for _, m := range out.Models {
+		byID[m["id"].(string)] = m
+	}
+	// 公共前缀由 console 补：sidecar 下发的是裸名。
+	rated, ok := byID["trae-Doubao-Seed-Evolving"]
+	if !ok {
+		t.Fatalf("模型 id 没补上 trae- 前缀：%v", out.Models)
+	}
+	if got := rated["credits"]; got != "x0.08" {
+		t.Errorf("credits 没透传：%v", got)
+	}
+	if got := rated["realm"]; got != "trae" {
+		t.Errorf("realm = %v, want trae", got)
+	}
+	// 无倍率的条目不能凭空长出 credits 字段。
+	if _, has := byID["trae-custom_model_gpt-6"]["credits"]; has {
+		t.Errorf("上游没给倍率的模型不该带 credits：%v", byID["trae-custom_model_gpt-6"])
+	}
+}

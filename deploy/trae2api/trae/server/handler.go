@@ -290,8 +290,11 @@ func (h *Handler) models(w http.ResponseWriter, r *http.Request) {
 }
 
 // modelList 动态获取模型列表并包装成 OpenAI 格式；动态表为权威来源，
-// 静态表中动态表没有的条目（如人工添加的 Agent 接入别名 no22）仍然保留；
+// 静态表中动态表没有的条目仍然保留（上游目录会按套餐/灰度少发若干 config_name）；
 // 动态拉取失败时整体回退静态表。
+// 注意：本网关自己的别名（no1/no22/gateway-auto/cn:*/global:*）既不在动态表里
+// （fetchModelsScope 已按 config_source==3 过滤），也不在静态表里——列出去会让
+// trae-<别名> 指回本网关自身，形成回环。
 func (h *Handler) modelList() []map[string]any {
 	if infos := h.fetchDynamicModels(); len(infos) > 0 {
 		out := make([]map[string]any, 0, len(infos)+len(staticModels))
