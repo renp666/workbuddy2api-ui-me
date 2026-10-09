@@ -126,14 +126,14 @@ func (h *server) adminRaccoonStatus(w http.ResponseWriter, r *http.Request) {
 		"enabled":     true,
 		"reachable":   false,
 		"model_count": 0,
-		"models":      []map[string]string{},
+		"models":      []map[string]any{},
 		"accounts":    []any{},
 	}
 	if h.raccoonHealth(r.Context()) {
 		result["reachable"] = true
 	}
 	if out, code, err := h.raccoonCtl(r.Context(), "GET", "/v1/models", nil, raccoonCtlTimeout); err == nil && code == 200 {
-		models := []map[string]string{}
+		models := []map[string]any{}
 		if data, ok := out["data"].([]any); ok {
 			for _, item := range data {
 				entry, ok := item.(map[string]any)
@@ -147,7 +147,13 @@ func (h *server) adminRaccoonStatus(w http.ResponseWriter, r *http.Request) {
 				if !strings.HasPrefix(id, raccoonModelPrefix) {
 					id = raccoonModelPrefix + id
 				}
-				models = append(models, map[string]string{"id": id, "realm": "raccoon"})
+				// sidecar 的目录条目带 name（上游真实展示名）；透传给页面，
+				// 前端优先用它做行标签，id 仍作选路键。
+				model := map[string]any{"id": id, "realm": "raccoon"}
+				if name, ok := entry["name"].(string); ok && name != "" {
+					model["name"] = name
+				}
+				models = append(models, model)
 			}
 		}
 		result["models"] = models

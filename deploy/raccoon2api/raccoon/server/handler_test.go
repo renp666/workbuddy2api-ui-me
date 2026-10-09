@@ -292,6 +292,24 @@ func TestRefreshUnknownAccount(t *testing.T) {
 	}
 }
 
+// 硬禁用（登录态失效）后，页面的「启用」必须真的让账号恢复可用，而不是只切软开关。
+func TestPatchEnableRevivesDisabledAccount(t *testing.T) {
+	h, p, _ := newTestHandler(t, "secret")
+	importCredentials(t, h, "secret", credentials("a1", true, time.Now().Add(24*time.Hour).Unix()))
+	p.Disable("u1", "token_expired: 刷新后仍被拒，请重新导入凭证")
+	w := call(t, h, http.MethodPatch, "/admin/api/accounts/u1", "secret", `{"enabled":true}`)
+	if w.Code != http.StatusOK {
+		t.Fatalf("patch enable = %d %v", w.Code, decode(t, w))
+	}
+	st, ok := p.Status("u1")
+	if !ok || st.Disabled || !st.Enabled || st.Reason != "" {
+		t.Fatalf("status = %+v, want a revived account", st)
+	}
+	if _, ok := p.Pick(); !ok {
+		t.Fatal("revived account must be pickable")
+	}
+}
+
 // 重新导入新凭证必须让 401 硬禁用的账号复活（Q3 的端到端口径）。
 func TestReimportRevivesDisabledAccount(t *testing.T) {
 	h, p, _ := newTestHandler(t, "secret")

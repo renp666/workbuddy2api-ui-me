@@ -178,7 +178,9 @@ func (p *Pool) Remove(uid string) bool {
 	return true
 }
 
-// SetEnabled 改用户软开关。reason 非空时一并记录，重新启用时清冷却。
+// SetEnabled 改用户软开关。reason 非空时一并记录。
+// 显式启用是一次人工干预：连同硬禁用、冷却与错误计数一起清，让「启用」名副其实。
+// 若凭证确已失效，下一次请求会再次 Disable 并写入新原因，属自愈而非误放行。
 func (p *Pool) SetEnabled(uid string, enabled bool, reason string) bool {
 	p.mu.Lock()
 	defer p.mu.Unlock()
@@ -190,6 +192,7 @@ func (p *Pool) SetEnabled(uid string, enabled bool, reason string) bool {
 	if reason != "" {
 		e.reason = reason
 	} else if enabled {
+		e.disabled = false
 		e.reason = ""
 		e.until = time.Time{}
 		e.errCount = 0

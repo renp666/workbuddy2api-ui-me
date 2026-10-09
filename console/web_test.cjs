@@ -1758,6 +1758,60 @@ test('raccoon tab renders badge, health rows, accounts, models and select when r
   assert.deepEqual(get('raccoon-model').children.map(option=>option.value),['raccoon-GLM · X']);
 });
 
+test('raccoon soft-disabled account shows as stopped and offers enable',async()=>{
+  // 软停用（enabled=false、disabled 缺省）此前被当成「可用」，且只给「停用」按钮，
+  // 用户因此点不到「启用」。这条守住软停用与硬禁用同一显示口径。
+  const {ctx,get}=raccoonFixture({enabled:true,reachable:true,model_count:0,models:[],
+    accounts:[{uid:'r1',nickname:'软停',points:5,cooling:false,disabled:false,enabled:false,err_count:0}]});
+  await vm.runInContext("signedIn({csrf:'c',global_enabled:true,zcode_enabled:false,qoder_enabled:false,opencode_enabled:false,autoclaw_enabled:false,trae_enabled:false,raccoon_enabled:true})",ctx);
+  await vm.runInContext('loadRaccoon()',ctx);
+  assert.deepEqual(['raccoon-stat-usable','raccoon-stat-cooling','raccoon-stat-disabled'].map(id=>get(id).textContent),['0','0','1']);
+  const rows=get('raccoon-accounts-body').children;
+  assert.equal(rows[0].children[1].children[0].textContent,'已停用');
+  assert.equal(rows[0].children[6].children[0].textContent,'启用','soft-disabled account must offer enable');
+});
+
+test('raccoon models show the upstream display name while the select value stays the public id',async()=>{
+  // sidecar 目录条目带 name（上游真实展示名）。此前模型表与下拉都只读 id，页面显示
+  // raccoon-8c4485 这类代码名。展示名只改可读标签，选路键仍是公共 id。
+  const {ctx,get}=raccoonFixture({enabled:true,reachable:true,model_count:2,
+    models:[{id:'raccoon-8c4485',name:'Raccoon-Work',realm:'raccoon'},
+      {id:'raccoon-chat-ml-5-5',name:'Raccoon Chat ML 5.5',realm:'raccoon'}],
+    accounts:[]});
+  await vm.runInContext("signedIn({csrf:'c',global_enabled:true,zcode_enabled:false,qoder_enabled:false,opencode_enabled:false,autoclaw_enabled:false,trae_enabled:false,raccoon_enabled:true})",ctx);
+  await vm.runInContext('loadRaccoon()',ctx);
+  const rows=get('raccoon-models-body').children;
+  assert.equal(rows.length,2,'model table row count');
+  assert.equal(rows[0].children[0].textContent,'Raccoon-Work','model table must show the display name');
+  assert.equal(rows[1].children[0].textContent,'Raccoon Chat ML 5.5','model table must show the display name');
+  assert.deepEqual(get('raccoon-model').children.map(option=>option.textContent),['Raccoon-Work','Raccoon Chat ML 5.5'],'select labels use the display name');
+  assert.deepEqual(get('raccoon-model').children.map(option=>option.value),['raccoon-8c4485','raccoon-chat-ml-5-5'],'select values stay the public id');
+});
+
+test('raccoon models without a name fall back to the id',async()=>{
+  const {ctx,get}=raccoonFixture({enabled:true,reachable:true,model_count:1,
+    models:[{id:'raccoon-8c4485',realm:'raccoon'}],accounts:[]});
+  await vm.runInContext("signedIn({csrf:'c',global_enabled:true,zcode_enabled:false,qoder_enabled:false,opencode_enabled:false,autoclaw_enabled:false,trae_enabled:false,raccoon_enabled:true})",ctx);
+  await vm.runInContext('loadRaccoon()',ctx);
+  assert.equal(get('raccoon-models-body').children[0].children[0].textContent,'raccoon-8c4485','missing name must fall back to the id');
+  assert.deepEqual(get('raccoon-model').children.map(option=>option.value),['raccoon-8c4485']);
+});
+
+test('raccoon probe results align with rows by id, not by display name',async()=>{
+  // 探测结论键是公共 id 名（fetchChannelModels 不带 name）。展示名不能影响身份对齐，
+  // 否则带 name 的目录行会与探测结论各成一行、出现重复且状态永远「未探测」。
+  const {ctx,get}=raccoonFixture({enabled:true,reachable:true,model_count:1,
+    models:[{id:'raccoon-8c4485',name:'Raccoon-Work',realm:'raccoon'}],
+    health:{modelResults:{'raccoon-8c4485':{ok:true,durationMs:1200,source:'probe'}}},
+    accounts:[]});
+  await vm.runInContext("signedIn({csrf:'c',global_enabled:true,zcode_enabled:false,qoder_enabled:false,opencode_enabled:false,autoclaw_enabled:false,trae_enabled:false,raccoon_enabled:true})",ctx);
+  await vm.runInContext('loadRaccoon()',ctx);
+  const rows=get('raccoon-models-body').children;
+  assert.equal(rows.length,1,'probe result must merge into the catalog row instead of adding a second one');
+  assert.equal(rows[0].children[0].textContent,'Raccoon-Work','merged row keeps the display name');
+  assert.equal(rows[0].children[2].children[0].textContent,'可用','merged row must carry the probe state');
+});
+
 test('raccoon tab reports an unreachable container and keeps the import entry',async()=>{
   const {ctx,get}=raccoonFixture({enabled:true,reachable:false,model_count:0,models:[],accounts:[]});
   await vm.runInContext("signedIn({csrf:'c',global_enabled:true,zcode_enabled:false,qoder_enabled:false,opencode_enabled:false,autoclaw_enabled:false,trae_enabled:false,raccoon_enabled:true})",ctx);

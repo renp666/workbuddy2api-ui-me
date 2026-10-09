@@ -304,10 +304,12 @@ function channelModelRows(channel,list,health){
  if(health&&Array.isArray(health.models))for(const item of health.models){if(item&&item.name)caps.set(modelKey(item.name),item);}
  const rows=new Map();
  const switchable=channel!=='opencode'&&channel!=='autoclaw'&&channel!=='trae'&&channel!=='raccoon';
- const ensure=label=>{const identity=channel==='core'?String(label||''):modelKey(label);if(!identity)return null;const key=modelKey(label);if(!rows.has(identity))rows.set(identity,{key,label:String(label),id:String(label),cap:null,result:null,efforts:null,credits:null,creditValue:null,accounts:null,tier:null});return rows.get(identity);};
+ // 去重身份始终按 id（core 用完整公共名，其余通道用跨源对齐键），展示名不参与身份判定：
+ // 目录条目可能带 name（如小浣熊的上游真实展示名），只改行标签，不改选路键与探测对齐。
+ const ensure=(id,label)=>{const identity=channel==='core'?String(id||''):modelKey(id);if(!identity)return null;if(!rows.has(identity))rows.set(identity,{key:modelKey(id),label:String(label||id),id:String(id),cap:null,result:null,efforts:null,credits:null,creditValue:null,accounts:null,tier:null});return rows.get(identity);};
  for(const item of(Array.isArray(list)?list:[])){
   if(!item||!item.id)continue;
-  const row=ensure(item.id);if(!row)continue;
+  const row=ensure(item.id,typeof item.name==='string'&&item.name?item.name:item.id);if(!row)continue;
   row.efforts=Array.isArray(item.reasoning_supported_efforts)?item.reasoning_supported_efforts:null;
   row.cap=caps.get(row.key)||row.cap;
   row.credits=typeof item.credits==='string'?item.credits:null;
@@ -318,7 +320,7 @@ function channelModelRows(channel,list,health){
  }
  for(const[id,result]of Object.entries(results)){
   const cap=caps.get(modelKey(id))||null;
-  const row=ensure(cap&&cap.name?`${prefix}${cap.name}`:id);if(!row)continue;
+  const row=ensure(id,cap&&cap.name?`${prefix}${cap.name}`:id);if(!row)continue;
   row.cap=cap||row.cap;
   row.result=result&&typeof result==='object'?result:null;
  }
@@ -2811,7 +2813,13 @@ function renderRaccoon(status){
  renderAccessModelSelect();renderAccess();
  const previous=$('raccoon-model').value;
  $('raccoon-model').replaceChildren();
- for(const id of raccoonModels)$('raccoon-model').append(new Option(id,id));
+ // 下拉显示上游真实展示名（目录带 name 时），值仍是公共 id：选路、会话记录与
+ // go-chat 的 raccoonModels.includes 判断都只认 id，展示名仅影响可读性。
+ for(const item of (Array.isArray(status.models)?status.models:[])){
+  if(!item||!item.id)continue;
+  const label=typeof item.name==='string'&&item.name?item.name:item.id;
+  $('raccoon-model').append(new Option(label,item.id));
+ }
  if(raccoonModels.includes(previous))$('raccoon-model').value=previous;
  renderModelTable('raccoon',status.models,status.health||null);
  renderRaccoonAccounts(accounts);
@@ -2834,9 +2842,10 @@ function raccoonRecoveryHint(a){
 }
 function renderRaccoonAccounts(list){
  raccoonAccounts=Array.isArray(list)?list:[];
- const usable=raccoonAccounts.filter(a=>!a.disabled&&!a.cooling).length;
- const cooling=raccoonAccounts.filter(a=>a.cooling&&!a.disabled).length;
- const disabled=raccoonAccounts.filter(a=>a.disabled).length;
+ const off=a=>!!a.disabled||a.enabled===false;
+ const usable=raccoonAccounts.filter(a=>!off(a)&&!a.cooling).length;
+ const cooling=raccoonAccounts.filter(a=>a.cooling&&!off(a)).length;
+ const disabled=raccoonAccounts.filter(a=>off(a)).length;
  $('raccoon-stat-total').textContent=String(raccoonAccounts.length);
  $('raccoon-stat-usable').textContent=String(usable);
  $('raccoon-stat-cooling').textContent=String(cooling);
@@ -2844,13 +2853,14 @@ function renderRaccoonAccounts(list){
  const body=$('raccoon-accounts-body');body.replaceChildren();
  for(const a of raccoonAccounts){
   const tr=document.createElement('tr');
-  const state=a.disabled?'已停用':a.cooling?'冷却中':'可用';
-  const tone=a.disabled?'idle':a.cooling?'warn':'ok';
+  const stopped=off(a);
+  const state=stopped?'已停用':a.cooling?'冷却中':'可用';
+  const tone=stopped?'idle':a.cooling?'warn':'ok';
   const status=cell('');const b=document.createElement('span');b.className='badge '+tone;b.textContent=state;status.append(b);
   const expires=a.expires_at?new Date(Number(a.expires_at)*1000).toLocaleString('zh-CN',{timeZone:'Asia/Shanghai',hour12:false}):'—';
   const ta=(label,action,cls)=>{const btn=document.createElement('button');btn.className=cls;btn.textContent=label;btn.dataset.raact=action;btn.dataset.uid=a.uid;return btn;};
   const op=document.createElement('td');
-  if(a.disabled)op.append(ta('启用','enable','secondary'),' ',ta('删除','delete','quiet'));
+  if(stopped)op.append(ta('启用','enable','secondary'),' ',ta('删除','delete','quiet'));
   else op.append(ta('停用','disable','secondary'),' ',ta('刷新','refresh','quiet'),' ',ta('删除','delete','quiet'));
   // sidecar 只回报失败次数，没有成功计数；成功列留「—」而不是拿 0 充数。
   tr.append(cell(a.nickname||a.uid,a.uid),status,numCell(a.points==null?'—':String(a.points)),numCell('— / '+(a.err_count||0)),cell(expires,a.expired_soon?'Token 即将过期':''),cell(a.reason||'—',raccoonRecoveryHint(a)),op);

@@ -83,6 +83,30 @@ func TestSetEnabledBlocksAndRestoresPick(t *testing.T) {
 	}
 }
 
+// 「启用」必须名副其实：硬禁用（登录态失效）的账号也要能靠显式启用恢复。
+// 若凭证确实已失效，下一次请求会再次 Disable 并给出新原因，属自愈。
+func TestSetEnabledRevivesDisabledAccount(t *testing.T) {
+	p := New("")
+	p.Add(mustAuth(t, "u1", "t1", 0))
+	p.Disable("u1", "token_expired: 刷新后仍被拒，请重新导入凭证")
+	if _, ok := p.Pick(); ok {
+		t.Fatal("disabled account must not be pickable")
+	}
+	if !p.SetEnabled("u1", true, "") {
+		t.Fatal("SetEnabled(true) should hit the account")
+	}
+	st, ok := p.Status("u1")
+	if !ok {
+		t.Fatal("account disappeared")
+	}
+	if st.Disabled || !st.Enabled || st.Reason != "" {
+		t.Fatalf("explicit enable must clear the hard disable, got %+v", st)
+	}
+	if _, ok := p.Pick(); !ok {
+		t.Fatal("revived account must be pickable")
+	}
+}
+
 // Q3：重新导入新凭证必须让被硬禁用的账号复活，否则唯一的恢复手段失效。
 func TestReimportRevivesDisabledAccount(t *testing.T) {
 	p := New("")
