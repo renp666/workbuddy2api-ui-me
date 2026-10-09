@@ -2199,7 +2199,8 @@ function capActionCell(hit){
 }
 function capTable(columns,items){
  const head=$('cap-head'),body=$('cap-body');head.replaceChildren();body.replaceChildren();
- for(const column of columns){const th=document.createElement('th');th.scope='col';th.textContent=column.label;head.append(th);}
+ // num 列的表头要跟着 body 一起右对齐，否则表头在左、数字在右，一列看着像两列。
+ for(const column of columns){const th=document.createElement('th');th.scope='col';if(column.num)th.className='num';th.textContent=column.label;head.append(th);}
  for(const item of items){const tr=document.createElement('tr');for(const column of columns)tr.append(column.cell(item));body.append(tr);}
 }
 function capMatched(text){return !capFilter||String(text).toLowerCase().includes(capFilter);}
@@ -2269,12 +2270,14 @@ function renderCapTiers(list){
 }
 function capPoolColumns(){
  const label=(capDims.find(dim=>dim.id===capDim)||{}).label||'得分';
+ // 得分与上下文是同一量纲上要竖着比的数（'#' 名次同理），按全站口径走 .num：
+ // 等宽右对齐。此前全表用 cell，数字左对齐、比例字体，位数对不齐，与其余 22 张表不一致。
  return[
   {label:'模型',cell:item=>cell(item.row.name||item.model,String(item.model))},
   {label:'通道',cell:item=>channelCell(routeChannelLabel(item.channel),item.channel)},
-  {label:label,cell:item=>cell(item.metric.text,capDim==='design'?'类目 '+capCategory:'')},
+  {label:label,num:true,cell:item=>numCell(item.metric.text,capDim==='design'?'类目 '+capCategory:'')},
   {label:'其它指数',cell:item=>cell(capScoreText(item.row),capBestArena(item.row))},
-  {label:'上下文',cell:item=>cell(capContextText(item.row))},
+  {label:'上下文',num:true,cell:item=>numCell(capContextText(item.row))},
   {label:'倍率',cell:item=>badgeCell(item.cost.text,item.cost.known?'':'unknown')},
   {label:'放行',cell:item=>badgeCell(item.gate?'已放行':'未放行',item.gate?'ok':'warn')},
   {label:'操作',cell:item=>capActionCell(item)},
@@ -2287,15 +2290,18 @@ function capAllItems(pool){
 }
 function capNumber(value){return typeof value==='number'?value.toFixed(1):'—';}
 function capAllColumns(){
+ // 综合/编程/智能体/上下文是纯数字，走 .num 右对齐等宽。
+ // 首列「热度」保持原样：td:first-child 的 13px/650 是主字段口径，
+ // 而 td.num 排在它之后会把字号压回 12px，名次列反而不该抢模型名的位置。
  return[
   {label:'热度',cell:item=>cell('#'+item.row.heat)},
   {label:'模型',cell:item=>cell(item.row.name||item.row.id,String(item.row.id))},
   {label:'池内',cell:item=>badgeCell(item.pool?routeChannelLabel(item.pool.channel):'池外',item.pool?'':'idle')},
-  {label:'综合',cell:item=>cell(capNumber(item.row.intelligence))},
-  {label:'编程',cell:item=>cell(capNumber(item.row.coding))},
-  {label:'智能体',cell:item=>cell(capNumber(item.row.agentic))},
+  {label:'综合',num:true,cell:item=>numCell(capNumber(item.row.intelligence))},
+  {label:'编程',num:true,cell:item=>numCell(capNumber(item.row.coding))},
+  {label:'智能体',num:true,cell:item=>numCell(capNumber(item.row.agentic))},
   {label:'设计',cell:item=>cell(capBestArena(item.row)||'—')},
-  {label:'上下文',cell:item=>cell(capContextText(item.row))},
+  {label:'上下文',num:true,cell:item=>numCell(capContextText(item.row))},
   {label:'操作',cell:item=>capActionCell(item.pool)},
  ];
 }

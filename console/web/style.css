@@ -186,6 +186,12 @@ code{font-family:var(--font-mono);font-size:.92em}
 /* 未探测在暗机架上仍要"看着像没有数据"：虚线描边 + 机架高亮底，实测 #a6accf 对
    #0f1120 为 8.40:1。机架面与顶栏同色，所以这套深底亮字在概览机架上同样成立。 */
 .badge.rail-state.unknown{background:transparent;border:1px dashed #4a5180;color:#a6accf;padding:3px 10px}
+/* 可点的徽章片：「现在有哪些模型可用」里那些模型名是 <button class="badge">，
+   皮肤与只读徽章（badge-row 里到处都是同款）一模一样，而 .badge 自己没有 hover——
+   全站其它可点控件（.secondary/.quiet/.pager-btn/.nav）都有反馈，唯独这里点上去毫无动静，
+   分不出哪个能点。只补反馈，不动配色与尺寸，只读徽章不受影响。 */
+button.badge:hover{background:var(--accent-line)}
+button.badge:focus-visible{outline:2px solid var(--focus);outline-offset:2px}
 
 /* ---------- 折线描边 ---------- */
 /* 折线与图例必须同色：先前线用一组临时亮色、图例用通道色，同一个通道在一张图里

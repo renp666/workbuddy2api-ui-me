@@ -3588,3 +3588,40 @@ test('旁路通道的能力备注与代码口径一致：写「不参与模型�
     assert.match(el[1],/独锁/,`${id} 没提到独锁`);
   }
 });
+
+test('模型能力 TOP 的数字列与全站同口径：等宽右对齐，表头跟着对齐',async()=>{
+  const {ctx,get}=capabilityFixture({available:true,snapshot_at:'2026-10-05T02:00:00Z',note:'n',rows:capabilityRows});
+  await vm.runInContext("signedIn({csrf:'c',global_enabled:true,zcode_enabled:false,qoder_enabled:false,opencode_enabled:false})",ctx);
+  await vm.runInContext('loadRoutes()',ctx);
+  await flushMicrotasks();
+  const headCls=()=>get('cap-head').children.map(th=>th.className);
+  const cellCls=(row,i)=>get('cap-body').children[row].children[i].className;
+  // 池内视图 8 列：模型 / 通道 / 得分 / 其它指数 / 上下文 / 倍率 / 放行 / 操作。
+  assert.deepEqual(headCls(),['','','num','','num','','',''],
+    '池内视图表头没按数字列打 num：表头在左、数字在右，一列看着像两列');
+  assert.equal(cellCls(0,2),'num','得分列没走 .num：数字左对齐、比例字体，位数竖着对不齐');
+  assert.equal(cellCls(0,4),'num','上下文列没走 .num');
+  assert.equal(cellCls(0,0),'','模型列被误当成数字列');
+  assert.equal(cellCls(0,3),'','其它指数是复合文案，不是单个数字，不该右对齐');
+  // 全量视图 9 列：热度 / 模型 / 池内 / 综合 / 编程 / 智能体 / 设计 / 上下文 / 操作。
+  vm.runInContext("capDim='all';renderCapabilities()",ctx);
+  assert.deepEqual(headCls(),['','','','num','num','num','','num',''],'全量视图表头没按数字列打 num');
+  assert.equal(cellCls(0,0),'','热度列不该走 .num：td.num 排在 td:first-child 之后会把主字段字号压回 12px');
+  assert.equal(cellCls(0,3),'num','综合列没走 .num');
+  assert.equal(cellCls(0,5),'num','智能体列没走 .num');
+  assert.equal(cellCls(0,6),'','设计列是文案，不该右对齐');
+  assert.equal(cellCls(0,7),'num','上下文列没走 .num');
+});
+
+test('可点的徽章片要有悬停反馈：与只读徽章同款，没反馈就分不出哪个能点',()=>{
+  const css=readFileSync(__dirname+'/web/style.css','utf8');
+  assert.match(cssRuleBody(css,'button.badge:hover'),/background:/,
+    'button.badge 没有 hover 反馈：模型清单里能点的模型名与只读徽章长得一模一样');
+  assert.match(cssRuleBody(css,'button.badge:focus-visible'),/outline:/,'button.badge 没有键盘焦点环');
+  // 只读徽章不能被卷进来：给 .badge 本体加 hover 就等于全站状态徽章都变成「看着能点」。
+  assert.doesNotMatch(cssRuleBody(css,'.badge'),/background:\s*var\(--accent-line\)/,
+    '.badge 本体被加了 hover 底色，只读状态徽章会跟着变成可点样式');
+  const js=readFileSync(__dirname+'/web/app.js','utf8');
+  assert.match(js,/tag\.className='badge'[\s\S]{0,200}pickRouteModel/,
+    'app.js 里找不到「可点模型片」的构造点（模型清单那排可点徽章），这条测试的锚点写错了');
+});
