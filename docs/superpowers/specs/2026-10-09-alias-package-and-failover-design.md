@@ -268,3 +268,64 @@ P1 + P2 已按本设计落地，P0 交付了具体配置提案。
 
 - 未覆盖线上 `runtime/wb2api/console/routes.json`，只新增了 `routes.proposed-20261009.json`。
 - 未提交 Git、未发布镜像、未重启服务。
+
+## 10. 应用记录（2026-10-09 下午，已上线）
+
+用户确认「按之前规划的改下」，并选定三个决策点：**补上 `max` 按 6 档建**、
+**旧别名直接替换不保留**、autoclaw 模型 id **对齐目录**。落地结果如下。
+
+### 10.1 线上配置（`runtime/wb2api/console/routes.json`，已生效）
+
+| 别名 | 主目标 | 备选链（按序） | strategy |
+| --- | --- | --- | --- |
+| `daily` | core `global:deepseek-v4.1-flash` | core `cn:deepseek-v4.1-flash` → autoclaw `autoclaw-glm-5.3-flash` | health |
+| `fast` | autoclaw `autoclaw-glm-5.3-flash` | glm `glm-5.3-flash` → opencode `MiMo-V2.6-Flash Free` → qoder `qoder-qwen3.8-flash` | health |
+| `strong` | glm `glm-5.3` | core `cn:glm-5.3-flash` | health |
+| `max` | core `global:kimi-k3` | glm `glm-5.3` | health |
+| `free` | opencode `MiMo-V2.6-Flash Free` | opencode `Space Bunny Free` | priority |
+| `try` | core `global:hy4-preview-f` | — | priority（`enabled:false`） |
+
+`strong` 的备选沿用提案的 `cn:glm-5.3-flash`（留在 GLM 家族），未采用 §3.3 表格里的
+「Kimi K3 @ core」——否则 `strong`/`max` 互为镜像，在 `health` 下会塌成同一个目标。
+
+### 10.2 修正了本设计的两处遗漏
+
+1. **§3.3 的 `max` 在交付时被漏掉**。已确认现网目录里 `global:kimi-k3` 存在且未被停用，
+   故补建。§3.3 表格以本节为准。
+2. **`autoclaw-cn:glm-5.3-flash` 无法落库**（见 10.3）。用户选的「对齐目录」按字面做不到，
+   实际采用唯一可存形态 `autoclaw-glm-5.3-flash`；两者最终转发到同一后端，功能等价。
+
+### 10.3 三条硬事实（本次实测，写代码前必读）
+
+1. **`validateTarget` 禁止非 core 通道的模型名含冒号**（`console/route.go:328-330`）。
+   `POST /admin/route/save` 带 `autoclaw-cn:glm-5.3-flash` 实测返回
+   `400 指向 autoclaw 时模型名不能含冒号`。
+   ⇒ **`/v1/models` 目录广告了它自己存不进去的 id**：`fetchChannelModels` 给 autoclaw 补
+   `autoclaw-` 前缀，而上游 bridge 自己已带 `cn:`/`global:`，拼出 `autoclaw-cn:glm-5.3-flash`。
+   这是 console 的真实不一致，**本次未修**。
+   功能等价性依据：`console/autoclaw.go:67` 剥 `autoclaw-` → bridge `_strip_route_prefix`
+   再剥 `cn:` → 两者都归一成 `glm-5.3-flash`；且 bridge 的 `regions=["cn"]` 硬编码，
+   命名空间不改变选池结果。
+2. **`zcodeModelPrefix = "glm-"`**（`console/zcode.go:19`）⇒ `modelGate` 把 `glm-*` 按旁路通道
+   处理，**默认关闭**（`console/credits.go:139-141`）。`glm-5.3-flash` 能用是因为它在
+   `enabled_models` 里；同理 `cn:`/`global:` 模型若在倍率表里查不到规则，也默认关闭。
+3. **闸门加在「别名解析后的真实模型」上**（`console/zcode.go:108-117`：先
+   `envelope.Model = decision.RoutedModel`，再 `modelGate`）。
+   ⇒ 别名目标模型未启用时，**该别名调用直接 404「模型已停用」**，不只是从 `/v1/models` 消失。
+
+### 10.4 因 10.3 额外做的操作
+
+`POST /admin/model-switch` 启用 `glm-5.3` 与 `global:kimi-k3`（否则 `strong`/`max` 是死的）。
+
+### 10.5 验收
+
+- `/v1/models`：`daily`/`fast`/`strong`/`max`/`free` 全部可见，`try` 正确隐藏，
+  旧 `no1..no22` 已消失。
+- 端到端（各发 1 token）：`daily` 200 core、`max` 200 core（credit=0.03）、`free` 200 opencode、
+  `fast` 200 autoclaw（**耗时 160.6s**，autoclaw relay 慢）；**路由解析全部正确**
+  （`target_index=0`，routed 模型与配置一致）。
+- `strong` 返回 502：路由正确到达 glm/`glm-5.3`，上游返回
+  `{"code":1005,"msg":"exceed quota limit"}` —— glm 通道（zcode，`plan=start-plan`）
+  **配额用尽**，属上游账号问题，非配置问题（旧的 `no21` 用的是同一目标，属既有状态）。
+- 未跑 `POST /admin/probe`，故 `health` 目前退化为按链序用主目标
+  （`X-Prism-Reason` 明确写「别名无可用探测结论，按链序用主目标」）。
