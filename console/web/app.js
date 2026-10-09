@@ -2893,6 +2893,10 @@ $('raccoon-credits-refresh').addEventListener('click',async()=>{
  }catch(error){if(generation===sessionGeneration)notice(error.message);}
  finally{if(generation===sessionGeneration){raccoonBusy=false;raccoonActionControls();}}
 });
+$('raccoon-copy-path').addEventListener('click',async()=>{
+ try{await navigator.clipboard.writeText('%USERPROFILE%\\.box-agent\\config');notice('路径已复制，粘贴到资源管理器地址栏（Win+E 后 Ctrl+L）回车打开');}
+ catch{notice('浏览器不允许自动复制，请手动输入 %USERPROFILE%\\.box-agent\\config');}
+});
 $('raccoon-import-form').addEventListener('submit',async event=>{
  event.preventDefault();if(raccoonBusy)return;
  const text=$('raccoon-import-json').value.trim();

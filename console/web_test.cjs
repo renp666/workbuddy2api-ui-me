@@ -1806,6 +1806,11 @@ test('raccoon import form posts parsed credentials and explains a 409 skip',asyn
   assert.match(get('raccoon-import-hint').textContent,/建议.*刷新/,'needs_check hint missing');
   assert.equal(vm.runInContext('raccoonView',ctx),'status','a successful import did not switch to the status tab');
   assert.equal(vm.runInContext('raccoonBusy',ctx),false,'the import button stayed locked');
+  // 网页不能直接打开本机文件夹，只提供「复制 Windows 路径」：按钮把 %USERPROFILE% 形式写进剪贴板。
+  let copied;
+  ctx.navigator.clipboard.writeText=async value=>{copied=value;};
+  await get('raccoon-copy-path').handlers.click();
+  assert.equal(copied,'%USERPROFILE%\\.box-agent\\config','copy-path button must copy the Windows path');
 });
 
 test('access model select merges raccoon models and routes raccoon go-chat to the raccoon tab',async()=>{

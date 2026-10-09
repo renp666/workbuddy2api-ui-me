@@ -242,8 +242,9 @@
     <div class="panel table-wrap"><table><thead><tr><th>账号</th><th>状态</th><th class="num">积分</th><th class="num">成功 / 错误</th><th>有效期</th><th>说明</th><th>操作</th></tr></thead><tbody id="raccoon-accounts-body"></tbody></table><p id="raccoon-accounts-empty" class="empty">还没有账号。到「凭证导入」子页添加。</p></div>
     </div>
     <div id="raccoon-pane-import" hidden>
-    <article class="panel"><div class="section-title"><h2>凭证导入</h2></div>
+    <article class="panel"><div class="section-title"><h2>凭证导入</h2><button id="raccoon-copy-path" class="secondary" type="button">复制 Windows 路径</button></div>
      <p class="muted small">小浣熊桌面客户端把登录态保存在本机，容器内没有网页登录入口。在桌面端登录后，登录态写入 <code>~/.box-agent/config/auth.json</code>；Windows 下为 <code>%USERPROFILE%\.box-agent\config\auth.json</code>（即 <code>C:\Users\&lt;用户名&gt;\.box-agent\config\auth.json</code>，路径随客户端版本可能略有差异）。用文本编辑器打开该文件，复制其中的完整 JSON 内容粘贴到下面导入；同一账号已有更新的凭证时导入会被拒绝（409），不会覆盖。</p>
+     <p class="muted small">网页无法直接打开本机文件夹：点上面的「复制 Windows 路径」，粘贴到资源管理器地址栏（<code>Win+E</code> 后 <code>Ctrl+L</code>）回车即可打开该目录，再用文本编辑器打开其中的 <code>auth.json</code>。</p>
      <form id="raccoon-import-form" class="inline-form"><label for="raccoon-import-json">凭证 JSON</label><input id="raccoon-import-json" autocomplete="off" placeholder="粘贴 auth.json 的完整内容"><button id="raccoon-import" class="primary" type="submit">导入</button></form>
      <p id="raccoon-import-hint" class="muted small" role="status" aria-live="polite"></p></article>
     </div>
