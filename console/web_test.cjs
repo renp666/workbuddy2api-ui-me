@@ -3533,8 +3533,7 @@ test('CCR token mismatch is its own state, not a missing service',async()=>{
   assert.equal(get('ccr-stop').disabled,true);
 });
 
-test('调用明细宽表首列吸左：横滑时仍能对上这一行是几点，且吸住的底色不透',()=>{
-  const html=readFileSync(__dirname+'/web/index.html','utf8');
+test('调用明细宽表首列吸左：横滑时仍能对上这一行是几点，且吸住的底色不透',()=>{  const html=readFileSync(__dirname+'/web/index.html','utf8');
   // 明细表 11 列，窄视口必横滑；首列（时间）要吸左，否则滑到右边就丢了行锚点。
   assert.match(html,/<div class="panel table-wrap sticky-first"><table><thead><tr><th>时间<\/th>/,
     '调用明细的 panel 没挂 sticky-first：11 列横滑后首列会跟着划走');
@@ -3553,5 +3552,39 @@ test('调用明细宽表首列吸左：横滑时仍能对上这一行是几点�
     ['.sticky-first tbody tr.row-bad:hover td:first-child','row-bad hover'],
   ]){
     assert.match(cssRuleBody(css,selector),/background:/,label+' 状态下首列没有不透明底色，下面的格子会透出来');
+  }
+});
+
+test('旁路通道的能力备注与代码口径一致：写「不参与模型停用」的，正好是代码里被排除的那几条',()=>{
+  const html=readFileSync(__dirname+'/web/index.html','utf8');
+  const js=readFileSync(__dirname+'/web/app.js','utf8');
+  const modelNotes={autoclaw:'autoclaw-models-note',trae:'trae-models-note',raccoon:'raccoon-models-note',opencode:'opencode-models-note'};
+  const tag=id=>new RegExp('<p id="'+id+'"[^>]*>([\\s\\S]*?)</p>');
+  // 从 app.js 现读「哪些通道不参与模型开关」，不在测试里再抄一份名单。
+  const stmt=js.match(/const switchable=([^;]+);/);
+  assert.ok(stmt,'app.js 里读不到 switchable 的判据，备注与代码的对齐没法现读（锚点写错了？）');
+  const exempt=[...stmt[1].matchAll(/channel!=='([a-z]+)'/g)].map(m=>m[1]).sort();
+  assert.deepEqual(exempt,Object.keys(modelNotes).sort(),
+    '「不参与模型停用」的备注集合与代码里 switchable 的排除集合不一致：改了一边必须同时改另一边');
+  for(const [channel,id] of Object.entries(modelNotes)){
+    const el=html.match(tag(id));
+    assert.ok(el,`index.html 缺 ${id}：这条通道没说明为什么没有模型停用`);
+    assert.match(el[1],/免费/,`${channel} 的模型备注没说明它是免费通道`);
+    assert.match(el[1],/不参与模型停用/,`${channel} 的模型备注没说明不参与停用`);
+    assert.doesNotMatch(el[0],/hidden/,`${id} 的备注带了 hidden，等于没写`);
+  }
+  // 多账号旁路通道：必须写明没有「独锁」，否则用户会去找一个不存在的按钮。
+  for(const id of ['autoclaw-accounts-note','trae-accounts-note','raccoon-accounts-note']){
+    const el=html.match(tag(id));
+    assert.ok(el,`index.html 缺 ${id}`);
+    assert.match(el[1],/独锁/,`${id} 没说明该通道没有独锁`);
+    assert.doesNotMatch(el[0],/hidden/,`${id} 的备注带了 hidden，等于没写`);
+  }
+  // 单账号通道：说明为什么不需要独锁，且点明模型停用仍可用，避免被读成「这条通道什么都没有」。
+  for(const id of ['zcode-accounts-note','qoder-accounts-note']){
+    const el=html.match(tag(id));
+    assert.ok(el,`index.html 缺 ${id}`);
+    assert.match(el[1],/单账号/,'%s 没说明该通道是单账号'.replace('%s',id));
+    assert.match(el[1],/独锁/,`${id} 没提到独锁`);
   }
 });

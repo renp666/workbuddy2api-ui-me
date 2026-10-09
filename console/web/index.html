@@ -66,7 +66,8 @@
     <div id="zcode-pane-status">
     <article class="panel"><div class="section-title"><h2>通道状态</h2><span class="badge" id="zcode-status-badge">未知</span></div><p id="zcode-status-text" class="muted small" role="status" aria-live="polite">正在读取通道状态…</p>
      <div class="inline-form"><button id="zcode-enable" class="primary" type="button" hidden>启用通道</button><button id="zcode-disable" class="secondary" type="button" hidden>停用通道</button><button id="zcode-logout" class="quiet" type="button" hidden>退出登录</button></div>
-     <form id="zcode-config-form" class="inline-form" hidden><label for="zcode-plan">套餐档位</label><select id="zcode-plan"><option value="coding-plan">编码套餐（coding-plan）</option><option value="start-plan">Start Plan（活动/试用额度）</option></select><button id="zcode-config-apply" class="secondary" type="submit">切换档位</button><span class="muted small">切换需通道处于停用状态</span></form></article>
+     <form id="zcode-config-form" class="inline-form" hidden><label for="zcode-plan">套餐档位</label><select id="zcode-plan"><option value="coding-plan">编码套餐（coding-plan）</option><option value="start-plan">Start Plan（活动/试用额度）</option></select><button id="zcode-config-apply" class="secondary" type="submit">切换档位</button><span class="muted small">切换需通道处于停用状态</span></form>
+     <p id="zcode-accounts-note" class="muted small">单账号通道：一次登录只对应一个账号，不存在多账号选号，因此没有「独锁」；模型停用开关在「GLM 模型」页照常可用。</p></article>
     </div>
     <div id="zcode-pane-login" hidden>
     <article id="zcode-login" class="panel"><div class="section-title"><h2>GLM 登录</h2><span class="badge warn" id="zcode-login-badge">未登录</span></div>
@@ -94,7 +95,8 @@
     <div class="qoder-tabs" role="tablist" aria-label="Qoder 子页"><button id="qoder-view-status" class="qoder-tab active" role="tab" type="button">◫ 通道状态</button><button id="qoder-view-login" class="qoder-tab" role="tab" type="button" hidden>⇆ Qoder 登录</button><button id="qoder-view-models" class="qoder-tab" role="tab" type="button" hidden>☰ Qoder 模型</button><button id="qoder-view-chat" class="qoder-tab" role="tab" type="button" hidden>↗ 对话测试</button></div>
     <div id="qoder-pane-status">
     <article class="panel"><div class="section-title"><h2>通道状态</h2><span class="badge" id="qoder-status-badge">未知</span></div><p id="qoder-status-text" class="muted small" role="status" aria-live="polite">正在读取通道状态…</p>
-     <div class="inline-form"><button id="qoder-logout" class="quiet" type="button" hidden>退出登录</button></div></article>
+     <div class="inline-form"><button id="qoder-logout" class="quiet" type="button" hidden>退出登录</button></div>
+     <p id="qoder-accounts-note" class="muted small">单账号通道：页签登录或 PAT 都只对应一个账号，不存在多账号选号，因此没有「独锁」；模型停用开关在「Qoder 模型」页照常可用。</p></article>
     </div>
     <div id="qoder-pane-login" hidden>
     <article id="qoder-login" class="panel"><div class="section-title"><h2>Qoder 登录</h2><span class="badge warn" id="qoder-login-badge">未登录</span></div>
@@ -126,6 +128,7 @@
     <div id="opencode-pane-models" hidden>
     <div class="section-title"><h2>OpenCode 模型</h2><span class="muted small">来自 OW Bridge 的 <code>/v1/models</code>，并合并 <code>/health</code> 的探测结论（含探测未通过的模型）</span></div>
     <div class="panel table-wrap"><table><thead><tr><th>模型 ID</th><th>能力</th><th>状态</th><th class="num">耗时</th><th class="num">速度</th><th>说明</th><th>热度</th><th>全球热度</th></tr></thead><tbody id="opencode-models-body"></tbody></table><p id="opencode-models-empty" class="empty">暂无模型。</p></div>
+    <p id="opencode-models-note" class="muted small">免费通道：积分倍率恒为 0，不参与模型停用开关，列表内模型恒为启用；同时免登录，没有账号池可锁。</p>
     </div>
     <div id="opencode-pane-chat" hidden>
     <div class="section-title"><h2>对话测试</h2><span class="muted small">OpenAI 流式协议，真实请求转发给 OW Bridge sidecar</span></div>
@@ -168,12 +171,13 @@
     <div class="section-title"><h2>账号管理</h2><span class="muted small">状态来自容器 <code>/status</code>；积分需手工刷新</span><button id="autoclaw-credits-refresh" class="secondary">↻ 刷新积分</button><button id="autoclaw-maintain" class="secondary">✚ 一键签到</button></div>
     <div class="metrics"><article><span>账号总数</span><strong id="autoclaw-stat-total">—</strong><small>国内版 + 国际版</small></article><article><span>可用</span><strong id="autoclaw-stat-usable">—</strong><small>未停用且未冷却</small></article><article><span>冷却中</span><strong id="autoclaw-stat-cooling">—</strong><small>上游限流中</small></article><article><span>已停用</span><strong id="autoclaw-stat-disabled">—</strong><small>手动关闭</small></article></div>
     <div class="panel table-wrap"><table><thead><tr><th>账号</th><th>区</th><th>状态</th><th class="num">积分</th><th class="num">成功 / 错误</th><th>说明</th><th>操作</th></tr></thead><tbody id="autoclaw-accounts-body"></tbody></table><p id="autoclaw-accounts-empty" class="empty">还没有账号。到「账号登录」子页添加。</p></div>
-    <p id="autoclaw-accounts-note" class="muted small" hidden></p>
+    <p id="autoclaw-accounts-note" class="muted small">多账号池，但这里没有「独锁」：旁路通道由容器自行选号，账号锁定只作用于 WorkBuddy 核心账号池。</p>
     </div>
     <div id="autoclaw-pane-models" hidden>
     <div class="section-title"><h2>AutoClaw 模型</h2><span class="muted small">来自 autoclaw2api 的 <code>/v1/models</code>；探测结论需点「测速探测」手工触发</span><button id="probe-autoclaw" class="secondary">⚡ 测速探测</button></div>
     <p id="probe-autoclaw-progress" class="muted small" role="status" aria-live="polite" hidden></p>
     <div class="panel table-wrap"><table><thead><tr><th>模型 ID</th><th>能力</th><th>状态</th><th class="num">耗时</th><th class="num">速度</th><th>说明</th><th>热度</th><th>全球热度</th></tr></thead><tbody id="autoclaw-models-body"></tbody></table><p id="autoclaw-models-empty" class="empty">暂无模型。</p></div>
+    <p id="autoclaw-models-note" class="muted small">免费通道：积分倍率恒为 0，不参与模型停用开关，列表内模型恒为启用。</p>
     </div>
     <div id="autoclaw-pane-chat" hidden>
     <div class="section-title"><h2>对话测试</h2><span class="muted small">OpenAI 流式协议，真实请求转发给 autoclaw2api 容器</span></div>
@@ -205,7 +209,7 @@
     <div class="section-title"><h2>账号管理</h2><span class="muted small">状态来自容器 <code>/status</code>；积分需手工刷新</span><button id="trae-credits-refresh" class="secondary">↻ 刷新积分</button><button id="trae-maintain" class="secondary">✚ 一键签到</button></div>
     <div class="metrics"><article><span>账号总数</span><strong id="trae-stat-total">—</strong><small>全部已导入账号</small></article><article><span>可用</span><strong id="trae-stat-usable">—</strong><small>未停用且未冷却</small></article><article><span>冷却中</span><strong id="trae-stat-cooling">—</strong><small>上游限流中</small></article><article><span>已停用</span><strong id="trae-stat-disabled">—</strong><small>手动关闭</small></article></div>
     <div class="panel table-wrap"><table><thead><tr><th>账号</th><th>状态</th><th class="num">积分</th><th class="num">成功 / 错误</th><th>有效期</th><th>说明</th><th>操作</th></tr></thead><tbody id="trae-accounts-body"></tbody></table><p id="trae-accounts-empty" class="empty">还没有账号。到「账号登录」子页添加。</p></div>
-    <p id="trae-accounts-note" class="muted small" hidden></p>
+    <p id="trae-accounts-note" class="muted small">多账号池，但这里没有「独锁」：旁路通道由容器自行选号，账号锁定只作用于 WorkBuddy 核心账号池。</p>
     </div>
     <div id="trae-pane-schedule" hidden>
     <div class="section-title"><h2>排程</h2><span class="muted small">签到与凭据刷新时间来自容器调度器</span><button id="trae-schedule-refresh" class="secondary">↻ 刷新排程</button></div>
@@ -217,6 +221,7 @@
     <div class="section-title"><h2>Trae 模型</h2><span class="muted small">来自 trae2api 的 <code>/v1/models</code>；探测结论需点「测速探测」手工触发</span><button id="probe-trae" class="secondary">⚡ 测速探测</button></div>
     <p id="probe-trae-progress" class="muted small" role="status" aria-live="polite" hidden></p>
     <div class="panel table-wrap"><table><thead><tr><th>模型 ID</th><th>能力</th><th>状态</th><th class="num">耗时</th><th class="num">速度</th><th>说明</th><th>热度</th><th>全球热度</th></tr></thead><tbody id="trae-models-body"></tbody></table><p id="trae-models-empty" class="empty">暂无模型。</p></div>
+    <p id="trae-models-note" class="muted small">免费通道：积分倍率恒为 0，不参与模型停用开关，列表内模型恒为启用。</p>
     </div>
     <div id="trae-pane-chat" hidden>
     <div class="section-title"><h2>对话测试</h2><span class="muted small">OpenAI 流式协议，真实请求转发给 trae2api 容器</span></div>
@@ -240,6 +245,7 @@
     <div class="section-title"><h2>账号管理</h2><span class="muted small">状态来自容器 <code>/status</code>；积分需手工刷新</span><button id="raccoon-credits-refresh" class="secondary">↻ 刷新积分</button></div>
     <div class="metrics"><article><span>账号总数</span><strong id="raccoon-stat-total">—</strong><small>全部已导入账号</small></article><article><span>可用</span><strong id="raccoon-stat-usable">—</strong><small>未停用且未冷却</small></article><article><span>冷却中</span><strong id="raccoon-stat-cooling">—</strong><small>上游限流中</small></article><article><span>已停用</span><strong id="raccoon-stat-disabled">—</strong><small>手动关闭</small></article></div>
     <div class="panel table-wrap"><table><thead><tr><th>账号</th><th>状态</th><th class="num">积分</th><th class="num">成功 / 错误</th><th>有效期</th><th>说明</th><th>操作</th></tr></thead><tbody id="raccoon-accounts-body"></tbody></table><p id="raccoon-accounts-empty" class="empty">还没有账号。到「凭证导入」子页添加。</p></div>
+    <p id="raccoon-accounts-note" class="muted small">多账号池，但这里没有「独锁」：旁路通道由容器自行选号，账号锁定只作用于 WorkBuddy 核心账号池。</p>
     </div>
     <div id="raccoon-pane-import" hidden>
     <article class="panel"><div class="section-title"><h2>凭证导入</h2></div>
@@ -253,6 +259,7 @@
     <div class="section-title"><h2>小浣熊模型</h2><span class="muted small">来自 raccoon2api 的 <code>/v1/models</code>；探测结论需点「测速探测」手工触发</span><button id="probe-raccoon" class="secondary">⚡ 测速探测</button></div>
     <p id="probe-raccoon-progress" class="muted small" role="status" aria-live="polite" hidden></p>
     <div class="panel table-wrap"><table><thead><tr><th>模型 ID</th><th>能力</th><th>状态</th><th class="num">耗时</th><th class="num">速度</th><th>说明</th><th>热度</th><th>全球热度</th></tr></thead><tbody id="raccoon-models-body"></tbody></table><p id="raccoon-models-empty" class="empty">暂无模型。</p></div>
+    <p id="raccoon-models-note" class="muted small">免费通道：积分倍率恒为 0，不参与模型停用开关，列表内模型恒为启用。</p>
     </div>
     <div id="raccoon-pane-chat" hidden>
     <div class="section-title"><h2>对话测试</h2><span class="muted small">OpenAI 流式协议，真实请求转发给 raccoon2api 容器</span></div>
