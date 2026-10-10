@@ -128,7 +128,7 @@
     <div id="opencode-pane-models" hidden>
     <div class="section-title"><h2>OpenCode 模型</h2><span class="muted small">来自 OW Bridge 的 <code>/v1/models</code>，并合并 <code>/health</code> 的探测结论（含探测未通过的模型）</span></div>
     <div class="panel table-wrap"><table><thead><tr><th>模型 ID</th><th>能力</th><th>状态</th><th class="num">耗时</th><th class="num">速度</th><th>说明</th><th>热度</th><th>全球热度</th></tr></thead><tbody id="opencode-models-body"></tbody></table><p id="opencode-models-empty" class="empty">暂无模型。</p></div>
-    <p id="opencode-models-note" class="muted small">免费通道：积分倍率恒为 0，不参与模型停用开关，列表内模型恒为启用；同时免登录，没有账号池可锁。</p>
+    <p id="opencode-models-note" class="muted small">免费通道：不采集积分倍率（缺失不等于 0）；模型默认启用，可用操作列开关停用，停用后调用返回「已停用」；同时免登录，没有账号池可锁。</p>
     </div>
     <div id="opencode-pane-chat" hidden>
     <div class="section-title"><h2>对话测试</h2><span class="muted small">OpenAI 流式协议，真实请求转发给 OW Bridge sidecar</span></div>
@@ -177,7 +177,7 @@
     <div class="section-title"><h2>AutoClaw 模型</h2><span class="muted small">来自 autoclaw2api 的 <code>/v1/models</code>；探测结论需点「测速探测」手工触发</span><button id="probe-autoclaw" class="secondary">⚡ 测速探测</button></div>
     <p id="probe-autoclaw-progress" class="muted small" role="status" aria-live="polite" hidden></p>
     <div class="panel table-wrap"><table><thead><tr><th>模型 ID</th><th>能力</th><th>状态</th><th class="num">耗时</th><th class="num">速度</th><th>说明</th><th>热度</th><th>全球热度</th></tr></thead><tbody id="autoclaw-models-body"></tbody></table><p id="autoclaw-models-empty" class="empty">暂无模型。</p></div>
-    <p id="autoclaw-models-note" class="muted small">免费通道：积分倍率恒为 0，不参与模型停用开关，列表内模型恒为启用。</p>
+    <p id="autoclaw-models-note" class="muted small">免费通道：不采集积分倍率（缺失不等于 0）；模型默认启用，可用操作列开关停用，停用后调用返回「已停用」。</p>
     </div>
     <div id="autoclaw-pane-chat" hidden>
     <div class="section-title"><h2>对话测试</h2><span class="muted small">OpenAI 流式协议，真实请求转发给 autoclaw2api 容器</span></div>
@@ -259,7 +259,7 @@
     <div class="section-title"><h2>小浣熊模型</h2><span class="muted small">来自 raccoon2api 的 <code>/v1/models</code>；探测结论需点「测速探测」手工触发</span><button id="probe-raccoon" class="secondary">⚡ 测速探测</button></div>
     <p id="probe-raccoon-progress" class="muted small" role="status" aria-live="polite" hidden></p>
     <div class="panel table-wrap"><table><thead><tr><th>模型 ID</th><th>能力</th><th>状态</th><th class="num">耗时</th><th class="num">速度</th><th>说明</th><th>热度</th><th>全球热度</th></tr></thead><tbody id="raccoon-models-body"></tbody></table><p id="raccoon-models-empty" class="empty">暂无模型。</p></div>
-    <p id="raccoon-models-note" class="muted small">免费通道：积分倍率恒为 0，不参与模型停用开关，列表内模型恒为启用。</p>
+    <p id="raccoon-models-note" class="muted small">免费通道：不采集积分倍率（缺失不等于 0）；模型默认启用，可用操作列开关停用，停用后调用返回「已停用」。</p>
     </div>
     <div id="raccoon-pane-chat" hidden>
     <div class="section-title"><h2>对话测试</h2><span class="muted small">OpenAI 流式协议，真实请求转发给 raccoon2api 容器</span></div>

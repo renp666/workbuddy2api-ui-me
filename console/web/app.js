@@ -176,20 +176,17 @@ function parseCreditRule(raw){
  const value=Number(s);
  return Number.isFinite(value)&&value>=0?value:null;
 }
-// channelSwitchable 是「这条通道参不参与模型停用开关」的唯一判据。模型表与能力页
-// 都读它：两处各抄一份名单，改一处漏一处就会让同一条通道在两个页面显示相反的开关态。
-// opencode/autoclaw/raccoon 是免费通道，不采集倍率、也不参与开关（需求明确排除）。
-function channelSwitchable(channel){return channel!=='opencode'&&channel!=='autoclaw'&&channel!=='raccoon';}
-// modelSwitchEffective 报告行的当前生效状态：人工覆盖优先，其次按倍率取默认态。
-// 不参与开关的通道（row.switchable=false）恒放行。
-// row.defaultEnabled 标的是「这条通道的倍率不能拿来当停用依据」：trae 的倍率语义是
-// 「套餐额度的消耗率」（0.78 只说明它比 0.06 更吃额度），不是「这次要扣多少钱」。
-// 沿用「倍率非零即默认停用」会让 trae 全部模型一上线就显示已停用，等于整条通道默认关闭。
+// channelHasCredits 报告这条通道是否采集积分倍率。opencode/autoclaw/raccoon 是
+// 免费通道，上游不下发倍率——它们照常参与模型停用开关，只是没有「积分消耗」列
+// （缺失的倍率不能拿「未知」冒充，更不能伪造 0），排序也沿用探测状态口径。
+function channelHasCredits(channel){return channel!=='opencode'&&channel!=='autoclaw'&&channel!=='raccoon';}
+// modelSwitchEffective 报告行的当前生效状态：人工覆盖优先；不在覆盖表里的模型
+// 一律视为启用——调用是「统一对外开放」的，未配置的直名默认放行，只有显式停用
+// （写入禁用表）才拒绝。倍率不参与默认态判定（trae 的倍率是套餐额度消耗率，
+// 免费三通道根本没有倍率，都当不了停用依据）。
 function modelSwitchEffective(row){
- if(!row.switchable)return true;
  if(modelSwitchOverrides.has(row.id))return modelSwitchOverrides.get(row.id);
- if(row.defaultEnabled)return true;
- return row.creditValue===0;
+ return true;
 }
 const modelChannels={zcode:{body:'zcode-models-body',empty:'zcode-models-empty',namePrefix:'GLM · '},
  qoder:{body:'qoder-models-body',empty:'qoder-models-empty',namePrefix:'Qoder · '},
@@ -335,9 +332,8 @@ function channelModelRows(channel,list,health){
  const caps=new Map();
  if(health&&Array.isArray(health.models))for(const item of health.models){if(item&&item.name)caps.set(modelKey(item.name),item);}
  const rows=new Map();
- const switchable=channelSwitchable(channel);
- // trae 参与开关，但倍率只用于展示与排序，不做默认停用依据（见 modelSwitchEffective）。
- const defaultEnabled=channel==='trae';
+ // 是否采集倍率决定排序与积分列：免费三通道没有倍率数据，保持「探测状态 → 耗时」排序。
+ const hasCredits=channelHasCredits(channel);
  // 去重身份始终按 id（core 用完整公共名，其余通道用跨源对齐键），展示名不参与身份判定：
  // 目录条目可能带 name（如小浣熊的上游真实展示名），只改行标签，不改选路键与探测对齐。
  // upstreamName 单独留一份：行标签是给人看的，id 是选路与别名表单里真正在用的那个（问题4）。
@@ -364,7 +360,7 @@ function channelModelRows(channel,list,health){
   const result=row.result;
   const variants=[...new Set([...modelVariantNames(result),...modelVariantNames(row.cap)])];
   const ms=result?Number(result.durationMs):NaN;
-  return{key:row.key,label:row.label,upstreamName:row.upstreamName,id:row.id,switchable,defaultEnabled,credits:row.credits,creditValue:row.creditValue,accounts:row.accounts,tier:row.tier,state:modelProbeState(result),
+  return{key:row.key,label:row.label,upstreamName:row.upstreamName,id:row.id,credits:row.credits,creditValue:row.creditValue,accounts:row.accounts,tier:row.tier,state:modelProbeState(result),
    caps:modelCapabilityBadges(row.cap,row.efforts&&row.efforts.length?['推理']:null),
    limit:modelLimitText(row.cap),
    variants:variants.length?`档位 ${variants.join(' / ')}`:'',
@@ -373,7 +369,7 @@ function channelModelRows(channel,list,health){
    speed:speedText(result),
    source:result&&modelProbeSources[result.source]?modelProbeSources[result.source]:'',
    note:result&&typeof result.error==='string'&&result.error?result.error:'—'};
- }).sort(switchable?creditSort:probeSort);
+ }).sort(hasCredits?creditSort:probeSort);
 }
 // creditSort 是积分开关通道的排序：按积分消耗升序（倍率低在前），未知倍率排最后，
 // 已知且为 0（免费）排最前。倍率相同（含同为未知）保持上游目录的插入顺序，
@@ -402,7 +398,8 @@ function renderModelTable(channel,list,health){
  modelHeatSources[channel]={list,health};
  const body=$(config.body);body.replaceChildren();
  const rows=channelModelRows(channel,list,health);
- const cols=(channel==='opencode'||channel==='autoclaw'||channel==='raccoon')?8:10;
+ const hasCredits=channelHasCredits(channel);
+ const cols=hasCredits?10:9;
  const appendRow=row=>{
   const tr=document.createElement('tr');
   // 只有异常行抬底色：可用/未知是常态，整表染色等于没染色，失败行反而被淹掉。
@@ -410,8 +407,10 @@ function renderModelTable(channel,list,health){
   // tier 徽标排在能力徽标之前：它说「这个模型属于哪一档」，与「能不能调通」是两件事。
   const caps=row.tier?['Agent',...row.caps]:row.caps;
   tr.append(modelLabelCell(row),chipsCell(caps,[row.limit,row.variants].filter(Boolean).join(' · ')),badgeCell(row.state.label,row.state.tone),numCell(row.duration,row.source),numCell(row.speed),cell(row.note),modelHeatCell(row.key),globalHeatCell(row.key));
-  // opencode/autoclaw/raccoon 免费通道不采集倍率、不加开关列；其余通道追加「积分消耗」与「操作」两列。
-  if(row.switchable){ tr.append(creditCell(row),switchOpCell(row)); }
+  // 所有通道都追加「操作」开关列：停用=对话请求返回已停用；采集倍率的通道再加
+  // 「积分消耗」列，免费三通道没有倍率数据，不设该列（缺失不等于 0）。
+  if(hasCredits){ tr.append(creditCell(row)); }
+  tr.append(switchOpCell(row));
   body.append(tr);
  };
  if(modelTableGroupsByAccount(channel)&&modelsGroupByAccount&&rows.some(row=>Array.isArray(row.accounts)&&row.accounts.length)){
@@ -2424,7 +2423,7 @@ function capPool(){
   for(const model of channel.models||[]){
    const cost=capCost(model,channel.channel,costs);
    out.push({channel:channel.channel,model,row:capByKeys.get(modelKey(model))||null,cost,
-    gate:modelSwitchEffective({id:model,switchable:channelSwitchable(channel.channel),defaultEnabled:channel.channel==='trae',creditValue:cost.known?cost.value:null})});
+    gate:modelSwitchEffective({id:model})});
   }
  }
  return out;

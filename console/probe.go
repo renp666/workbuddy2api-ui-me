@@ -61,13 +61,23 @@ func newProbeRunner() *probeRunner {
 func (p *probeRunner) channelResults(c routeChannel) map[string]map[string]any {
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	src := p.results[c]
+	return copyProbeResults(p.results[c])
+}
+
+// copyProbeResults 把「模型 → 结论」表深拷贝一层：外层与每个模型的内层 map 都要
+// 复制，调用方（JSON 序列化、管理响应聚合）才能在锁外安全遍历，record 的新结论
+// 写入不会与读方竞争同一张表。结论值本身在建好后只读，无需再往里拷。
+func copyProbeResults(src map[string]map[string]any) map[string]map[string]any {
 	if len(src) == 0 {
 		return nil
 	}
 	out := make(map[string]map[string]any, len(src))
 	for k, v := range src {
-		out[k] = v
+		inner := make(map[string]any, len(v))
+		for mk, mv := range v {
+			inner[mk] = mv
+		}
+		out[k] = inner
 	}
 	return out
 }
@@ -77,11 +87,10 @@ func (p *probeRunner) snapshot() map[string]any {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	channels := map[string]map[string]map[string]any{}
-	for c, byModel := range p.results {
-		if len(byModel) == 0 {
-			continue
+	for c := range p.results {
+		if byModel := copyProbeResults(p.results[c]); byModel != nil {
+			channels[string(c)] = byModel
 		}
-		channels[string(c)] = byModel
 	}
 	return map[string]any{
 		"running": p.running,

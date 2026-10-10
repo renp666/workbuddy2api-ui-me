@@ -195,26 +195,23 @@ func (c routeChannel) realm(model string) string {
 	return "cn"
 }
 
-// aliasModelEntries 把当前启用、且解析目标放行的别名条目转成 /v1/models 的虚拟条目，
-// 让下游（含拒绝模型名带空格的消费方）能直接发现并按别名引用。条目沿用所属通道的
+// aliasModelEntries 把当前配置的所有别名条目转成 /v1/models 的虚拟条目，让下游
+// （含拒绝模型名带空格的消费方）能直接发现并按别名引用。条目沿用所属通道的
 // realm，并额外带 alias/routed_model/virtual 字段标明它是间接层而非真实上游模型。
-// 目标被积分开关停用（含默认停用）时该别名一并隐藏，保持「可见即可用」的口径，
-// 不会 advertise 一个请求必然 404 的名字。gateway-auto 由 mergedModels 单独追加。
-func (h *server) aliasModelEntries(ctx context.Context) []json.RawMessage {
+// 公布与开关解耦（用户口径「关机的手机仍拿在手里」）：别名配置了就公布，停用的
+// 别名也在列表里、调用时报「已停用」；目标模型被停用不再隐藏别名——手机关机了
+// 昵称也打不通，但名字还在。gateway-auto 由 mergedModels 单独追加。
+func (h *server) aliasModelEntries() []json.RawMessage {
 	if h.routes == nil {
 		return nil
 	}
 	var out []json.RawMessage
 	for _, entry := range h.routes.snapshot() {
-		if !entry.Enabled || entry.Alias == autoModelName {
+		if entry.Alias == autoModelName {
 			continue
 		}
 		// 通道未配置上游时不广告：请求会因前缀分流落空而失败，别名不该承诺一个到不了的链路。
 		if !h.channelEnabled(entry.Channel) {
-			continue
-		}
-		routed := entry.publicModel()
-		if !h.modelGate(ctx, routed) {
 			continue
 		}
 		item, err := json.Marshal(map[string]any{
@@ -224,7 +221,7 @@ func (h *server) aliasModelEntries(ctx context.Context) []json.RawMessage {
 			"realm":        entry.Channel.realm(entry.Model),
 			"virtual":      true,
 			"alias":        true,
-			"routed_model": routed,
+			"routed_model": entry.publicModel(),
 		})
 		if err != nil {
 			continue
@@ -484,8 +481,9 @@ func (s *routeStore) setModelSwitch(model string, enable bool) error {
 // setGroupSwitch 是「整组启停」的落盘实现：一个真实模型与所有指向它的别名
 // 视为同一个同步组，整体开或整体关。用户口径是控制台模型列表与别名表的开关
 // 必须永远一致、点哪一处都一样，所以这里一次性写两件事：模型开关表（决定
-// modelGate 放行与 /v1/models 是否公布）和指向它的每个别名的 Enabled
-// （决定别名是否广播）。分成两次写会出现「模型开了但别名还关着」的中间态。
+// modelGate 是否放行调用与 modelPublished 是否上榜公布）和指向它的每个别名
+// 的 Enabled（决定别名调用是否报「已停用」）。分成两次写会出现
+// 「模型开了但别名还关着」的中间态。
 func (s *routeStore) setGroupSwitch(model string, enable bool) error {
 	model = strings.TrimSpace(model)
 	if !validRouteName(model, 128, routeModelChars) {
@@ -725,6 +723,20 @@ func (s *routeStore) lookup(alias string) (routeEntry, bool) {
 	defer s.mu.RUnlock()
 	for _, entry := range s.file.Models {
 		if entry.Enabled && entry.Alias == alias {
+			return entry, true
+		}
+	}
+	return routeEntry{}, false
+}
+
+// lookupAny 返回别名对应的条目，不问启用与否。lookup 只认启用条目，无法区分
+// 「没这个别名」和「别名配置了但停用」——后者调用方要明确报「已停用」，不能让
+// 请求带着别名原名静默落到 core，造出一个莫名其妙的 404 模型不存在。
+func (s *routeStore) lookupAny(alias string) (routeEntry, bool) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	for _, entry := range s.file.Models {
+		if entry.Alias == alias {
 			return entry, true
 		}
 	}
@@ -1155,7 +1167,7 @@ func (h *server) adminRouteSwitch(w http.ResponseWriter, r *http.Request) {
 
 // adminRouteTest 对单个别名做一次真实最小对话并把结论直接回给页面。复用
 // probeOne 的测速口径（流式 + 校验 content 非空 + 真实 usage 算速度），只打
-// 这一条别名的目标模型。别名停用、或目标模型被闸门拦下时直接返回原因、不发出
+// 这一条别名的目标模型。别名停用、或目标模型被显式停用时直接返回原因、不发出
 // 上游请求——这两种情况测试必然失败，报清楚比报超时有用。
 func (h *server) adminRouteTest(w http.ResponseWriter, r *http.Request) {
 	if h.routes == nil {
@@ -1186,7 +1198,7 @@ func (h *server) adminRouteTest(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	public := found.publicModel()
-	if !h.modelGate(r.Context(), public) {
+	if !h.modelGate(public) {
 		writeJSON(w, 200, probeFailResult("model_disabled", fmt.Sprintf("目标模型 %s 已停用，先在模型列表启用再测", public), 0))
 		return
 	}

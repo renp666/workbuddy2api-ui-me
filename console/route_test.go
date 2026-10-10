@@ -100,7 +100,7 @@ func TestRouteAliasRewritesModelAndAddsHeaders(t *testing.T) {
 	if got := saveRoutes(t, h, []routeEntry{{Alias: "fast", Channel: channelGLM, Model: "glm-5.3", Enabled: true}}, ""); got.Code != 200 {
 		t.Fatalf("save: %d %s", got.Code, got.Body)
 	}
-	// glm- 通道不下发倍率，按「未知默认关闭」会被积分开关拦下；先人工启用再验证别名改写。
+	// 人工启用让 glm-5.3 进公布白名单（调用本就默认放行，这里顺带覆盖开关端点与别名共存）。
 	if got := switchModel(t, h, "glm-5.3", true); got.Code != 200 {
 		t.Fatalf("model-switch enable: %d %s", got.Code, got.Body)
 	}
@@ -214,8 +214,10 @@ func TestRouteAliasAcceptsPrefixedModelName(t *testing.T) {
 	}
 }
 
-// TestAliasEntriesAppearInPublicModels 验证启用的别名作为虚拟条目出现在公共 /v1/models，
-// realm 沿用所属通道，且带 alias/routed_model 标注；目标被积分开关停用的别名不广告。
+// TestAliasEntriesAppearInPublicModels 验证别名作为虚拟条目出现在公共 /v1/models：
+// realm 沿用所属通道，带 alias/routed_model 标注。公布与开关解耦（「关机的手机仍
+// 拿在手里」）：别名配置了就公布，停用别名也在列表里，调用时才报「已停用」；
+// 真实直名走启用表白名单，未显式启用不上榜但仍可按名调用。
 func TestAliasEntriesAppearInPublicModels(t *testing.T) {
 	var mu sync.Mutex
 	var ocModel string
@@ -233,7 +235,7 @@ func TestAliasEntriesAppearInPublicModels(t *testing.T) {
 		}
 		fmt.Fprint(w, `{"opencode":true}`)
 	})
-	// 一条 opencode 别名（免费通道，不受开关约束）+ 一条 core 别名（目标免费）。
+	// 一条 opencode 别名（目标未配置直名）+ 一条 core 别名（启用）+ 一条 core 别名（停用）。
 	if got := saveRoutes(t, h, []routeEntry{
 		{Alias: "bunny", Channel: channelOpenCode, Model: "opencode-OC · Space Bunny Free", Enabled: true},
 		{Alias: "main", Channel: channelCore, Model: "cn:free", Enabled: true},
@@ -241,74 +243,96 @@ func TestAliasEntriesAppearInPublicModels(t *testing.T) {
 	}, ""); got.Code != 200 {
 		t.Fatalf("save: %d %s", got.Code, got.Body)
 	}
-	rec := httptest.NewRecorder()
-	h.ServeHTTP(rec, httptest.NewRequest("GET", "/v1/models", nil))
-	if rec.Code != 200 {
-		t.Fatalf("models: %d %s", rec.Code, rec.Body)
-	}
-	var list struct {
-		Data []struct {
-			ID          string `json:"id"`
-			Realm       string `json:"realm"`
-			Alias       bool   `json:"alias"`
-			RoutedModel string `json:"routed_model"`
-		} `json:"data"`
-	}
-	if json.Unmarshal(rec.Body.Bytes(), &list) != nil {
-		t.Fatalf("models body not JSON: %s", rec.Body)
-	}
-	byID := map[string]struct {
+	fetch := func() map[string]struct {
 		realm, routed string
 		alias         bool
-	}{}
-	for _, item := range list.Data {
-		byID[item.ID] = struct {
+	} {
+		rec := httptest.NewRecorder()
+		h.ServeHTTP(rec, httptest.NewRequest("GET", "/v1/models", nil))
+		if rec.Code != 200 {
+			t.Fatalf("models: %d %s", rec.Code, rec.Body)
+		}
+		var list struct {
+			Data []struct {
+				ID          string `json:"id"`
+				Realm       string `json:"realm"`
+				Alias       bool   `json:"alias"`
+				RoutedModel string `json:"routed_model"`
+			} `json:"data"`
+		}
+		if json.Unmarshal(rec.Body.Bytes(), &list) != nil {
+			t.Fatalf("models body not JSON: %s", rec.Body)
+		}
+		byID := map[string]struct {
 			realm, routed string
 			alias         bool
-		}{item.Realm, item.RoutedModel, item.Alias}
+		}{}
+		for _, item := range list.Data {
+			byID[item.ID] = struct {
+				realm, routed string
+				alias         bool
+			}{item.Realm, item.RoutedModel, item.Alias}
+		}
+		return byID
 	}
-	// 既有真实条目仍在（C2：不删不改）。
-	if _, ok := byID["cn:free"]; !ok {
-		t.Fatalf("real core model missing from list: %s", rec.Body)
+	byID := fetch()
+	// 真实直名未显式启用：不在公布名单，但调用仍放行（双轨语义）。
+	if _, ok := byID["cn:free"]; ok {
+		t.Fatalf("unenabled direct name must stay unpublished: %+v", byID)
+	}
+	if rec := gateChat(h, "cn:free"); rec.Code != 200 {
+		t.Fatalf("unpublished model must stay callable: %d %s", rec.Code, rec.Body)
 	}
 	bunny, ok := byID["bunny"]
 	if !ok || !bunny.alias || bunny.realm != "opencode" || bunny.routed != "opencode-OC · Space Bunny Free" {
-		t.Fatalf("opencode alias entry wrong: %+v present=%v body=%s", bunny, ok, rec.Body)
+		t.Fatalf("opencode alias entry wrong: %+v present=%v", bunny, ok)
 	}
 	main, ok := byID["main"]
 	if !ok || !main.alias || main.realm != "cn" || main.routed != "cn:free" {
 		t.Fatalf("core alias entry wrong: %+v present=%v", main, ok)
 	}
-	if _, ok := byID["off"]; ok {
-		t.Fatalf("disabled alias must not appear: %s", rec.Body)
+	off, ok := byID["off"]
+	if !ok || !off.alias || off.routed != "cn:free" {
+		t.Fatalf("disabled alias must still be published: %+v present=%v", off, ok)
 	}
-	// 别名请求可正常改写转发（端到端串联 R1+R2）。
+	// 显式启用后直名上榜（公布走启用表白名单）。
+	if got := switchModel(t, h, "cn:free", true); got.Code != 200 {
+		t.Fatalf("enable cn:free: %d %s", got.Code, got.Body)
+	}
+	if _, ok := fetch()["cn:free"]; !ok {
+		t.Fatal("enabled direct name missing from list")
+	}
 	mu.Lock()
 	defer mu.Unlock()
 	_ = ocModel
 }
 
-func TestRouteDisabledAliasDoesNotCaptureModel(t *testing.T) {
+// TestRouteDisabledAliasReturnsDisabledError 验证配置了但停用的别名不再透明落到
+// core（旧行为会带着原名打出莫名其妙的 404），而是明确报「已停用」且不打到上游；
+// 名字本身仍在公布名单里（见 TestAliasEntriesAppearInPublicModels）。
+func TestRouteDisabledAliasReturnsDisabledError(t *testing.T) {
 	var mu sync.Mutex
-	var coreModel string
+	var coreHits int
 	h, _ := routeConsole(t, func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path == "/v1/chat/completions" {
 			mu.Lock()
-			coreModel = modelOf(t, r)
+			coreHits++
 			mu.Unlock()
 		}
 		fmt.Fprint(w, `{"core":true}`)
 	}, nil)
-	// enabled=false 的条目必须完全透明：请求原样落到 core，模型名不被改写。
 	if got := saveRoutes(t, h, []routeEntry{{Alias: "off", Channel: channelCore, Model: "cn:auto", Enabled: false}}, ""); got.Code != 200 {
 		t.Fatalf("save: %d %s", got.Code, got.Body)
 	}
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, httptest.NewRequest("POST", "/v1/chat/completions", strings.NewReader(chatBody("off"))))
+	if rec.Code != 404 || !strings.Contains(rec.Body.String(), "已停用") {
+		t.Fatalf("disabled alias must report disabled: %d %s", rec.Code, rec.Body)
+	}
 	mu.Lock()
 	defer mu.Unlock()
-	if coreModel != "off" {
-		t.Fatalf("disabled alias rewrote model to %q", coreModel)
+	if coreHits != 0 {
+		t.Fatalf("disabled alias must not reach core, hits=%d", coreHits)
 	}
 	if rec.Header().Get("X-Prism-Channel") != "" {
 		t.Fatal("disabled alias must not emit routing headers")
@@ -604,38 +628,34 @@ func creditConsole(t *testing.T, coreModels string) http.Handler {
 	return h
 }
 
-// TestModelSwitchDefaultsFromCredits 验证「倍率=0 默认开 / 倍率>0 或未知默认关」：
-// 免费模型放行、付费模型与未知倍率模型既被对话出口拒绝，也从 /v1/models 隐藏。
+// TestModelSwitchDefaultsFromCredits 验证调用与公布双轨（2026-10-10 口径）：
+// 调用统一对外开放——未配置的直名默认放行，倍率不再参与判定；公布走启用表白名单，
+// 未显式启用的直名一律不上 /v1/models。
 func TestModelSwitchDefaultsFromCredits(t *testing.T) {
 	coreModels := `{"object":"list","data":[
 		{"id":"cn:free","credits":"x0.00"},
 		{"id":"cn:paid","credits":"x0.79"},
 		{"id":"cn:unknown"}]}`
 	h := creditConsole(t, coreModels)
-	// 对话出口：免费放行、付费与未知拒绝。
-	if rec := gateChat(h, "cn:free"); rec.Code != 200 {
-		t.Fatalf("free model rejected: %d %s", rec.Code, rec.Body)
-	}
-	for _, model := range []string{"cn:paid", "cn:unknown"} {
-		rec := gateChat(h, model)
-		if rec.Code != 404 {
-			t.Fatalf("%s should be gated off: %d %s", model, rec.Code, rec.Body)
+	// 对话出口：未配置一律放行——免费、付费、未知倍率一视同仁。
+	for _, model := range []string{"cn:free", "cn:paid", "cn:unknown"} {
+		if rec := gateChat(h, model); rec.Code != 200 {
+			t.Fatalf("%s should be open by default: %d %s", model, rec.Code, rec.Body)
 		}
 	}
-	// /v1/models：免费可见，付费与未知隐藏。
+	// /v1/models：未显式启用的直名不公布。
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, httptest.NewRequest("GET", "/v1/models", nil))
 	body := rec.Body.String()
-	if !strings.Contains(body, "cn:free") {
-		t.Fatalf("free model hidden from list: %s", body)
-	}
-	if strings.Contains(body, "cn:paid") || strings.Contains(body, "cn:unknown") {
-		t.Fatalf("disabled models leaked into list: %s", body)
+	for _, model := range []string{"cn:free", "cn:paid", "cn:unknown"} {
+		if strings.Contains(body, model) {
+			t.Fatalf("unenabled model %s leaked into list: %s", model, body)
+		}
 	}
 }
 
-// TestModelSwitchManualOverridePersists 验证人工开关优先于默认态并落盘：
-// 强制启用付费模型、强制停用免费模型，读取状态回显一致。
+// TestModelSwitchManualOverridePersists 验证人工开关双向生效并落盘：
+// 强制启用付费模型（调用放行 + 上公布名单）、强制停用免费模型（调用 404 + 退出名单）。
 func TestModelSwitchManualOverridePersists(t *testing.T) {
 	coreModels := `{"object":"list","data":[{"id":"cn:free","credits":"x0.00"},{"id":"cn:paid","credits":"x0.79"}]}`
 	h := creditConsole(t, coreModels)
@@ -655,10 +675,20 @@ func TestModelSwitchManualOverridePersists(t *testing.T) {
 	if rec := gateChat(h, "cn:free"); rec.Code != 404 {
 		t.Fatalf("manually disabled model allowed: %d %s", rec.Code, rec.Body)
 	}
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, httptest.NewRequest("GET", "/v1/models", nil))
+	body := rec.Body.String()
+	if !strings.Contains(body, "cn:paid") {
+		t.Fatalf("enabled model missing from list: %s", body)
+	}
+	if strings.Contains(body, "cn:free") {
+		t.Fatalf("disabled model leaked into list: %s", body)
+	}
 }
 
-// TestModelSwitchOpenCodeExempt 验证 opencode 免费通道完全不受开关约束。
-func TestModelSwitchOpenCodeExempt(t *testing.T) {
+// TestModelSwitchOpenCodeDisable 验证 opencode 免费通道同样参与开关：未配置默认
+// 放行，显式停用后直名与指向它的别名一起被拒，上游不被触达。
+func TestModelSwitchOpenCodeDisable(t *testing.T) {
 	var ocModel string
 	var mu sync.Mutex
 	h, _ := routeConsole(t, func(w http.ResponseWriter, r *http.Request) {
@@ -674,20 +704,31 @@ func TestModelSwitchOpenCodeExempt(t *testing.T) {
 	if got := saveRoutes(t, h, []routeEntry{{Alias: "oc", Channel: channelOpenCode, Model: "OC · Free", Enabled: true}}, ""); got.Code != 200 {
 		t.Fatalf("save: %d %s", got.Code, got.Body)
 	}
-	rec := httptest.NewRecorder()
-	h.ServeHTTP(rec, httptest.NewRequest("POST", "/v1/chat/completions", strings.NewReader(chatBody("opencode-OC · Free"))))
-	if rec.Code != 200 || rec.Body.String() != `{"opencode":true}` {
-		t.Fatalf("opencode gated despite exemption: %d %s", rec.Code, rec.Body)
+	if rec := gateChat(h, "opencode-OC · Free"); rec.Code != 200 {
+		t.Fatalf("unconfigured opencode model must pass: %d %s", rec.Code, rec.Body)
+	}
+	mu.Lock()
+	ocModel = "" // 停用前的放行请求合法触达过上游，清掉记录只看停用之后。
+	mu.Unlock()
+	if got := switchModel(t, h, "opencode-OC · Free", false); got.Code != 200 {
+		t.Fatalf("disable: %d %s", got.Code, got.Body)
+	}
+	if rec := gateChat(h, "opencode-OC · Free"); rec.Code != 404 || !strings.Contains(rec.Body.String(), "已停用") {
+		t.Fatalf("disabled opencode model must 404: %d %s", rec.Code, rec.Body)
+	}
+	if rec := gateChat(h, "oc"); rec.Code != 404 {
+		t.Fatalf("alias to disabled target must 404: %d %s", rec.Code, rec.Body)
 	}
 	mu.Lock()
 	defer mu.Unlock()
-	if ocModel != "OC · Free" {
-		t.Fatalf("opencode model=%q", ocModel)
+	if ocModel != "" {
+		t.Fatalf("disabled model reached upstream as %q", ocModel)
 	}
 }
 
-// sideExemptConsole 挂一个免费旁路通道上游，用于验证该通道不受积分开关约束。
-// 免费通道（opencode/autoclaw/trae/raccoon）均豁免，这里用统一构造避免逐个用例重复。
+// sideExemptConsole 挂一个旁路通道上游，用于验证该通道的开关语义。免费通道
+// （opencode/autoclaw/trae/raccoon）不采集倍率，但同样参与启停开关，这里用统一
+// 构造避免逐个用例重复。
 func sideExemptConsole(t *testing.T, channel routeChannel, urlField func(*Config, *url.URL), keyField func(*Config, string)) http.Handler {
 	t.Helper()
 	coreTS := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -709,64 +750,79 @@ func sideExemptConsole(t *testing.T, channel routeChannel, urlField func(*Config
 	return h
 }
 
-// TestModelSwitchAutoClawExempt 验证 autoclaw 免费通道完全不受开关约束。
-func TestModelSwitchAutoClawExempt(t *testing.T) {
+// TestModelSwitchAutoClawDisable 验证 autoclaw 免费通道参与开关：默认放行、停用生效。
+func TestModelSwitchAutoClawDisable(t *testing.T) {
 	h := sideExemptConsole(t, channelAutoClaw,
 		func(c *Config, u *url.URL) { c.AutoClawURL = u },
 		func(c *Config, k string) { c.AutoClawKey = k })
 	if got := saveRoutes(t, h, []routeEntry{{Alias: "ac", Channel: channelAutoClaw, Model: "claude-sonnet", Enabled: true}}, ""); got.Code != 200 {
 		t.Fatalf("save: %d %s", got.Code, got.Body)
 	}
-	rec := gateChat(h, "autoclaw-claude-sonnet")
-	if rec.Code != 200 || rec.Body.String() != `{"autoclaw":true}` {
-		t.Fatalf("autoclaw gated despite exemption: %d %s", rec.Code, rec.Body)
+	if rec := gateChat(h, "autoclaw-claude-sonnet"); rec.Code != 200 {
+		t.Fatalf("unconfigured autoclaw model must pass: %d %s", rec.Code, rec.Body)
+	}
+	if got := switchModel(t, h, "autoclaw-claude-sonnet", false); got.Code != 200 {
+		t.Fatalf("disable: %d %s", got.Code, got.Body)
+	}
+	if rec := gateChat(h, "autoclaw-claude-sonnet"); rec.Code != 404 {
+		t.Fatalf("disabled autoclaw model must 404: %d %s", rec.Code, rec.Body)
 	}
 }
 
-// TestModelSwitchTraeExempt 验证 trae 免费通道完全不受开关约束。
-func TestModelSwitchTraeExempt(t *testing.T) {
+// TestModelSwitchTraeDisable 验证 trae 通道参与开关（倍率只是展示，不参与判定）：
+// 默认放行、停用生效。
+func TestModelSwitchTraeDisable(t *testing.T) {
 	h := sideExemptConsole(t, channelTrae,
 		func(c *Config, u *url.URL) { c.TraeURL = u },
 		func(c *Config, k string) { c.TraeKey = k })
 	if got := saveRoutes(t, h, []routeEntry{{Alias: "tr", Channel: channelTrae, Model: "claude-4", Enabled: true}}, ""); got.Code != 200 {
 		t.Fatalf("save: %d %s", got.Code, got.Body)
 	}
-	rec := gateChat(h, "trae-claude-4")
-	if rec.Code != 200 || rec.Body.String() != `{"trae":true}` {
-		t.Fatalf("trae gated despite exemption: %d %s", rec.Code, rec.Body)
+	if rec := gateChat(h, "trae-claude-4"); rec.Code != 200 {
+		t.Fatalf("unconfigured trae model must pass: %d %s", rec.Code, rec.Body)
+	}
+	if got := switchModel(t, h, "trae-claude-4", false); got.Code != 200 {
+		t.Fatalf("disable: %d %s", got.Code, got.Body)
+	}
+	if rec := gateChat(h, "trae-claude-4"); rec.Code != 404 {
+		t.Fatalf("disabled trae model must 404: %d %s", rec.Code, rec.Body)
 	}
 }
 
-// TestModelSwitchRaccoonExempt 验证 raccoon 免费通道完全不受开关约束。
-func TestModelSwitchRaccoonExempt(t *testing.T) {
+// TestModelSwitchRaccoonDisable 验证 raccoon 免费通道参与开关：默认放行、停用生效。
+func TestModelSwitchRaccoonDisable(t *testing.T) {
 	h := sideExemptConsole(t, channelRaccoon,
 		func(c *Config, u *url.URL) { c.RaccoonURL = u },
 		func(c *Config, k string) { c.RaccoonKey = k })
 	if got := saveRoutes(t, h, []routeEntry{{Alias: "rc", Channel: channelRaccoon, Model: "glm-5.3", Enabled: true}}, ""); got.Code != 200 {
 		t.Fatalf("save: %d %s", got.Code, got.Body)
 	}
-	rec := gateChat(h, "raccoon-glm-5.3")
-	if rec.Code != 200 || rec.Body.String() != `{"raccoon":true}` {
-		t.Fatalf("raccoon gated despite exemption: %d %s", rec.Code, rec.Body)
+	if rec := gateChat(h, "raccoon-glm-5.3"); rec.Code != 200 {
+		t.Fatalf("unconfigured raccoon model must pass: %d %s", rec.Code, rec.Body)
+	}
+	if got := switchModel(t, h, "raccoon-glm-5.3", false); got.Code != 200 {
+		t.Fatalf("disable: %d %s", got.Code, got.Body)
+	}
+	if rec := gateChat(h, "raccoon-glm-5.3"); rec.Code != 404 {
+		t.Fatalf("disabled raccoon model must 404: %d %s", rec.Code, rec.Body)
 	}
 }
 
-// TestModelSwitchAutoExempt 验证 auto 虚拟名本身不被开关拦下：
-// 目标免费则放行；目标付费则按解析后的目标名拒绝，而不是按 auto 拒绝。
-func TestModelSwitchAutoExempt(t *testing.T) {
+// TestModelSwitchAutoFollowsTarget 验证 auto 虚拟名本身不被开关拦下，但按解析后的
+// 目标名受检：目标被显式停用时按目标名拒绝，而不是按 auto 拒绝。
+func TestModelSwitchAutoFollowsTarget(t *testing.T) {
 	h := creditConsole(t, `{"object":"list","data":[{"id":"cn:auto","credits":"x0.00"}]}`)
 	if got := saveRoutes(t, h, nil, "cn:auto"); got.Code != 200 {
 		t.Fatalf("save fallback: %d %s", got.Code, got.Body)
 	}
 	if rec := gateChat(h, "gateway-auto"); rec.Code != 200 {
-		t.Fatalf("auto with a free target rejected: %d %s", rec.Code, rec.Body)
+		t.Fatalf("auto with an open target rejected: %d %s", rec.Code, rec.Body)
 	}
-
-	paid := creditConsole(t, `{"object":"list","data":[{"id":"cn:auto","credits":"x0.79"}]}`)
-	if got := saveRoutes(t, paid, nil, "cn:auto"); got.Code != 200 {
-		t.Fatalf("save fallback: %d %s", got.Code, got.Body)
+	// 显式停用解析目标 cn:auto：auto 请求按目标名拒绝。
+	if got := switchModel(t, h, "cn:auto", false); got.Code != 200 {
+		t.Fatalf("disable target: %d %s", got.Code, got.Body)
 	}
-	rec := gateChat(paid, "gateway-auto")
+	rec := gateChat(h, "gateway-auto")
 	if rec.Code != 404 || !strings.Contains(rec.Body.String(), "cn:auto") {
 		t.Fatalf("auto must be judged by its resolved target: %d %s", rec.Code, rec.Body)
 	}
@@ -824,9 +880,14 @@ func TestModelSwitchDisabledWithoutRouteFile(t *testing.T) {
 	if w := adminRequest(h, "POST", "/admin/model-switch", `{"model":"cn:paid","enabled":false}`, cookie, csrf); w.Code != 409 {
 		t.Fatalf("switch without route file should 409: %d %s", w.Code, w.Body)
 	}
-	// 未启用路由时倍率>0 的模型也不该被拦，出口与现状一致。
+	// 未启用路由时保持现状：倍率>0 的直名也放行、也照常公布。
 	if rec := gateChat(h, "cn:paid"); rec.Code != 200 {
 		t.Fatalf("gate must be inert without route file: %d %s", rec.Code, rec.Body)
+	}
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, httptest.NewRequest("GET", "/v1/models", nil))
+	if !strings.Contains(rec.Body.String(), "cn:paid") {
+		t.Fatalf("direct names must stay published without route file: %s", rec.Body)
 	}
 }
 

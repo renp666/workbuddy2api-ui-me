@@ -111,10 +111,17 @@ func (h *server) publicRouter(core *httputil.ReverseProxy) http.HandlerFunc {
 				}
 				envelope.Model = decision.RoutedModel
 				w = withPrismHeaders(w, decision)
+			} else if h.routes != nil {
+				// 配置了但停用的别名：明确报「已停用」。lookup 只认启用条目，
+				// 不加这一步，请求会带着别名原名落到 core，变成莫名其妙的 404。
+				if _, isAlias := h.routes.lookupAny(envelope.Model); isAlias {
+					writeModelDisabledError(w, r, envelope.Model)
+					return
+				}
 			}
-			// 模型积分开关：停用（含默认停用）的模型在这里拒绝，与 /v1/models
-			// 的隐藏共用同一口径。auto 解析后的目标同样受检。
-			if !h.modelGate(r.Context(), envelope.Model) {
+			// 模型调用闸门：只认管理员显式停用（禁用表），未配置的直名统一对外
+			// 放行。auto 解析后的目标同样受检；公布名单的收敛与这里是两件事。
+			if !h.modelGate(envelope.Model) {
 				writeModelDisabledError(w, r, envelope.Model)
 				return
 			}
@@ -660,7 +667,8 @@ func (h *server) mergedModels(w http.ResponseWriter, r *http.Request, core *http
 	all = append(all, autoclawRaw...)
 	all = append(all, traeRaw...)
 	all = append(all, raccoonRaw...)
-	// 用刚拿到的 core 目录刷新倍率缓存，省掉 modelGate 判定的一次重复抓取。
+	// 用刚拿到的 core 目录刷新倍率缓存，倍率只用于模型表展示与计费参考，
+	// 不再参与放行/公布判定。
 	if h.credits != nil {
 		h.credits.store(creditRulesFromList(coreList))
 	}
@@ -676,17 +684,18 @@ func (h *server) mergedModels(w http.ResponseWriter, r *http.Request, core *http
 		if entry.Realm == "" && strings.HasPrefix(entry.ID, zcodeModelPrefix) {
 			item = tagModelRealm(item, "glm")
 		}
-		// 隐藏语义：停用（含默认停用）的模型不出现在公共 /v1/models 里，
-		// 与对话出口的拒绝共用 modelGate 同一口径。
-		if !h.modelGate(r.Context(), entry.ID) {
+		// 公布语义：直名模型走启用表白名单——只有显式启用的直名才出现在公共
+		// /v1/models 里（「配置了哪些就开放哪些」）；未配置与停用的直名不公布，
+		// 但调用出口不拦（统一对外开放，可按名字直连）。
+		if !h.modelPublished(entry.ID) {
 			continue
 		}
 		merged = append(merged, item)
 	}
 	// 别名条目是虚拟间接层：客户端按无空格别名请求，网关改写为所属通道的真实模型。
-	// 与 gateway-auto 一样只在路由功能启用时出现，且经 modelGate 过滤——目标被停用的
-	// 别名不广告，避免下游选中一个必然 404 的名字。
-	for _, item := range h.aliasModelEntries(r.Context()) {
+	// 与 gateway-auto 一样只在路由功能启用时出现；配置了的别名全部公布，停用的
+	// 别名调用时报「已停用」，不在这里隐藏。
+	for _, item := range h.aliasModelEntries() {
 		var entry struct {
 			ID string `json:"id"`
 		}

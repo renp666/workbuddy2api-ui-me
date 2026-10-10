@@ -12,10 +12,12 @@ import (
 )
 
 // 本文件实现「模型积分消耗规则」的控制面：console 从 core 的 /v1/models 采集
-// credits 倍率（补丁 0011 透出），据此对模型做「隐藏 + 拒绝请求」的开关控制。
-// 口径（用户已裁定）：倍率已知且为 0 默认开启；倍率大于 0 或规则未知默认关闭；
-// opencode 通道免费、完全不受开关约束；人工覆盖优先于默认态；默认关闭在服务端
-// 立即生效，不需要管理员先动手。开关表复用 WB2A_ROUTE_FILE 落盘，零新增容器。
+// credits 倍率（补丁 0011 透出），供模型表的倍率展示、能力页花费估算与计费参考。
+// 开关口径（用户已裁定，2026-10-10）：调用「统一对外开放」——未配置的直名默认放行，
+// 只有显式停用（禁用表）才拒绝；公共 /v1/models 的公布走启用表白名单，只有显式
+// 启用的直名才上榜。倍率不再参与放行判定（trae 的倍率语义是「套餐额度消耗率」，
+// opencode/autoclaw/raccoon 免费通道不采集倍率，两者都不该当停用依据）。
+// 开关表复用 WB2A_ROUTE_FILE 落盘，零新增容器。
 
 // creditCacheTTL 与探测缓存同口径：倍率规则变化以「天」为尺度，30 秒的抖动没有意义。
 const creditCacheTTL = 30 * time.Second
@@ -121,54 +123,37 @@ func (h *server) fetchCoreCreditRules(ctx context.Context) (map[string]string, b
 	return creditRulesFromList(list), true
 }
 
-// modelGate 报告公共模型名 model 当前是否放行（隐藏与拒绝共用这一个口径）。
+// modelGate 报告公共模型名 model 当前是否放行调用（对话出口）。调用是「统一对外
+// 开放」的：未配置的直名默认放行，只有管理员在模型列表/别名表显式停用（写入禁用表）
+// 才拒绝——网关不锁死没配置过的模型，公布列表的收敛由 modelPublished 单独负责。
 // 路由功能未启用（没有可写配置文件）时恒放行，公共出口与现状完全一致。
-func (h *server) modelGate(ctx context.Context, model string) bool {
+func (h *server) modelGate(model string) bool {
 	if h.routes == nil || model == "" {
-		return true
-	}
-	// trae 的倍率来自上游 consumption_rate，语义是「套餐额度的消耗率」，不是「这次要扣多少钱」：
-	// 0.78 只说明它比 0.06 的模型更吃额度。所以不能沿用 core 的「倍率非零即默认停用」——
-	// 那会让 trae 全部模型一上线就显示已停用。默认恒放行，只认管理员显式写下的停用。
-	if strings.HasPrefix(model, traeModelPrefix) {
-		if enabled, has := h.routes.modelOverride(model); has {
-			return enabled
-		}
-		return true
-	}
-	// opencode/autoclaw/raccoon 是免费通道：不采集倍率、不参与开关（需求明确排除），
-	// 与前端 channelModelRows 的 switchable=false 保持同一口径。
-	if strings.HasPrefix(model, opencodeModelPrefix) || strings.HasPrefix(model, autoclawModelPrefix) || strings.HasPrefix(model, raccoonModelPrefix) {
 		return true
 	}
 	if enabled, has := h.routes.modelOverride(model); has {
 		return enabled
 	}
-	switch {
-	case strings.HasPrefix(model, zcodeModelPrefix), strings.HasPrefix(model, qoderModelPrefix):
-		// 旁路通道不下发倍率：一律按「未知」处理，默认关闭。
-		return false
-	case strings.HasPrefix(model, "cn:"), strings.HasPrefix(model, "global:"):
-		rules, haveData := h.credits.rules(h, ctx)
-		if !haveData {
-			return true
-		}
-		value, ok := parseCreditRule(rules[model])
-		if !ok {
-			return false
-		}
-		return value == 0
-	}
-	// 不属于任何已知命名空间的裸名字：core 本来也不认，交给 core 判定，
-	// 本功能不越权拦截现状下本来就能到达 core 的请求。
 	return true
 }
 
+// modelPublished 报告直名模型是否出现在公共 /v1/models。公布走启用表白名单：
+// 只有管理员显式启用的直名才上榜（「配置了哪些就开放哪些」）；停用表与未配置的
+// 直名一律不公布，但仍可按名字直连调用（modelGate 不拦）。别名与 gateway-auto
+// 的公布不经过这里，分别在 aliasModelEntries 与 mergedModels 里处理。
+// 路由功能未启用时保持现状全公布。
+func (h *server) modelPublished(model string) bool {
+	if h.routes == nil || model == "" {
+		return true
+	}
+	enabled, has := h.routes.modelOverride(model)
+	return has && enabled
+}
+
 // writeModelDisabledError 按请求路径分协议返回「模型已停用」。状态用 404，
-// 与「模型不存在」同构——被停用的模型同时从 /v1/models 隐藏，语义一致。
+// 与「模型不存在」同构——被停用的模型同时从 /v1/models 公布名单消失，语义一致。
 func writeModelDisabledError(w http.ResponseWriter, r *http.Request, model string) {
-	// 只说事实与出路，不写死原因：默认关闭的依据按通道不同——core 是「倍率非零或未知」，
-	// zcode/qoder 是「旁路上游不下发倍率」，trae 则只可能是管理员显式停用（默认恒放行）。
+	// 只说事实与出路，不写死原因：停用只会来自管理员在模型列表或别名表的显式操作。
 	message := fmt.Sprintf("模型 %s 已停用，可在控制台模型列表或别名表点「启用」恢复", model)
 	if r.URL.Path == "/v1/messages" {
 		writeJSON(w, 404, map[string]any{"type": "error", "error": map[string]string{"type": "not_found_error", "message": message}})

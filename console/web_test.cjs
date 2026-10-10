@@ -1435,7 +1435,7 @@ test('autoclaw model table groups by owning account, badges agent tier and notes
   assert.equal(rows.length,6,'autoclaw grouped rows missing');
   assert.equal(rows[0].className,'model-group-head');
   assert.match(rows[0].children[0].textContent,/一号 · 3 个模型/);
-  assert.equal(rows[0].children[0].colSpan,8);
+  assert.equal(rows[0].children[0].colSpan,9,'autoclaw 分组头要跨满 9 列（含新增的开关列）');
   assert.equal(rows[0].children[0].children[0].textContent,'含 global: 前缀的模型实际由国内版账号承接');
   assert.equal(rows[1].children[0].textContent,'autoclaw-cn:alpha');
   assert.equal(rows[2].children[0].textContent,'autoclaw-cn:beta');
@@ -2038,9 +2038,10 @@ test('the three most called models get red, orange and yellow stars on every cha
   assert.deepEqual(heatOf(get('opencode-models-body').children[0].children[6]),['heat-stars heat-2','★','1 次'],'heat ranking is not shared across channels');
 });
 
-test('credit column shows the multiplier, defaults the switch from it, and sorts cheap models first',async()=>{
+test('credit column shows the multiplier, switches default open, and sorts cheap models first',async()=>{
   // Catalog order is deliberately misleading: the free model sits in the middle. creditSort has to
   // put the free one on top, keep unknown last, and leave same-band rows in catalog order.
+  // 开关默认态（2026-10-10 口径）：所有模型默认启用，只有人工覆盖才变——倍率只管展示与排序。
   const models=[{id:'cn:paid',credits:'x3.47'},{id:'cn:free',credits:'x0.00'},{id:'cn:unknown'}];
   const posts=[];
   const {ctx,get}=taskFixture((url,options={})=>{
@@ -2052,41 +2053,41 @@ test('credit column shows the multiplier, defaults the switch from it, and sorts
   const rows=get('core-models-body').children;
   assert.deepEqual(rows.map(tr=>tr.children[0].textContent),['cn:free','cn:paid','cn:unknown'],'credit order must be 倍率升序 with unknown last');
   assert.deepEqual(rows.map(tr=>tr.children[8].textContent),['×0','×3.47','未知'],'credit cell must not fake an unknown multiplier as zero');
-  // 默认态：倍率>0 与未知默认停用，倍率=0 默认启用。
-  assert.deepEqual(rows.map(tr=>tr.children[9].children[0].textContent),['已启用','已停用','已停用'],'switch badge must follow the credit rule');
-  assert.deepEqual(rows.map(tr=>tr.children[9].children[2].dataset.action),['disable-model','enable-model','enable-model'],'switch button must offer the opposite action');
+  // 默认态：未配置一律启用，倍率不再参与判定。
+  assert.deepEqual(rows.map(tr=>tr.children[9].children[0].textContent),['已启用','已启用','已启用'],'switch badge must default to enabled');
+  assert.deepEqual(rows.map(tr=>tr.children[9].children[2].dataset.action),['disable-model','disable-model','disable-model'],'switch button must offer the opposite action');
   assert.deepEqual(rows.map(tr=>tr.children[9].children[2].dataset.model),['cn:free','cn:paid','cn:unknown'],'switch button must carry the public model name');
-  // 免费通道不加积分列与开关列，但全球热度列照常存在（共 8 列）。
+  // 免费通道不加积分列，但有开关列（共 9 列）。
   await vm.runInContext("renderModelTable('opencode',[{id:'opencode-OC · Free'}],{modelResults:{}})",ctx);
-  assert.equal(get('opencode-models-body').children[0].children.length,8,'opencode must stay exempt from the credit columns');
-  // 点击委托：停用中的模型点「启用」应 POST 一次开关（closest 按选择器区分 pin 与开关两条委托）。
-  const enableButton=rows[1].children[9].children[2];
-  await ctx.document.handlers.click({target:{closest:sel=>sel.includes('enable-model')?enableButton:null}});
-  assert.deepEqual(posts,[{model:'cn:paid',enabled:true}],'switch click did not reach the admin endpoint');
-  // 人工覆盖优先于倍率默认态，并重渲染。
+  assert.equal(get('opencode-models-body').children[0].children.length,9,'opencode must carry the switch column without a credit column');
+  assert.equal(get('opencode-models-body').children[0].children[8].children[0].textContent,'已启用','free channel switch must also default to enabled');
+  // 点击委托：默认启用的模型点「停用」应 POST 一次开关（closest 按选择器区分 pin 与开关两条委托）。
+  const switchButton=rows[1].children[9].children[2];
+  await ctx.document.handlers.click({target:{closest:sel=>sel.includes('enable-model')?switchButton:null}});
+  assert.deepEqual(posts,[{model:'cn:paid',enabled:false}],'switch click did not reach the admin endpoint');
+  // 人工覆盖生效并重渲染：覆盖了才变，没覆盖的保持默认启用。
   assert.deepEqual(get('core-models-body').children.map(tr=>tr.children[0].textContent),['cn:free','cn:paid','cn:unknown']);
-  assert.deepEqual(get('core-models-body').children.map(tr=>tr.children[9].children[0].textContent),['已停用','已启用','已停用'],'manual override must beat the credit default');
+  assert.deepEqual(get('core-models-body').children.map(tr=>tr.children[9].children[0].textContent),['已停用','已启用','已启用'],'manual override must drive the badge');
 });
 
-test('trae 有倍率但不按倍率默认停用：补出积分与开关两列，默认全启用，只认显式停用',async()=>{
-  // trae 的倍率来自上游 consumption_rate，语义是「套餐额度的消耗率」——0.78 只说明它比
-  // 0.06 更吃额度，不是「这次要扣多少钱」。沿用 core 的「倍率非零即默认停用」会让整条
-  // trae 通道一上线就显示已停用，所以这里断言默认态必须全是「已启用」。
+test('trae 有倍率但默认全启用：补出积分与开关两列，只认显式停用',async()=>{
+  // trae 的倍率来自上游 consumption_rate，语义是「套餐额度的消耗率」——只用于展示与
+  // 排序（计费参考），不参与启停判定；所有模型默认启用，只有显式停用才停用。
   const {ctx,get}=taskFixture(()=>new Promise(()=>{}));
   await vm.runInContext("renderModelTable('trae',[{id:'trae-GLM-5.3',credits:'x0.78'},{id:'trae-Seed-Code',credits:'x0.06'},{id:'trae-unknown'}])",ctx);
   const rows=get('trae-models-body').children;
   assert.deepEqual(rows.map(tr=>tr.children.length),[10,10,10],'trae 模型表要补出「积分消耗」「操作」两列，共 10 列');
   assert.deepEqual(rows.map(tr=>tr.children[0].textContent),['trae-Seed-Code','trae-GLM-5.3','trae-unknown'],'trae 按倍率升序，未知倍率排最后');
   assert.deepEqual(rows.map(tr=>tr.children[8].textContent),['×0.06','×0.78','未知'],'积分消耗列要显示上游倍率，未公布的写「未知」而不是 0');
-  assert.deepEqual(rows.map(tr=>tr.children[9].children[0].textContent),['已启用','已启用','已启用'],'trae 模型默认必须全部启用，不能被倍率判成停用');
+  assert.deepEqual(rows.map(tr=>tr.children[9].children[0].textContent),['已启用','已启用','已启用'],'trae 模型默认必须全部启用，倍率不参与判定');
   assert.deepEqual(rows.map(tr=>tr.children[9].children[2].dataset.action),['disable-model','disable-model','disable-model'],'默认启用时按钮应提供「停用」');
-  // 人工覆盖仍要生效：显式停用优先于「默认启用」。
+  // 人工覆盖仍要生效：显式停用优先于默认启用。
   await vm.runInContext("modelSwitchOverrides=new Map([['trae-GLM-5.3',false]])",ctx);
   await vm.runInContext("renderModelTable('trae',[{id:'trae-GLM-5.3',credits:'x0.78'},{id:'trae-Seed-Code',credits:'x0.06'}])",ctx);
-  assert.deepEqual(get('trae-models-body').children.map(tr=>tr.children[9].children[0].textContent),['已启用','已停用'],'显式停用必须盖过 trae 的默认启用');
-  // 免费三家仍不参与开关：不加这两列，免得把「免费」和「有倍率」混成一档。
+  assert.deepEqual(get('trae-models-body').children.map(tr=>tr.children[9].children[0].textContent),['已启用','已停用'],'显式停用必须盖过默认启用');
+  // 免费三家没有倍率数据（缺失不等于 0），不设积分列，但开关列照常存在。
   await vm.runInContext("renderModelTable('autoclaw',[{id:'autoclaw-auto'}])",ctx);
-  assert.equal(get('autoclaw-models-body').children[0].children.length,8,'autoclaw 必须仍然豁免积分与开关两列');
+  assert.equal(get('autoclaw-models-body').children[0].children.length,9,'autoclaw 免费通道没有积分列但要有开关列');
 });
 
 test('cn: and global: variants of the same name stay separate rows with their own credits and accounts',async()=>{
@@ -3057,6 +3058,8 @@ test('模型能力 TOP ranks only pool models and tiers them by real local cost'
   await vm.runInContext("signedIn({csrf:'c',global_enabled:true,zcode_enabled:false,qoder_enabled:false,opencode_enabled:false})",ctx);
   await vm.runInContext('loadRoutes()',ctx);
   await flushMicrotasks();
+  // 新口径下开关默认全放行，「未放行」只来自显式停用：注入两条停用覆盖再重渲染。
+  await vm.runInContext("modelSwitchOverrides=new Map([['cn:unknown-cost',false],['cn:strong',false]]);renderCapabilities()",ctx);
   assert.match(get('cap-stamp').textContent,/4 个模型/,'loadRoutes 没有把榜单拉起来');
   assert.equal(get('cap-note').textContent,'源站不标注各项评测的发布日期','来源说明没露出');
   assert.equal(get('cap-note').hidden,false);
@@ -3966,32 +3969,33 @@ test('调用明细宽表首列吸左：横滑时仍能对上这一行是几点�
   }
 });
 
-test('旁路通道的能力备注与代码口径一致：写「不参与模型停用」的，正好是代码里被排除的那几条',()=>{
+test('旁路通道的能力备注与代码口径一致：写「不采集积分倍率」的，正好是代码里被排除的那几条',()=>{
   const html=readFileSync(__dirname+'/web/index.html','utf8');
   const js=readFileSync(__dirname+'/web/app.js','utf8');
   // trae 不进 modelNotes：它有真实倍率、参与开关，备注口径与三家免费通道相反。
   const modelNotes={autoclaw:'autoclaw-models-note',raccoon:'raccoon-models-note',opencode:'opencode-models-note'};
   const tag=id=>new RegExp('<p id="'+id+'"[^>]*>([\\s\\S]*?)</p>');
-  // 从 app.js 现读「哪些通道不参与模型开关」，不在测试里再抄一份名单。
-  const stmt=js.match(/function channelSwitchable\(channel\)\{return ([^}]+)\}/);
-  assert.ok(stmt,'app.js 里读不到 channelSwitchable 的判据，备注与代码的对齐没法现读（锚点写错了？）');
-  const exempt=[...stmt[1].matchAll(/channel!=='([a-z]+)'/g)].map(m=>m[1]).sort();
-  assert.deepEqual(exempt,Object.keys(modelNotes).sort(),
-    '「不参与模型停用」的备注集合与代码里 channelSwitchable 的排除集合不一致：改了一边必须同时改另一边');
+  // 从 app.js 现读「哪些通道不采集积分倍率」，不在测试里再抄一份名单。
+  const stmt=js.match(/function channelHasCredits\(channel\)\{return ([^}]+)\}/);
+  assert.ok(stmt,'app.js 里读不到 channelHasCredits 的判据，备注与代码的对齐没法现读（锚点写错了？）');
+  const noCredits=[...stmt[1].matchAll(/channel!=='([a-z]+)'/g)].map(m=>m[1]).sort();
+  assert.deepEqual(noCredits,Object.keys(modelNotes).sort(),
+    '「不采集积分倍率」的备注集合与代码里 channelHasCredits 的排除集合不一致：改了一边必须同时改另一边');
   for(const [channel,id] of Object.entries(modelNotes)){
     const el=html.match(tag(id));
-    assert.ok(el,`index.html 缺 ${id}：这条通道没说明为什么没有模型停用`);
+    assert.ok(el,`index.html 缺 ${id}：这条通道没说明倍率口径`);
     assert.match(el[1],/免费/,`${channel} 的模型备注没说明它是免费通道`);
-    assert.match(el[1],/不参与模型停用/,`${channel} 的模型备注没说明不参与停用`);
+    assert.match(el[1],/不采集积分倍率/,`${channel} 的模型备注没说明不采集倍率`);
+    assert.match(el[1],/开关停用/,`${channel} 参与启停开关，备注要点明可用操作列开关停用`);
     assert.doesNotMatch(el[0],/hidden/,`${id} 的备注带了 hidden，等于没写`);
   }
-  // trae 反向断言：倍率只用于展示与排序，默认启用；不能再挂「免费/不参与停用」。
+  // trae 反向断言：倍率只用于展示与排序，默认启用；不能再挂「免费/不采集倍率」。
   const traeNote=html.match(tag('trae-models-note'));
   assert.ok(traeNote,'index.html 缺 trae-models-note：这条通道没说明倍率怎么用');
   assert.match(traeNote[1],/consumption_rate/,`trae 的模型备注没说清倍率从哪个字段来`);
   assert.match(traeNote[1],/默认启用/,`trae 的模型备注没说明模型默认启用`);
   assert.doesNotMatch(traeNote[1],/免费/,`trae 不是免费通道，备注不能写「免费」`);
-  assert.doesNotMatch(traeNote[1],/不参与模型停用/,`trae 参与模型停用，备注不能写「不参与模型停用」`);
+  assert.doesNotMatch(traeNote[1],/不采集积分倍率/,`trae 采集倍率，备注不能写「不采集积分倍率」`);
   assert.doesNotMatch(traeNote[0],/hidden/,`trae-models-note 的备注带了 hidden，等于没写`);
   // 隐藏本地自定义模型的承诺也要写在页面上，否则用户会去 IDE 里加的模型里找。
   assert.match(traeNote[1],/自定义模型/,`trae 的模型备注没说明本地自定义模型为什么不列出来`);
