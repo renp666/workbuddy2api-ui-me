@@ -25,6 +25,11 @@ const healthProbeTimeout = 10 * time.Second
 const healthHistorySize = 20
 
 // healthChannelResult 是单条通道一轮探活的结论。
+//
+// Reachable 只回答「端口/服务是否活着」，不回答「模型能不能真跑」——两者必须
+// 分开呈现，否则手工测速探测已经测出模型失败时，总览仍报绿灯，就是「假绿」。
+// Probe* 字段把 probe.go 的真调用结论（零额外上游成本，只读内存缓存）带进同一条
+// 记录：state=failed 表示该通道当前没有一跳能真跑通。
 type healthChannelResult struct {
 	Channel   routeChannel `json:"channel"`
 	Enabled   bool         `json:"enabled"`
@@ -32,6 +37,41 @@ type healthChannelResult struct {
 	LatencyMs int64        `json:"latency_ms"`
 	// Detail 是附加说明：失败时是原因，autoclaw 成功时附带 healthy/total 计数。
 	Detail string `json:"detail,omitempty"`
+	// ProbeState 取自手工测速探测结论：空=未探测，ok=有可用模型，
+	// failed=有结论但无一可用。仅作参考，不触发任何上游调用。
+	ProbeState string `json:"probe_state,omitempty"`
+	// ProbeOKModels / ProbeTotalModels 是真调用结论里的可用模型数与已测模型数。
+	ProbeOKModels    int `json:"probe_ok_models,omitempty"`
+	ProbeTotalModels int `json:"probe_total_models,omitempty"`
+	// ProbeDetail 是首个失败模型的原因摘要，便于页面直接解释红灯。
+	ProbeDetail string `json:"probe_detail,omitempty"`
+}
+
+// probeVerdict 从手工测速探测缓存里归纳某通道的真调用结论。
+// 无结论时 state 为空串——「没测过」与「测了不行」必须区分，不得把未知当健康。
+func (h *server) probeVerdict(c routeChannel) (state string, okModels, totalModels int, detail string) {
+	results := h.probe.channelResults(c)
+	if len(results) == 0 {
+		return "", 0, 0, ""
+	}
+	totalModels = len(results)
+	for _, value := range results {
+		if ok, _ := value["ok"].(bool); ok {
+			okModels++
+			continue
+		}
+		if detail == "" {
+			if note, _ := value["error"].(string); note != "" {
+				detail = note
+			} else if category, _ := value["category"].(string); category != "" {
+				detail = category
+			}
+		}
+	}
+	if okModels > 0 {
+		return "ok", okModels, totalModels, ""
+	}
+	return "failed", 0, totalModels, detail
 }
 
 // healthRound 是一轮「网关 + 七通道」总览。
@@ -117,7 +157,12 @@ func (h *server) runHealthRound(ctx context.Context) healthRound {
 	wg.Wait()
 	round := healthRound{CheckedAt: time.Now(), OK: true, Channels: results}
 	for _, result := range results {
-		if result.Enabled && !result.Reachable {
+		if !result.Enabled {
+			continue
+		}
+		// 端口不可达、或端口活着但真调用结论表明该通道无一跳可用，都算不健康。
+		// 只认 Reachable 就是「假绿」：手工探测已测出模型全挂时总览仍报 ok=true。
+		if !result.Reachable || result.ProbeState == "failed" {
 			round.OK = false
 		}
 	}
@@ -127,13 +172,17 @@ func (h *server) runHealthRound(ctx context.Context) healthRound {
 func (h *server) probeChannelHealth(ctx context.Context, c routeChannel) healthChannelResult {
 	start := time.Now()
 	reachable, detail := h.channelReachable(ctx, c)
-	return healthChannelResult{
+	result := healthChannelResult{
 		Channel:   c,
 		Enabled:   true,
 		Reachable: reachable,
 		LatencyMs: time.Since(start).Milliseconds(),
 		Detail:    detail,
 	}
+	// 并入手工测速探测的真调用结论（只读缓存，不触发上游调用）。端口活着但
+	// 真调用失败时必须显式暴露，否则总览的绿灯会把「服务在、模型跑不动」瞒过去。
+	result.ProbeState, result.ProbeOKModels, result.ProbeTotalModels, result.ProbeDetail = h.probeVerdict(c)
+	return result
 }
 
 // channelReachable 按通道复用既有探测口径判定可达性。core 与 glm/qoder 没有

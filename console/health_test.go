@@ -277,3 +277,66 @@ func TestHealthUnknownChannel(t *testing.T) {
 		t.Fatalf("unknown channel reachable=%v detail=%q", reachable, detail)
 	}
 }
+
+// TestAdminHealthNotGreenWhenProbeFails 锁定「假绿」回归：端口/服务全部存活，
+// 但手工测速探测已测出某通道模型全部失败时，总览必须 ok=false，并把真调用
+// 结论（probe_state/probe_detail）带进该通道记录。修复前这里会假绿（ok=true）。
+func TestAdminHealthNotGreenWhenProbeFails(t *testing.T) {
+	stubs := map[routeChannel]healthChannelStub{}
+	for _, c := range routeChannelOrder {
+		stubs[c] = healthyStub(c)
+	}
+	h := healthConsole(t, stubs, false)
+	srv := h.(*server)
+	// 直接注入探测结论：raccoon 端口活、模型全失败（no_healthy_account）。
+	srv.probe.record(channelRaccoon, "raccoon-sn-glm-5-3-flash", map[string]any{
+		"ok":       false,
+		"category": "error",
+		"error":    `{"error":{"code":"no_healthy_account"}}`,
+	})
+	// core 有可用模型：不得因探测结论被误判为失败。
+	srv.probe.record(channelCore, "global:deepseek-v4.1-flash", map[string]any{"ok": true})
+
+	cookie, csrf := login(t, h)
+	w := adminRequest(h, "GET", "/admin/health", "", cookie, csrf)
+	if w.Code != 200 {
+		t.Fatalf("health status=%d %s", w.Code, w.Body)
+	}
+	var got healthResponse
+	if err := json.Unmarshal(w.Body.Bytes(), &got); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if got.OK {
+		t.Fatalf("端口全活但 raccoon 真调用全失败，总览不得报 ok=true（假绿）")
+	}
+	var raccoon *healthChannelResult
+	for i := range got.Channels {
+		if got.Channels[i].Channel == channelRaccoon {
+			raccoon = &got.Channels[i]
+		}
+	}
+	if raccoon == nil {
+		t.Fatal("missing raccoon channel")
+	}
+	if !raccoon.Reachable {
+		t.Fatalf("raccoon 端口应仍判可达（存活与可用是两回事），got reachable=false detail=%q", raccoon.Detail)
+	}
+	if raccoon.ProbeState != "failed" {
+		t.Fatalf("raccoon probe_state=%q, want failed", raccoon.ProbeState)
+	}
+	if raccoon.ProbeTotalModels != 1 || raccoon.ProbeOKModels != 0 {
+		t.Fatalf("raccoon probe models ok=%d total=%d, want 0/1", raccoon.ProbeOKModels, raccoon.ProbeTotalModels)
+	}
+	if raccoon.ProbeDetail == "" {
+		t.Fatal("raccoon probe_detail 不得为空，页面要能直接解释红灯")
+	}
+	// 未探测的通道 probe_state 必须留空——「没测过」不得被当成健康或失败。
+	for _, item := range got.Channels {
+		if item.Channel == channelRaccoon || item.Channel == channelCore {
+			continue
+		}
+		if item.ProbeState != "" {
+			t.Fatalf("channel %q probe_state=%q, want empty（未探测）", item.Channel, item.ProbeState)
+		}
+	}
+}
