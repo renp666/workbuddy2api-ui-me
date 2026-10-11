@@ -579,6 +579,7 @@ function loadMissingChannelStatuses(){
 function overviewChannelStatus(channel){
  const result=healthChannelResult(channel);
  if(result&&!result.enabled)return{label:'未启用',tone:'idle'};
+ if(result&&result.probe_state==='failed')return{label:'模型不可用',tone:'bad'};
  if(channel==='workbuddy'){
   // core 的探活只回答「桥接通不通」，账号池里有没有账号是另一件事，两者一起读才准。
   if(result&&!result.reachable)return{label:'不可达',tone:'bad'};

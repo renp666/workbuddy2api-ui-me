@@ -3573,6 +3573,15 @@ test('状态徽章分五档：可用、打折、不可达、未启用、未探�
   vm.runInContext("zcodeStatus={enabled:true,reachable:true}",ctx);
   assert.equal(pair("overviewChannelStatus('zcode')"),'在线|ok');
 
+  // 假绿防线：端口活着（reachable=true）但手工测速已测出该通道模型全挂时，
+  // 概览不能画「在线」——那正是本次要消灭的假绿。
+  vm.runInContext("healthState={channels:[{channel:'glm',enabled:true,reachable:true,probe_state:'failed'}]}",ctx);
+  assert.equal(pair("overviewChannelStatus('zcode')"),'模型不可用|bad','端口活着但真调用全挂，必须报不可用而不是在线');
+  // 未探测（probe_state 为空）不得被当成失败，仍按页签缓存如实标注。
+  vm.runInContext("healthState={channels:[{channel:'glm',enabled:true,reachable:true,probe_state:''}]}",ctx);
+  assert.equal(pair("overviewChannelStatus('zcode')"),'在线|ok','未探测不等于失败，不得误报');
+  vm.runInContext("healthState=null",ctx);
+
   vm.runInContext("lastStatus=null",ctx);
   assert.equal(pair("overviewChannelStatus('workbuddy')"),'未知|unknown');
   vm.runInContext("lastStatus={total:0}",ctx);
