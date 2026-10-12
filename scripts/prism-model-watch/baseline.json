@@ -1,0 +1,50 @@
+{
+  "1-daily-v1": {
+    "realm": "global",
+    "routed_model": "global:deepseek-v4.1-flash"
+  },
+  "1-daily-v2": {
+    "realm": "global",
+    "routed_model": "global:hy4-preview"
+  },
+  "2-fast-v1": {
+    "realm": "autoclaw",
+    "routed_model": "autoclaw-glm-5.3-flash"
+  },
+  "2-fast-v2": {
+    "realm": "raccoon",
+    "routed_model": "raccoon-sn-glm-5-3-flash"
+  },
+  "3-strong-v1": {
+    "realm": "glm",
+    "routed_model": "glm-5.3"
+  },
+  "3-strong-v2": {
+    "realm": "cn",
+    "routed_model": "cn:glm-5.3"
+  },
+  "4-max-v1": {
+    "realm": "qoder",
+    "routed_model": "qoder-qwen3.8-flash"
+  },
+  "4-max-v2": {
+    "realm": "opencode",
+    "routed_model": "opencode-OC · Big Pickle"
+  },
+  "5-free-v1": {
+    "realm": "opencode",
+    "routed_model": "opencode-OC · Space Bunny Free"
+  },
+  "5-free-v2": {
+    "realm": "opencode",
+    "routed_model": "opencode-OC · MiMo-V2.6-Flash Free"
+  },
+  "6-try-v1": {
+    "realm": "opencode",
+    "routed_model": "opencode-OC · LongCat 2.5 Preview Free"
+  },
+  "6-try-v2": {
+    "realm": "opencode",
+    "routed_model": "opencode-OC · Nemotron 3.5 Lightning Free"
+  }
+}
