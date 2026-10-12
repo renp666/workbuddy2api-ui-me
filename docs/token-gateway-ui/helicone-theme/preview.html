@@ -1,0 +1,473 @@
+<!DOCTYPE html>
+<html lang="zh-CN" class="dark">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1.0">
+<title>Helicone 主题提取 · 验证页</title>
+<style>
+/* ============================================================
+   这里的 CSS 变量 100% 复制自 Helicone 仓库
+   web/styles/globals.css  →  一字未改，只是加了 --sidebar-width
+   ============================================================ */
+:root{
+  --background:210 40% 98%; --foreground:222 47% 11%;
+  --card:0 0% 100%; --card-foreground:222 47% 11%;
+  --popover:0 0% 100%; --popover-foreground:222 47% 11%;
+  --primary:199 89% 48%; --primary-foreground:204 100% 97%;
+  --brand:199 89% 48%; --brand-foreground:204 100% 97%;
+  --secondary:210 40% 96%; --secondary-foreground:222 47% 11%;
+  --muted:210 40% 96%; --muted-foreground:215 16% 47%;
+  --subdued:210 40% 96%; --subdued-foreground:220 20% 35%;
+  --accent:210 40% 96%; --accent-foreground:222 47% 11%;
+  --destructive:0 72% 51%; --destructive-foreground:0 0% 95%;
+  --border:214 32% 91%; --input:214 32% 91%; --ring:222 47% 11%;
+  --confirmative:142 76% 36%; --confirmative-foreground:145 80% 10%;
+  --chart-1:0.852 0.199 91.936; --chart-2:0.656 0.241 354.308;
+  --chart-3:0.792 0.209 151.711; --chart-4:0.637 0.237 25.331;
+  --chart-5:0.667 0.295 322.15;  --chart-6:0.623 0.214 259.815;
+  --chart-7:0.845 0.143 164.978; --chart-8:0.686 0.216 297.186;
+  --chart-9:0.75 0.183 55.934;   --chart-10:0.588 0.158 241.966;
+  --sidebar-background:oklch(96.8% 0.007 247.896);
+  --sidebar:oklch(0.985 0 0);
+  --sidebar-foreground:oklch(0.145 0 0);
+  --sidebar-primary:oklch(0.205 0 0);
+  --sidebar-primary-foreground:oklch(0.985 0 0);
+  --sidebar-accent:oklch(0.97 0 0);
+  --sidebar-accent-foreground:oklch(0.205 0 0);
+  --sidebar-border:oklch(0.922 0 0);
+  --sidebar-ring:oklch(0.708 0 0);
+  --radius:0.5rem;
+  --sidebar-width:12rem;
+}
+.dark{
+  --background:0 0% 0%; --foreground:210 40% 98%;
+  --card:229 84% 5%; --card-foreground:210 40% 98%;
+  --popover:229 84% 5%; --popover-foreground:210 40% 98%;
+  --primary:200 98% 39%; --primary-foreground:204 80% 16%;
+  --brand:200 98% 39%; --brand-foreground:204 80% 16%;
+  --secondary:217 33% 17%; --secondary-foreground:210 40% 98%;
+  --muted:217 33% 17%; --muted-foreground:215 20% 65%;
+  --subdued:217 33% 17%; --subdued-foreground:215 25% 80%;
+  --accent:217 33% 17%; --accent-foreground:210 40% 98%;
+  --destructive:0 63% 31%; --destructive-foreground:0 86% 97%;
+  --border:217 33% 17%; --input:217 33% 17%; --ring:213 27% 84%;
+  --confirmative:144 61% 20%; --confirmative-foreground:138 76% 97%;
+  --chart-1:0.652 0.199 91.936; --chart-2:0.456 0.241 354.308;
+  --chart-3:0.592 0.209 151.711; --chart-4:0.437 0.237 25.331;
+  --chart-5:0.467 0.295 322.15;  --chart-6:0.423 0.214 259.815;
+  --chart-7:0.645 0.143 164.978; --chart-8:0.486 0.216 297.186;
+  --chart-9:0.55 0.183 55.934;   --chart-10:0.388 0.158 241.966;
+  --sidebar-background:oklch(14.5% 0 0);
+  --sidebar:oklch(0.205 0 0);
+  --sidebar-foreground:oklch(0.985 0 0);
+  --sidebar-primary:oklch(0.488 0.243 264.376);
+  --sidebar-primary-foreground:oklch(0.985 0 0);
+  --sidebar-accent:oklch(0.269 0 0);
+  --sidebar-accent-foreground:oklch(0.985 0 0);
+  --sidebar-border:oklch(1 0 0 / 10%);
+  --sidebar-ring:oklch(0.439 0 0);
+}
+
+*{box-sizing:border-box;margin:0;padding:0}
+body{
+  background:hsl(var(--background));
+  color:hsl(var(--foreground));
+  font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Inter,"PingFang SC","Microsoft YaHei",sans-serif;
+  -webkit-font-smoothing:antialiased;
+  transition:background .25s,color .25s;
+}
+
+/* ---------- 顶部工具条（本页专用） ---------- */
+.demo-bar{
+  display:flex;align-items:center;gap:12px;padding:10px 18px;
+  background:hsl(var(--card));border-bottom:1px solid hsl(var(--border));
+  position:sticky;top:0;z-index:50;
+}
+.demo-bar .tag{font-size:11px;font-weight:700;letter-spacing:.08em;text-transform:uppercase;
+  color:hsl(var(--primary));background:hsl(var(--primary)/.1);
+  padding:3px 9px;border-radius:5px;border:1px solid hsl(var(--primary)/.25)}
+.demo-bar .src{font-size:12px;color:hsl(var(--muted-foreground))}
+.demo-bar .sp{flex:1}
+.btn{
+  display:inline-flex;align-items:center;gap:6px;font-size:12.5px;font-weight:500;
+  padding:6px 13px;border-radius:6px;cursor:pointer;border:1px solid transparent;
+  transition:all .16s;
+}
+.btn-ghost:hover{background:hsl(var(--accent));color:hsl(var(--accent-foreground))}
+.btn-outline{border:1px solid hsl(var(--input));background:hsl(var(--background));box-shadow:0 1px 2px 0 rgb(0 0 0/.05)}
+.btn-outline:hover{background:hsl(var(--accent))}
+.btn-primary{background:hsl(var(--primary));color:#fff}
+.btn-primary:hover{background:hsl(var(--primary)/.9)}
+.btn-sm{height:32px;padding:0 12px}
+.btn-xs{height:24px;padding:0 10px;font-size:11px;border-radius:6px}
+.btn-icon{width:27px;height:27px;padding:0;border-radius:6px}
+.interactive{transition:transform; }
+.interactive:hover{box-shadow:0 4px 6px -1px rgb(0 0 0/.1)}
+.interactive:active{transform:scale(.96)}
+
+/* ---------- 应用骨架 ---------- */
+.shell{display:flex;min-height:calc(100vh - 45px)}
+
+.sidebar{
+  width:var(--sidebar-width);flex-shrink:0;display:flex;flex-direction:column;
+  background:var(--sidebar-background);
+  border-right:1px solid hsl(var(--sidebar-border));
+  transition:width .2s;
+}
+.sidebar.collapsed{width:3rem}
+.side-head{display:flex;align-items:center;gap:9px;padding:14px 12px 12px}
+.side-logo{width:24px;height:24px;border-radius:7px;flex-shrink:0;
+  background:linear-gradient(135deg,hsl(var(--primary)),oklch(0.623 0.214 259.815));
+  box-shadow:0 2px 8px -2px hsl(var(--primary)/.6)}
+.side-name{font-size:13.5px;font-weight:650;color:hsl(var(--sidebar-foreground));
+  letter-spacing:-.01em;white-space:nowrap}
+.side-search{margin:0 10px 12px;position:relative}
+.side-search input{
+  width:100%;height:32px;border-radius:6px;font-size:12.5px;padding:0 10px 0 30px;
+  background:hsl(var(--sidebar-accent));color:hsl(var(--sidebar-foreground));
+  border:1px solid hsl(var(--sidebar-border));outline:none;
+}
+.side-search input:focus{border-color:hsl(var(--sidebar-ring));box-shadow:0 0 0 2px hsl(var(--ring)/.25)}
+.side-search svg{position:absolute;left:9px;top:8px;width:15px;height:15px;
+  color:hsl(var(--muted-foreground))}
+
+.grp{padding:0 8px;margin-bottom:14px}
+.grp-lbl{
+  height:32px;display:flex;align-items:center;padding:0 8px;
+  font-size:11px;font-weight:600;letter-spacing:.06em;text-transform:uppercase;
+  color:hsl(var(--muted-foreground));
+}
+.menu{display:flex;flex-direction:column;gap:1px}
+.mi{
+  display:flex;align-items:center;gap:9px;height:34px;padding:0 8px;border-radius:6px;
+  font-size:13px;color:hsl(var(--sidebar-foreground)/.72);cursor:pointer;
+  transition:background .14s,color .14s;white-space:nowrap;position:relative;
+}
+.mi:hover{background:hsl(var(--sidebar-accent));color:hsl(var(--sidebar-accent-foreground))}
+.mi.on{background:hsl(var(--sidebar-accent));color:hsl(var(--sidebar-accent-foreground));font-weight:550}
+.mi svg{width:16px;height:16px;flex-shrink:0;opacity:.8}
+.mi .badge{margin-left:auto;font-size:10.5px;font-weight:650;padding:1px 6px;border-radius:5px;
+  background:hsl(var(--sidebar-accent));font-variant-numeric:tabular-nums}
+.mi .dot{margin-left:auto;width:7px;height:7px;border-radius:50%;
+  background:hsl(var(--confirmative));box-shadow:0 0 0 2px hsl(var(--confirmative)/.2)}
+
+.side-foot{margin-top:auto;padding:10px;border-top:1px solid hsl(var(--sidebar-border))}
+.help-card{padding:10px;border-radius:8px;background:hsl(var(--sidebar-accent));cursor:pointer}
+.help-card .t{font-size:12px;font-weight:600;color:hsl(var(--sidebar-foreground))}
+.help-card .s{font-size:11px;color:hsl(var(--muted-foreground));margin-top:2px}
+
+/* ---------- 主区 ---------- */
+.main{flex:1;min-width:0;display:flex;flex-direction:column}
+.topbar{display:flex;align-items:center;gap:12px;padding:14px 24px;
+  border-bottom:1px solid hsl(var(--border));background:hsl(var(--background))}
+.crumb{display:flex;align-items:center;gap:6px;font-size:12px;color:hsl(var(--muted-foreground))}
+.crumb b{color:hsl(var(--foreground));font-size:15px;font-weight:650;letter-spacing:-.015em}
+.top-actions{margin-left:auto;display:flex;gap:7px;align-items:center}
+
+.content{padding:20px 24px 40px;flex:1}
+
+/* KPI */
+.kpis{display:grid;grid-template-columns:repeat(4,1fr);gap:12px;margin-bottom:16px}
+.kpi{background:hsl(var(--card));border:1px solid hsl(var(--border));border-radius:var(--radius);
+  padding:14px 15px;box-shadow:0 1px 3px 0 rgb(0 0 0/.1),0 1px 2px -1px rgb(0 0 0/.1)}
+.kpi.hl{border-color:hsl(var(--primary)/.5);
+  background:linear-gradient(135deg,hsl(var(--primary)/.07),hsl(var(--card)))}
+.kpi .lb{font-size:12px;font-weight:500;color:hsl(var(--muted-foreground));margin-bottom:7px}
+.kpi .vl{font-size:26px;font-weight:700;letter-spacing:-.03em;
+  font-variant-numeric:tabular-nums;line-height:1.1}
+.kpi .dl{font-size:11.5px;font-weight:600;margin-top:5px;display:flex;align-items:center;gap:4px}
+.up{color:hsl(var(--confirmative))}
+.dn{color:hsl(var(--destructive))}
+.neutral{color:hsl(var(--muted-foreground))}
+
+/* 卡片 */
+.grid2{display:grid;grid-template-columns:1.6fr 1fr;gap:12px}
+.card{background:hsl(var(--card));border:1px solid hsl(var(--border));border-radius:var(--radius);
+  box-shadow:0 1px 3px 0 rgb(0 0 0/.1),0 1px 2px -1px rgb(0 0 0/.1)}
+.card-h{display:flex;align-items:center;gap:8px;padding:13px 15px;border-bottom:1px solid hsl(var(--border))}
+.card-h h5{font-size:13.5px;font-weight:600}
+.card-h .hint{font-size:11.5px;color:hsl(var(--muted-foreground))}
+.card-h .rt{margin-left:auto;display:flex;gap:6px;align-items:center}
+.card-b{padding:14px 15px}
+
+.seg{display:flex;background:hsl(var(--muted));border-radius:6px;padding:2px}
+.seg button{font-size:11.5px;font-weight:550;padding:3px 9px;border-radius:4px;
+  color:hsl(var(--muted-foreground));cursor:pointer;border:none;background:transparent}
+.seg button.on{background:hsl(var(--card));color:hsl(var(--foreground));
+  box-shadow:0 1px 2px 0 rgb(0 0 0/.08)}
+
+/* 表格 */
+table{width:100%;border-collapse:collapse}
+th{text-align:left;font-size:11px;font-weight:600;color:hsl(var(--muted-foreground));
+  padding:9px 12px;border-bottom:1px solid hsl(var(--border));letter-spacing:.02em}
+td{font-size:12.5px;padding:10px 12px;border-bottom:1px solid hsl(var(--border));
+  font-variant-numeric:tabular-nums;color:hsl(var(--foreground))}
+tbody tr:last-child td{border-bottom:none}
+tbody tr{transition:background .12s}
+tbody tr:hover{background:hsl(var(--muted)/.55)}
+td.num{text-align:right}
+.mono{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:11.5px}
+.st{font-size:10.5px;font-weight:650;padding:2px 7px;border-radius:999px;display:inline-block}
+.st.ok{background:hsl(var(--confirmative)/.14);color:hsl(var(--confirmative))}
+.st.warn{background:oklch(0.792 0.209 151.711 / .16);color:oklch(0.55 0.16 152)}
+.st.err{background:hsl(var(--destructive)/.13);color:hsl(var(--destructive))}
+
+.sparkbar{height:4px;border-radius:2px;background:hsl(var(--muted));overflow:hidden}
+.sparkbar i{display:block;height:100%;border-radius:2px}
+
+/* 页脚说明 */
+.doc{max-width:1000px;margin:56px auto 0;padding:0 24px 80px}
+.doc h3{font-size:19px;font-weight:650;margin:38px 0 14px;letter-spacing:-.02em}
+.doc p{font-size:13.5px;color:hsl(var(--muted-foreground));line-height:1.7;margin-bottom:12px}
+.doc code{font-family:ui-monospace,Menlo,monospace;font-size:11.5px;
+  background:hsl(var(--muted));padding:1.5px 5px;border-radius:4px;color:hsl(var(--foreground))}
+.swatches{display:grid;grid-template-columns:repeat(auto-fill,minmax(160px,1fr));gap:9px;margin:18px 0}
+.sw{border:1px solid hsl(var(--border));border-radius:8px;overflow:hidden;background:hsl(var(--card))}
+.sw .chip{height:52px}
+.sw .meta{padding:8px 10px}
+.sw .meta .nm{font-size:11.5px;font-weight:600}
+.sw .meta .vl{font-size:10.5px;color:hsl(var(--muted-foreground));
+  font-family:ui-monospace,Menlo,monospace;margin-top:2px}
+table.tok{width:100%;border:1px solid hsl(var(--border));border-radius:var(--radius);
+  overflow:hidden;margin:16px 0}
+table.tok th{background:hsl(var(--muted))}
+table.tok td{font-size:12px}
+table.tok td:first-child{font-weight:600}
+
+@media(max-width:900px){
+  .kpis{grid-template-columns:repeat(2,1fr)}
+  .grid2{grid-template-columns:1fr}
+}
+</style>
+</head>
+<body class="dark">
+
+<!-- 演示工具条 -->
+<div class="demo-bar">
+  <span class="tag">Helicone 主题提取</span>
+  <span class="src">色值 100% 来自 helicone/web/styles/globals.css</span>
+  <span class="sp"></span>
+  <button class="btn btn-outline btn-sm" onclick="toggleTheme()">
+    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8z"/></svg>
+    <span id="themeTxt">浅色</span>
+  </button>
+  <button class="btn btn-outline btn-sm" onclick="toggleSide()">
+    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="18" height="18" rx="2"/><path d="M9 3v18"/></svg>
+    折叠侧栏
+  </button>
+</div>
+
+<div class="shell">
+  <!-- 侧栏：宽度 12rem，来自 Helicone sidebar.tsx -->
+  <aside class="sidebar" id="sidebar">
+    <div class="side-head">
+      <div class="side-logo"></div>
+      <div class="side-name">Gateway</div>
+    </div>
+
+    <div class="side-search">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="7"/><path d="m21 21-4.3-4.3"/></svg>
+      <input placeholder="搜索…" />
+    </div>
+
+    <div class="grp">
+      <div class="grp-lbl">概览</div>
+      <div class="menu">
+        <div class="mi on"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="7" height="9"/><rect x="14" y="3" width="7" height="5"/><rect x="14" y="12" width="7" height="9"/><rect x="3" y="16" width="7" height="5"/></svg>仪表盘</div>
+        <div class="mi"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 12h4l3 8 4-16 3 8h4"/></svg>实时流量<span class="dot"></span></div>
+        <div class="mi"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 3v18h18"/><path d="m7 14 4-4 3 3 5-6"/></svg>分析</div>
+      </div>
+    </div>
+
+    <div class="grp">
+      <div class="grp-lbl">管理</div>
+      <div class="menu">
+        <div class="mi"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 7h16M4 12h16M4 17h10"/></svg>渠道<span class="badge">12</span></div>
+        <div class="mi"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="8" cy="8" r="5"/><path d="m20 20-4.3-4.3"/></svg>令牌<span class="badge">8.4k</span></div>
+        <div class="mi"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="9" cy="8" r="4"/><path d="M2 21a7 7 0 0 1 14 0M17 11a4 4 0 0 0 0-8M22 21a6 6 0 0 0-4-5.7"/></svg>用户</div>
+        <div class="mi"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2 2 7l10 5 10-5-10-5z"/><path d="m2 17 10 5 10-5M2 12l10 5 10-5"/></svg>分组</div>
+      </div>
+    </div>
+
+    <div class="grp">
+      <div class="grp-lbl">账务</div>
+      <div class="menu">
+        <div class="mi"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="2" y="5" width="20" height="14" rx="2"/><path d="M2 10h20"/></svg>计费</div>
+        <div class="mi"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><path d="M14 2v6h6"/></svg>日志</div>
+      </div>
+    </div>
+
+    <div class="side-foot">
+      <div class="help-card">
+        <div class="t">需要帮助？</div>
+        <div class="s">查看接入文档 →</div>
+      </div>
+    </div>
+  </aside>
+
+  <!-- 主区 -->
+  <div class="main">
+    <div class="topbar">
+      <div class="crumb">
+        <span>控制台</span><span>/</span><b>仪表盘</b>
+      </div>
+      <div class="top-actions">
+        <div class="seg"><button class="on">24h</button><button>7d</button><button>30d</button></div>
+        <button class="btn btn-outline btn-sm">导出</button>
+        <button class="btn btn-primary btn-sm interactive">
+          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M12 5v14M5 12h14"/></svg>
+          新建渠道
+        </button>
+      </div>
+    </div>
+
+    <div class="content">
+      <!-- KPI -->
+      <div class="kpis">
+        <div class="kpi">
+          <div class="lb">今日请求</div>
+          <div class="vl">2,411,904</div>
+          <div class="dl up">↑ 12.4% 较昨日</div>
+        </div>
+        <div class="kpi">
+          <div class="lb">Token 用量</div>
+          <div class="vl">1.83B</div>
+          <div class="dl up">↑ 8.1% 较昨日</div>
+        </div>
+        <div class="kpi">
+          <div class="lb">成功率</div>
+          <div class="vl">99.72%</div>
+          <div class="dl dn">↓ 0.08% 较昨日</div>
+        </div>
+        <div class="kpi hl">
+          <div class="lb">今日成本</div>
+          <div class="vl">$486.20</div>
+          <div class="dl neutral">预算 $800 · 已用 61%</div>
+        </div>
+      </div>
+
+      <div class="grid2">
+        <!-- 图表卡 -->
+        <div class="card">
+          <div class="card-h">
+            <h5>用量趋势</h5>
+            <span class="hint">Tokens / 小时</span>
+            <div class="rt">
+              <div class="seg"><button class="on">输入</button><button>输出</button><button>合计</button></div>
+            </div>
+          </div>
+          <div class="card-b">
+            <svg viewBox="0 0 560 200" style="width:100%;height:200px">
+              <defs>
+                <linearGradient id="hg-fill" x1="0" y1="0" x2="0" y2="1">
+                  <stop offset="0%" stop-color="hsl(var(--primary))" stop-opacity=".25"/>
+                  <stop offset="100%" stop-color="hsl(var(--primary))" stop-opacity="0"/>
+                </linearGradient>
+              </defs>
+              <g stroke="hsl(var(--border))" stroke-width="1">
+                <line x1="0" y1="40" x2="560" y2="40"/><line x1="0" y1="80" x2="560" y2="80"/>
+                <line x1="0" y1="120" x2="560" y2="120"/><line x1="0" y1="160" x2="560" y2="160"/>
+              </g>
+              <!-- chart-6 面积 + chart-1 线 -->
+              <path d="M0,150 L50,140 L100,146 L150,116 L200,128 L250,96 L300,110 L350,72 L400,88 L450,54 L500,68 L560,38 L560,200 L0,200 Z" fill="url(#hg-fill)"/>
+              <path d="M0,150 L50,140 L100,146 L150,116 L200,128 L250,96 L300,110 L350,72 L400,88 L450,54 L500,68 L560,38"
+                    fill="none" stroke="oklch(var(--chart-6))" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"/>
+              <path d="M0,172 L50,168 L100,170 L150,158 L200,162 L250,150 L300,154 L350,138 L400,144 L450,128 L500,134 L560,116"
+                    fill="none" stroke="oklch(var(--chart-1))" stroke-width="2" stroke-linejoin="round" stroke-linecap="round" stroke-dasharray="4 3"/>
+              <circle cx="450" cy="54" r="4" fill="hsl(var(--card))" stroke="oklch(var(--chart-6))" stroke-width="2"/>
+            </svg>
+            <div style="display:flex;gap:16px;margin-top:10px;font-size:11.5px;color:hsl(var(--muted-foreground))">
+              <span style="display:flex;align-items:center;gap:5px"><i style="width:8px;height:8px;border-radius:2px;background:oklch(var(--chart-6));display:block"></i>输入 1.02B</span>
+              <span style="display:flex;align-items:center;gap:5px"><i style="width:8px;height:8px;border-radius:2px;background:oklch(var(--chart-1));display:block"></i>输出 0.81B</span>
+            </div>
+          </div>
+        </div>
+
+        <!-- 渠道表 -->
+        <div class="card">
+          <div class="card-h">
+            <h5>渠道健康度</h5>
+            <span class="hint">12 个</span>
+            <div class="rt"><button class="btn btn-ghost btn-xs">查看全部</button></div>
+          </div>
+          <table>
+            <thead><tr><th>渠道</th><th class="num">延迟</th><th class="num">状态</th></tr></thead>
+            <tbody>
+              <tr><td>OpenAI</td><td class="num" style="color:hsl(var(--muted-foreground))">312ms</td><td class="num"><span class="st ok">正常</span></td></tr>
+              <tr><td>Anthropic</td><td class="num" style="color:hsl(var(--muted-foreground))">428ms</td><td class="num"><span class="st ok">正常</span></td></tr>
+              <tr><td>DeepSeek</td><td class="num" style="color:hsl(var(--muted-foreground))">1,204ms</td><td class="num"><span class="st warn">降级</span></td></tr>
+              <tr><td>Gemini</td><td class="num" style="color:hsl(var(--muted-foreground))">356ms</td><td class="num"><span class="st ok">正常</span></td></tr>
+              <tr><td>Azure-EA</td><td class="num" style="color:hsl(var(--muted-foreground))">—</td><td class="num"><span class="st err">超时</span></td></tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ============ 说明文档 ============ -->
+<div class="doc">
+  <h3>提取到的核心令牌</h3>
+  <p>下面是本页正在使用的真实色值。<strong>深浅两套</strong>都来自 Helicone 仓库，切换主题即可对比。</p>
+
+  <div class="swatches" id="sw"></div>
+
+  <h3>值得注意的几个非标准设计</h3>
+  <table class="tok">
+    <thead><tr><th>令牌</th><th>Helicone 的做法</th><th>为什么这么设计</th></tr></thead>
+    <tbody>
+      <tr><td><code>--card</code></td><td>深色下是 <code>hsl(229 84% 5%)</code>，比 <code>--background</code> 亮一档</td><td>纯黑背景上卡片没有边界，靠亮度差浮起来比阴影有效</td></tr>
+      <tr><td><code>--subdued</code></td><td>shadcn 没有这个变量，Helicone 独有</td><td>做三级信息层级：<code>foreground</code> → <code>muted-foreground</code> → <code>subdued-foreground</code></td></tr>
+      <tr><td><code>--confirmative</code></td><td>绿色系成功态，深浅两套亮度差很大</td><td>状态色独立成体系，不复用 Tailwind 的 green-*，避免和图表色打架</td></tr>
+      <tr><td><code>--ring</code></td><td>浅色=前景色(深)，深色=浅色</td><td>焦点环要能看见但不抢戏，所以取"反色"而非主色</td></tr>
+      <tr><td><code>--radius</code></td><td><code>0.5rem</code>，比 shadcn 默认小</td><td>小圆角 = 更紧凑、更像工程工具</td></tr>
+      <tr><td>侧栏宽度</td><td><code>12rem</code> (192px)，不是常见的 240px</td><td>Helicone 侧栏还有搜索框 + 分组标签，192px 刚好不浪费横向空间</td></tr>
+      <tr><td><code>chart-1..10</code></td><td>oklch 色彩空间，深色模式整体降亮度 ~0.2</td><td>同一组色值在深浅两种背景下都能保持可辨识度</td></tr>
+    </tbody>
+  </table>
+
+  <h3>怎么用到你的项目里</h3>
+  <p>① 把 <code>helicone-tokens.css</code> 的内容合并进你的 <code>globals.css</code>（或直接替换 <code>@layer base</code> 部分）。<br>
+     ② <code>tailwind.config.ts</code> 直接覆盖，重点是 <code>colors</code> 和 <code>darkMode: ["class"]</code>。<br>
+     ③ 组件层面把 shadcn 的 <code>button.tsx</code> / <code>sidebar.tsx</code> 换成 Helicone 版本，它们依赖的 variant 名已对齐。<br>
+     ④ 装依赖：<code>npm i tailwind-scrollbar tailwindcss-animate @tailwindcss/typography class-variance-authority lucide-react</code></p>
+</div>
+
+<script>
+// 主题切换
+function toggleTheme(){
+  const el=document.body;
+  el.classList.toggle('dark');
+  document.getElementById('themeTxt').textContent = el.classList.contains('dark')?'深色':'浅色';
+  renderSwatches();
+}
+// 侧栏折叠（Helicone: 12rem ↔ 3rem，Ctrl+B）
+function toggleSide(){ document.getElementById('sidebar').classList.toggle('collapsed'); }
+document.addEventListener('keydown',e=>{
+  if(e.key==='b'&&(e.metaKey||e.ctrlKey)){ e.preventDefault(); toggleSide(); }
+});
+
+// 色板展示
+const TOKENS=[
+  ['--background','页面底色'],['--card','卡片'],['--primary','主色'],
+  ['--muted','弱化底'],['--accent','hover 底'],['--border','边框'],
+  ['--foreground','主文字'],['--muted-foreground','次文字'],
+  ['--subdued-foreground','三级文字'],['--confirmative','成功'],
+  ['--destructive','危险'],['--sidebar-background','侧栏底'],
+];
+function renderSwatches(){
+  const box=document.getElementById('sw');
+  const dark=document.body.classList.contains('dark');
+  box.innerHTML=TOKENS.map(([v,n])=>{
+    let c;
+    if(v==='--sidebar-background') c='var(--sidebar-background)';
+    else c=`hsl(var(${v}))`;
+    return `<div class="sw"><div class="chip" style="background:${c}"></div>
+      <div class="meta"><div class="nm">${n}</div><div class="vl">${v.replace('--','')}</div></div></div>`;
+  }).join('');
+}
+renderSwatches();
+</script>
+</body>
+</html>

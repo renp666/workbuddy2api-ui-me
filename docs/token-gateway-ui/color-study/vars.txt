@@ -1,0 +1,16 @@
+      --ch-workbuddy-a:#4A59F4;--ch-workbuddy-a-ink:#2E29C6;--ch-workbuddy-a-wash:#F1F3F9;--ch-workbuddy-a-lit:#A2B4F5;
+      --ch-zcode-a:#1C7E92;--ch-zcode-a-ink:#0A5765;--ch-zcode-a-wash:#EAF6F9;--ch-zcode-a-lit:#6EC6DB;
+      --ch-qoder-a:#AB21C6;--ch-qoder-a-ink:#770D8C;--ch-qoder-a-wash:#F8F1F9;--ch-qoder-a-lit:#E394F5;
+      --ch-opencode-a:#C71F71;--ch-opencode-a-ink:#8C0C4D;--ch-opencode-a-wash:#F9F1F3;--ch-opencode-a-lit:#F696B7;
+      --ch-workbuddy-b:#1970D0;--ch-workbuddy-b-ink:#084C93;--ch-workbuddy-b-wash:#F0F4F9;--ch-workbuddy-b-lit:#8DBAF5;
+      --ch-zcode-b:#1D8181;--ch-zcode-b-ink:#0A5859;--ch-zcode-b-wash:#E1F9F9;--ch-zcode-b-lit:#6FC9C8;
+      --ch-qoder-b:#A522D2;--ch-qoder-b-ink:#730D94;--ch-qoder-b-wash:#F7F1F9;--ch-qoder-b-lit:#D99BF5;
+      --ch-opencode-b:#CE2617;--ch-opencode-b-ink:#911107;--ch-opencode-b-wash:#F9F1F0;--ch-opencode-b-lit:#F59C8D;
+      --ch-workbuddy-c:#5975C7;--ch-workbuddy-c-ink:#2F4693;--ch-workbuddy-c-wash:#F1F3F9;--ch-workbuddy-c-lit:#9DB6F5;
+      --ch-zcode-c:#0F8A9A;--ch-zcode-c-ink:#0A5762;--ch-zcode-c-wash:#E8F7F9;--ch-zcode-c-lit:#63C9DA;
+      --ch-qoder-c:#A45B9F;--ch-qoder-c-ink:#722C6E;--ch-qoder-c-wash:#F9F0F8;--ch-qoder-c-lit:#E698DF;
+      --ch-opencode-c:#B75B55;--ch-opencode-c-ink:#822B2A;--ch-opencode-c-wash:#F9F1F0;--ch-opencode-c-lit:#F59B94;
+      --ch-workbuddy-d:#186DCB;--ch-workbuddy-d-ink:#084C93;--ch-workbuddy-d-wash:#F0F4F9;--ch-workbuddy-d-lit:#8DBAF5;
+      --ch-zcode-d:#1C7E7A;--ch-zcode-d-ink:#0A5955;--ch-zcode-d-wash:#E1F9F7;--ch-zcode-d-lit:#71C9C3;
+      --ch-qoder-d:#A720C2;--ch-qoder-d-ink:#770D8C;--ch-qoder-d-wash:#F8F1F9;--ch-qoder-d-lit:#E394F5;
+      --ch-opencode-d:#AF4D17;--ch-opencode-d-ink:#7E3307;--ch-opencode-d-wash:#F9F2EE;--ch-opencode-d-lit:#F59F78;

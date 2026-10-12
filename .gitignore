@@ -58,3 +58,6 @@ SPEC.md
 
 # Host-only entry pin (this machine only; production stays a bare up -d on docker-compose.yml)
 /docker-compose.override.yml
+
+# Host-only task handoff (this machine's Trae CN model config; contains local paths/IDs)
+/trae-cn-16models-handoff.md

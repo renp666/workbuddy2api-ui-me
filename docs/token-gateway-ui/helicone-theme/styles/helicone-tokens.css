@@ -1,0 +1,199 @@
+/* ============================================================
+ * Helicone 设计令牌 —— 完整提取
+ * 来源：github.com/Helicone/helicone
+ *   - web/styles/globals.css      (色值变量)
+ *   - web/tailwind.config.ts       (Tremor 色板 / 阴影 / 圆角 / 字号)
+ *   - web/components/ui/sidebar.tsx (侧栏宽度 12rem)
+ *   - web/components/ui/button.tsx  (按钮 variants / sizes)
+ *
+ * 用法：整个文件替换你项目里的 globals.css（或合并进 @layer base）
+ * 品牌主色已改名为 --hg-*，避免与你项目已有变量冲突
+ * ============================================================ */
+
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  /* ---------------------------------------------------------
+   * 浅色模式（Light）
+   * --------------------------------------------------------- */
+  :root {
+    /* 背景 */
+    --background: 210 40% 98%;        /* hsl(210,40%,98%)  #f8fafc */
+    --foreground: 222 47% 11%;        /* hsl(222,47%,11%)  #020817 */
+    --card: 0 0% 100%;                /* #ffffff */
+    --card-foreground: 222 47% 11%;
+    --popover: 0 0% 100%;
+    --popover-foreground: 222 47% 11%;
+
+    /* 主色 —— Helicone 蓝 */
+    --primary: 199 89% 48%;           /* hsl(199,89%,48%)  #0ea5e9 */
+    --primary-foreground: 204 100% 97%;
+    --brand: 199 89% 48%;             /* 别名，方便语义化调用 */
+    --brand-foreground: 204 100% 97%;
+
+    /* 次级 */
+    --secondary: 210 40% 96%;
+    --secondary-foreground: 222 47% 11%;
+
+    /* 弱化 —— Helicone 特有的 subdued 层，比 muted 更亮，用于三级信息 */
+    --muted: 210 40% 96%;             /* hsl(210,40%,96%)  #f1f5f9 */
+    --muted-foreground: 215 16% 47%;  /* hsl(215,16%,47%)  #64748b */
+    --subdued: 210 40% 96%;
+    --subdued-foreground: 220 20% 35%;/* hsl(220,20%,35%)  #475569 */
+
+    /* 强调（等同 muted，用于 hover 底色） */
+    --accent: 210 40% 96%;
+    --accent-foreground: 222 47% 11%;
+
+    /* 危险 */
+    --destructive: 0 72% 51%;         /* hsl(0,72%,51%)    #dc2626 */
+    --destructive-foreground: 0 0% 95%;
+
+    /* 边框 / 输入 / 焦点环 */
+    --border: 214 32% 91%;            /* hsl(214,32%,91%)  #e2e8f0 */
+    --input: 214 32% 91%;
+    --ring: 222 47% 11%;              /* 焦点环用前景色，不是主色 */
+
+    /* 确认态（Helicone 独有：绿色系，成功/健康状态） */
+    --confirmative: 142 76% 36%;      /* hsl(142,76%,36%)  #16a34a */
+    --confirmative-foreground: 145 80% 10%;
+
+    /* 图表色 —— 浅色下用高亮版 */
+    --chart-1: 0.852 0.199 91.936;    /* 橙 */
+    --chart-2: 0.656 0.241 354.308;   /* 红/粉 */
+    --chart-3: 0.792 0.209 151.711;   /* 绿 */
+    --chart-4: 0.637 0.237 25.331;    /* 红 */
+    --chart-5: 0.667 0.295 322.15;    /* 紫 */
+    --chart-6: 0.623 0.214 259.815;   /* 蓝 */
+    --chart-7: 0.845 0.143 164.978;   /* 青 */
+    --chart-8: 0.686 0.216 297.186;   /* 靛 */
+    --chart-9: 0.75 0.183 55.934;     /* 黄 */
+    --chart-10: 0.588 0.158 241.966;  /* 深蓝 */
+
+    /* 侧栏 —— 浅色下带一点点冷调灰，与主内容区区分 */
+    --sidebar-background: oklch(96.8% 0.007 247.896);  /* #f1f5f9 附近 */
+    --sidebar: oklch(0.985 0 0);
+    --sidebar-foreground: oklch(0.145 0 0);
+    --sidebar-primary: oklch(0.205 0 0);
+    --sidebar-primary-foreground: oklch(0.985 0 0);
+    --sidebar-accent: oklch(0.97 0 0);
+    --sidebar-accent-foreground: oklch(0.205 0 0);
+    --sidebar-border: oklch(0.922 0 0);
+    --sidebar-ring: oklch(0.708 0 0);
+
+    /* 圆角 —— Helicone 用 0.5rem，比 shadcn 默认小一号，更紧凑 */
+    --radius: 0.5rem;
+  }
+
+  /* ---------------------------------------------------------
+   * 深色模式（Dark）—— 注意不是纯黑，是 #020817 深藏青
+   * --------------------------------------------------------- */
+  .dark {
+    --background: 0 0% 0%;            /* #000000  页面最底层 */
+    --foreground: 210 40% 98%;        /* #f8fafc */
+    --card: 229 84% 5%;               /* hsl(229,84%,5%)  #050816 卡片比页面略亮 */
+    --card-foreground: 210 40% 98%;
+    --popover: 229 84% 5%;
+    --popover-foreground: 210 40% 98%;
+
+    --primary: 200 98% 39%;           /* hsl(200,98%,39%)  深色下更饱和的天蓝 */
+    --primary-foreground: 204 80% 16%;
+    --brand: 200 98% 39%;
+    --brand-foreground: 204 80% 16%;
+
+    --secondary: 217 33% 17%;         /* hsl(217,33%,17%)  #1c2536 */
+    --secondary-foreground: 210 40% 98%;
+
+    --muted: 217 33% 17%;
+    --muted-foreground: 215 20% 65%;  /* hsl(215,20%,65%)  #94a3b8 */
+    --subdued: 217 33% 17%;
+    --subdued-foreground: 215 25% 80%;/* 更亮，用于深色下三级信息 */
+
+    --accent: 217 33% 17%;
+    --accent-foreground: 210 40% 98%;
+
+    --destructive: 0 63% 31%;         /* 深色下红更暗，避免刺眼 */
+    --destructive-foreground: 0 86% 97%;
+
+    --border: 217 33% 17%;            /* 深色下边框 = 表面色，靠亮度差而非透明度 */
+    --input: 217 33% 17%;
+    --ring: 213 27% 84%;              /* 深色下焦点环变浅色 */
+
+    --confirmative: 144 61% 20%;      /* 深色下绿更暗 */
+    --confirmative-foreground: 138 76% 97%;
+
+    /* 图表色 —— 深色下全部降低亮度约 0.2 */
+    --chart-1: 0.652 0.199 91.936;
+    --chart-2: 0.456 0.241 354.308;
+    --chart-3: 0.592 0.209 151.711;
+    --chart-4: 0.437 0.237 25.331;
+    --chart-5: 0.467 0.295 322.15;
+    --chart-6: 0.423 0.214 259.815;
+    --chart-7: 0.645 0.143 164.978;
+    --chart-8: 0.486 0.216 297.186;
+    --chart-9: 0.55 0.183 55.934;
+    --chart-10: 0.388 0.158 241.966;
+
+    --sidebar-background: oklch(14.5% 0 0);   /* #212121 附近 */
+    --sidebar: oklch(0.205 0 0);
+    --sidebar-foreground: oklch(0.985 0 0);
+    --sidebar-primary: oklch(0.488 0.243 264.376);
+    --sidebar-primary-foreground: oklch(0.985 0 0);
+    --sidebar-accent: oklch(0.269 0 0);
+    --sidebar-accent-foreground: oklch(0.985 0 0);
+    --sidebar-border: oklch(1 0 0 / 10%);      /* 半透明白，10% */
+    --sidebar-ring: oklch(0.439 0 0);
+  }
+}
+
+/* ============================================================
+ * 工具类 —— 来自 Helicone globals.css
+ * ============================================================ */
+
+@layer components {
+  /* 毛玻璃容器 */
+  .glass {
+    @apply backdrop-blur-md bg-white/[.3333] dark:bg-slate-950/[.3333];
+  }
+
+  /* 可点击元素：hover 升起 + 按下缩放 */
+  .interactive {
+    @apply transition-transform hover:shadow-md active:scale-95;
+  }
+
+  /* 文本层级语义类 */
+  .text-primary {
+    @apply text-black dark:text-white;
+  }
+  .text-secondary {
+    @apply text-slate-700 dark:text-slate-300;
+  }
+  .text-tertiary {
+    @apply text-slate-400 dark:text-slate-600;
+  }
+}
+
+/* 滚动条 —— Helicone 自定义样式 */
+:not(.scrollbar-auto-hide)::-webkit-scrollbar {
+  @apply w-2;
+}
+:not(.scrollbar-auto-hide)::-webkit-scrollbar-track {
+  @apply bg-transparent;
+}
+:not(.scrollbar-auto-hide)::-webkit-scrollbar-thumb {
+  @apply cursor-grab rounded-full border border-solid border-slate-200/50 bg-slate-300/60 hover:bg-slate-400/80 dark:border-slate-800/50 dark:bg-slate-700/60 dark:hover:bg-slate-600/80;
+}
+
+/* 动画 */
+@keyframes bounce-dot {
+  to { transform: translateY(-3px); }
+}
+.animate-bounce-dot {
+  animation: bounce-dot 0.5s infinite alternate;
+}
+
+@keyframes drawLine {
+  to { stroke-dashoffset: 0; }
+}

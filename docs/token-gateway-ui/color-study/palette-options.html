@@ -1,0 +1,526 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>一束色 配色重设计 · 候选方案对比</title>
+<style>
+:root{
+  --bg:#f4f5fa;--surface:#fff;--ink:#171a2b;--muted:#5b6076;
+  --line:#dfe3ee;--line-soft:#edf0f7;--table-head:#f7f8fc;--group:#eef0f8;
+  --sidebar:#0f1120;--sidebar-hi:#262b50;--sidebar-ink:#d3d6ee;--sidebar-muted:#959bc4;
+  --accent:#5b4bf0;--accent-soft:#eceafd;--accent-line:#d8d4f8;
+  --r:10px;--r-sm:8px;--r-lg:14px;
+
+  /* ===== 基线：项目现状 ===== */
+  --ch-workbuddy-cur:#4f52d6;--ch-workbuddy-cur-ink:#3d40a8;--ch-workbuddy-cur-wash:#eef0fa;--ch-workbuddy-cur-lit:#8f92ff;
+  --ch-zcode-cur:#0a7f96;--ch-zcode-cur-ink:#076b80;--ch-zcode-cur-wash:#e6f4f7;--ch-zcode-cur-lit:#4fd6e8;
+  --ch-qoder-cur:#7a3fc4;--ch-qoder-cur-ink:#6a36ab;--ch-qoder-cur-wash:#f2ecfb;--ch-qoder-cur-lit:#b78cf5;
+  --ch-opencode-cur:#c4356f;--ch-opencode-cur-ink:#b02f63;--ch-opencode-cur-wash:#fbeaf1;--ch-opencode-cur-lit:#ff8fb8;
+
+  /* ===== 方案 A 微调 =====
+     --ch-workbuddy-a:#4A59F4;--ch-workbuddy-a-ink:#2E29C6;--ch-workbuddy-a-wash:#F1F3F9;--ch-workbuddy-a-lit:#A2B4F5;
+     --ch-zcode-a:#1C7E92;--ch-zcode-a-ink:#0A5765;--ch-zcode-a-wash:#EAF6F9;--ch-zcode-a-lit:#6EC6DB;
+     --ch-qoder-a:#AB21C6;--ch-qoder-a-ink:#770D8C;--ch-qoder-a-wash:#F8F1F9;--ch-qoder-a-lit:#E394F5;
+     --ch-opencode-a:#C71F71;--ch-opencode-a-ink:#8C0C4D;--ch-opencode-a-wash:#F9F1F3;--ch-opencode-a-lit:#F696B7;
+  /* ===== 方案 B 均匀四分 =====
+     --ch-workbuddy-b:#1970D0;--ch-workbuddy-b-ink:#084C93;--ch-workbuddy-b-wash:#F0F4F9;--ch-workbuddy-b-lit:#8DBAF5;
+     --ch-zcode-b:#1D8181;--ch-zcode-b-ink:#0A5859;--ch-zcode-b-wash:#E1F9F9;--ch-zcode-b-lit:#6FC9C8;
+     --ch-qoder-b:#A522D2;--ch-qoder-b-ink:#730D94;--ch-qoder-b-wash:#F7F1F9;--ch-qoder-b-lit:#D99BF5;
+     --ch-opencode-b:#CE2617;--ch-opencode-b-ink:#911107;--ch-opencode-b-wash:#F9F1F0;--ch-opencode-b-lit:#F59C8D;
+  /* ===== 方案 C 低彩度灰调 =====
+     --ch-workbuddy-c:#5975C7;--ch-workbuddy-c-ink:#2F4693;--ch-workbuddy-c-wash:#F1F3F9;--ch-workbuddy-c-lit:#9DB6F5;
+     --ch-zcode-c:#0F8A9A;--ch-zcode-c-ink:#0A5762;--ch-zcode-c-wash:#E8F7F9;--ch-zcode-c-lit:#63C9DA;
+     --ch-qoder-c:#A45B9F;--ch-qoder-c-ink:#722C6E;--ch-qoder-c-wash:#F9F0F8;--ch-qoder-c-lit:#E698DF;
+     --ch-opencode-c:#B75B55;--ch-opencode-c-ink:#822B2A;--ch-opencode-c-wash:#F9F1F0;--ch-opencode-c-lit:#F59B94;
+  /* ===== 方案 D 高区分 =====
+     --ch-workbuddy-d:#186DCB;--ch-workbuddy-d-ink:#084C93;--ch-workbuddy-d-wash:#F0F4F9;--ch-workbuddy-d-lit:#8DBAF5;
+     --ch-zcode-d:#1C7E7A;--ch-zcode-d-ink:#0A5955;--ch-zcode-d-wash:#E1F9F7;--ch-zcode-d-lit:#71C9C3;
+     --ch-qoder-d:#A720C2;--ch-qoder-d-ink:#770D8C;--ch-qoder-d-wash:#F8F1F9;--ch-qoder-d-lit:#E394F5;
+     --ch-opencode-d:#AF4D17;--ch-opencode-d-ink:#7E3307;--ch-opencode-d-wash:#F9F2EE;--ch-opencode-d-lit:#F59F78;
+}
+*{box-sizing:border-box;margin:0;padding:0}
+body{background:var(--bg);color:var(--ink);
+  font-family:Inter,-apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC",sans-serif;
+  -webkit-font-smoothing:antialiased;padding:0 0 90px}
+.wrap{max-width:1280px;margin:0 auto;padding:0 26px}
+
+/* 头 */
+.head{padding:52px 0 30px}
+.kick{display:inline-flex;align-items:center;gap:7px;font-size:11px;font-weight:700;
+  letter-spacing:.1em;text-transform:uppercase;color:var(--accent);
+  border:1px solid var(--accent-line);background:var(--accent-soft);
+  padding:4px 11px;border-radius:999px;margin-bottom:18px}
+h1{font-size:clamp(27px,4vw,42px);line-height:1.18;letter-spacing:-.03em;font-weight:700}
+h1 em{font-style:normal;color:var(--accent)}
+.lede{margin-top:15px;font-size:15.5px;color:var(--muted);max-width:78ch;line-height:1.7}
+.lede b{color:var(--ink);font-weight:640}
+
+/* 诊断卡 */
+.diag{margin:34px 0 10px;background:var(--surface);border:1px solid var(--line);
+  border-radius:var(--r-lg);padding:22px 24px}
+.diag h2{font-size:16px;font-weight:680;margin-bottom:6px}
+.diag .why{font-size:13.5px;color:var(--muted);margin-bottom:18px;line-height:1.65}
+.dtable{width:100%;border-collapse:collapse}
+.dtable th{text-align:left;font-size:10.5px;font-weight:700;letter-spacing:.07em;
+  text-transform:uppercase;color:var(--muted);padding:0 10px 8px;border-bottom:1px solid var(--line)}
+.dtable td{font-size:12.5px;padding:9px 10px;border-bottom:1px solid var(--line-soft);
+  font-variant-numeric:tabular-nums}
+.dtable tr:last-child td{border-bottom:none}
+.dtable code{font-family:ui-monospace,Menlo,monospace;font-size:11.5px}
+.hues{display:flex;gap:3px;margin-top:3px}
+.hues i{width:20px;height:20px;border-radius:5px;display:block}
+.problem{background:#fff5f5;border-left:3px solid #d94a4a;padding:11px 14px;
+  border-radius:0 var(--r-sm) var(--r-sm) 0;margin-top:16px}
+.problem p{font-size:13px;color:#8a2f2f;line-height:1.6}
+.problem b{color:#6b2020}
+
+/* 方案卡 */
+.sec{margin-top:44px}
+.sec-h{display:flex;align-items:baseline;gap:11px;margin-bottom:7px}
+.sec-h h2{font-size:20px;font-weight:680;letter-spacing:-.02em}
+.sec-h .n{font-size:11.5px;font-weight:700;color:var(--muted);
+  background:var(--group);padding:2px 9px;border-radius:5px}
+.sec-d{color:var(--muted);font-size:13.5px;margin-bottom:22px;line-height:1.65;max-width:82ch}
+
+.scheme{background:var(--surface);border:1px solid var(--line);
+  border-radius:var(--r-lg);margin-bottom:26px;overflow:hidden}
+.scheme.win{border-color:var(--accent);box-shadow:0 0 0 3px var(--accent-soft)}
+.sh-h{padding:17px 22px;border-bottom:1px solid var(--line);display:flex;
+  align-items:center;gap:13px;flex-wrap:wrap}
+.sh-h .badge{width:28px;height:28px;border-radius:8px;display:grid;place-items:center;
+  font-size:12.5px;font-weight:700;background:var(--group);color:var(--ink)}
+.sh-h h3{font-size:16.5px;font-weight:670}
+.sh-h .sub{font-size:12px;color:var(--muted);margin-top:1px}
+.sh-h .metrics{margin-left:auto;display:flex;gap:9px;flex-wrap:wrap}
+.mchip{font-size:11px;font-weight:640;padding:3px 9px;border-radius:6px;
+  background:var(--group);color:var(--muted);font-variant-numeric:tabular-nums}
+.mchip.good{background:#e8f5ee;color:#176b4c}
+.mchip.warn{background:#fdf1dc;color:#7a5210}
+
+/* 预览区 */
+.prev{padding:0}
+.pv-frame{border-bottom:1px solid var(--line-soft)}
+.pv-label{font-size:10.5px;font-weight:700;letter-spacing:.07em;text-transform:uppercase;
+  color:var(--muted);padding:13px 22px 9px}
+
+/* 模拟：机架（暗色侧栏环境） */
+.rack{display:flex;min-height:150px;background:var(--sidebar);position:relative}
+.rack-side{width:150px;flex-shrink:0;padding:13px 10px;border-right:1px solid rgba(255,255,255,.09)}
+.rack-brand{display:flex;align-items:center;gap:8px;margin-bottom:14px}
+.rack-logo{width:23px;height:23px;border-radius:6px;flex:none;
+  background:linear-gradient(135deg,#5b4bf0,#7c4bec,#0a7f96)}
+.rack-brand b{font-size:12px;color:var(--sidebar-ink)}
+.rack-nav{display:flex;flex-direction:column;gap:2px}
+.rk{display:flex;align-items:center;gap:8px;font-size:11.5px;padding:5px 8px;
+  border-radius:6px;color:var(--sidebar-muted)}
+.rk.on{background:var(--sidebar-hi);color:#fff;font-weight:600}
+.rk .dot{width:7px;height:7px;border-radius:50%;flex:none}
+.rk .txt{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.rk-main{flex:1;padding:13px 16px;min-width:0}
+.rk-title{font-size:11px;color:var(--sidebar-muted);margin-bottom:11px;
+  letter-spacing:.05em;text-transform:uppercase;font-weight:700}
+.rk-cards{display:grid;grid-template-columns:repeat(4,1fr);gap:8px}
+.rk-card{background:rgba(255,255,255,.045);border:1px solid rgba(255,255,255,.09);
+  border-radius:8px;padding:9px 10px}
+.rk-card .lb{font-size:9.5px;color:var(--sidebar-muted);margin-bottom:4px;
+  display:flex;align-items:center;gap:5px}
+.rk-card .lb i{width:7px;height:7px;border-radius:50%;display:block;flex:none}
+.rk-card .vl{font-size:16px;font-weight:700;color:#fff;letter-spacing:-.02em;
+  font-variant-numeric:tabular-nums}
+
+/* 模拟：表格（亮色主内容区） */
+.tbl-wrap{padding:14px 22px 18px;background:var(--surface)}
+table{width:100%;border-collapse:collapse}
+th{text-align:left;font-size:10px;font-weight:700;letter-spacing:.05em;text-transform:uppercase;
+  color:var(--muted);padding:7px 10px;background:var(--table-head);border-bottom:1px solid var(--line)}
+td{font-size:12px;padding:8px 10px;border-bottom:1px solid var(--line-soft);font-variant-numeric:tabular-nums}
+tbody tr:last-child td{border-bottom:none}
+.ch-dot{display:inline-block;width:8px;height:8px;border-radius:50%;margin-right:7px;vertical-align:middle}
+.ring{display:inline-flex;align-items:center;gap:5px;font-size:10.5px;font-weight:640;
+  padding:2px 8px;border-radius:999px}
+.bar{display:flex;height:9px;border-radius:3px;overflow:hidden;margin-bottom:11px}
+.bar i{display:block}
+
+/* 色卡行 */
+.chips{display:grid;grid-template-columns:repeat(4,1fr);gap:0;border-top:1px solid var(--line-soft)}
+.chip{border-right:1px solid var(--line-soft);padding:12px 14px}
+.chip:last-child{border-right:none}
+.chip .nm{font-size:11px;font-weight:640;margin-bottom:3px}
+.chip .hex{font-family:ui-monospace,Menlo,monospace;font-size:10.5px;color:var(--muted)}
+.chip .sw-row{display:flex;gap:4px;margin-top:7px}
+.chip .sw-row i{height:16px;flex:1;border-radius:3px;border:1px solid rgba(0,0,0,.08)}
+.chip .cap{font-size:9px;color:var(--muted);margin-top:4px;letter-spacing:.04em}
+
+.verdict{padding:14px 22px;background:var(--group);border-top:1px solid var(--line);
+  font-size:12.5px;color:var(--muted);line-height:1.65}
+.verdict b{color:var(--ink);font-weight:640}
+
+@media(max-width:900px){
+  .rack-side{display:none}
+  .rk-cards{grid-template-columns:repeat(2,1fr)}
+  .chips{grid-template-columns:repeat(2,1fr)}
+}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<div class="head">
+  <div class="kick">棱镜网关 · 一束色重设计</div>
+  <h1>配色不好看，问题出在<br><em>色相只占了 24° 的间距</em></h1>
+  <p class="lede">你的「一束色」思路是对的——一条通道一束色，认一次全站通用，问题只在具体选了哪几个色。下面先用数据说明<b>为什么现在这组不好看</b>，再给 4 套候选，全部实测过 WCAG 对比度。</p>
+</div>
+
+<!-- 诊断 -->
+<div class="diag">
+  <h2>现状诊断</h2>
+  <p class="why">把项目现有的四个通道色转成 OKLCH 拆开看，问题很明确。</p>
+  <table class="dtable">
+    <thead><tr><th>通道</th><th>本色</th><th>OKLCH</th><th>色相</th><th>文字/浅底</th><th>暗底版</th></tr></thead>
+    <tbody>
+      <tr><td>WorkBuddy</td><td><code>#4f52d6</code></td><td>L .516 · C .198</td><td><strong>276°</strong></td><td>7.40:1</td><td>6.89:1</td></tr>
+      <tr><td>Zcode</td><td><code>#0a7f96</code></td><td>L .551 · C .096</td><td>217°</td><td>5.45:1</td><td>10.81:1</td></tr>
+      <tr><td>Qoder</td><td><code>#7a3fc4</code></td><td>L .512 · C .197</td><td><strong>300°</strong></td><td>6.66:1</td><td>7.21:1</td></tr>
+      <tr><td>OpenCode</td><td><code>#c4356f</code></td><td>L .561 · C .184</td><1°</td><td>5.28:1</td><td>8.80:1</td></tr>
+    </tbody>
+  </table>
+
+  <div class="problem">
+    <p><b>三个硬伤：</b><br>
+    ① <b>色相挤在一起</b> —— WorkBuddy 276° 和 Qoder 300° 只差 <b>24°</b>，两者明度几乎一样（.516 / .512）、彩度几乎一样（.198 / .197）。这在表格里并排出现时，眼睛分不出谁是谁。<br>
+    ② <b>四个色相全在冷色半区</b>（217°–360°），缺一个暖色做锚点，整排看着"糊"在一起、没有节奏。<br>
+    ③ <b>明度差只有 0.049</b> —— 四张卡并排时几乎同一亮度，缺少层次。</p>
+  </div>
+</div>
+
+<!-- 方案区 -->
+<div class="sec">
+  <div class="sec-h"><span class="n">CANDIDATES</span><h2>四套候选</h2></div>
+  <p class="sec-d">全部用 OKLCH 统一明度 L≈0.54–0.58 生成，保证四色"看起来是一套的"。每套都实测了文字版在浅底、暗底版在侧栏底（#0f1120）的对比度，全部 ≥ AA。</p>
+
+  <!-- 方案 A -->
+  <div class="scheme" data-scheme="a">
+    <div class="sh-h">
+      <div class="badge">A</div>
+      <div><h3>微调 · 保持原有性格</h3><div class="sub">最小改动，只把撞色的紫和品红拉开</div></div>
+      <div class="metrics">
+        <span class="mchip">色相 215/272/320/358</span>
+        <span class="mchip good">最小间距 38°</span>
+        <span class="mchip good">AA 全达标</span>
+      </div>
+    </div>
+    <div class="pv-frame">
+      <div class="pv-label">暗色侧栏环境（机架面 #0f1120）</div>
+      <div class="rack" style="--a:var(1)">
+        <div class="rack-side">
+          <div class="rack-brand"><div class="rack-logo"></div><b>Prism</b></div>
+          <div class="rack-nav">
+            <div class="rk on"><span class="dot" style="background:var(--ch-workbuddy-a-lit)"></span><span class="txt">WorkBuddy</span></div>
+            <div class="rk"><span class="dot" style="background:var(--ch-zcode-a-lit)"></span><span class="txt">Zcode</span></div>
+            <div class="rk"><span class="dot" style="background:var(--ch-qoder-a-lit)"></span><span class="txt">Qoder</span></div>
+            <div class="rk"><span class="dot" style="background:var(--ch-opencode-a-lit)"></span><span class="txt">OpenCode</span></div>
+          </div>
+        </div>
+        <div class="rk-main">
+          <div class="rk-title">通道状态 · 暗底文字版</div>
+          <div class="rk-cards">
+            <div class="rk-card"><div class="lb"><i style="background:var(--ch-workbuddy-a-lit)"></i>WorkBuddy</div><div class="vl">128</div></div>
+            <div class="rk-card"><div class="lb"><i style="background:var(--ch-zcode-a-lit)"></i>Zcode</div><div class="vl">42</div></div>
+            <div class="rk-card"><div class="lb"><i style="background:var(--ch-qoder-a-lit)"></i>Qoder</div><div class="vl">16</div></div>
+            <div class="rk-card"><div class="lb"><i style="background:var(--ch-opencode-a-lit)"></i>OpenCode</div><div class="vl">8</div></div>
+          </div>
+        </div>
+      </div>
+      <div class="tbl-wrap">
+        <div class="pv-label" style="padding-left:0">亮色主内容区 · 表格与状态</div>
+        <div class="bar">
+          <i style="background:var(--ch-workbuddy-a);flex:34"></i>
+          <i style="background:var(--ch-qoder-a);flex:33"></i>
+          <i style="background:var(--ch-zcode-a);flex:20"></i>
+          <i style="background:var(--ch-opencode-a);flex:13"></i>
+        </div>
+        <table>
+          <thead><tr><th>通道</th><th>状态</th><th>延迟</th><th>今日请求</th><th>成功率</th></tr></thead>
+          <tbody>
+            <tr><td><span class="ch-dot" style="background:var(--ch-workbuddy-a)"></span>WorkBuddy</td>
+                <td><span class="ring" style="background:var(--ch-workbuddy-a-wash);color:var(--ch-workbuddy-a-ink)">● 正常</span></td>
+                <td>312ms</td><td>842,110</td><td>99.8%</td></tr>
+            <tr><td><span class="ch-dot" style="background:var(--ch-zcode-a)"></span>Zcode</td>
+                <td><span class="ring" style="background:var(--ch-zcode-a-wash);color:var(--ch-zcode-a-ink)">● 正常</span></td>
+                <td>428ms</td><td>611,904</td><td>99.6%</td></tr>
+            <tr><td><span class="ch-dot" style="background:var(--ch-qoder-a)"></span>Qoder</td>
+                <td><span class="ring" style="background:var(--ch-qoder-a-wash);color:var(--ch-qoder-a-ink)">● 正常</span></td>
+                <td>356ms</td><td>402,338</td><td>99.9%</td></tr>
+            <tr><td><span class="ch-dot" style="background:var(--ch-opencode-a)"></span>OpenCode</td>
+                <td><span class="ring" style="background:#fdf1dc;color:#7a5210">▲ 降级</span></td>
+                <td>1,204ms</td><td>288,140</td><td>97.2%</td></tr>
+          </tbody>
+        </table>
+      </div>
+      <div class="chips">
+        <div class="chip"><div class="nm">WorkBuddy</div><div class="hex">#4A59F4</div>
+          <div class="sw-row"><i style="background:var(--ch-workbuddy-a)"></i><i style="background:var(--ch-workbuddy-a-ink)"></i><i style="background:var(--ch-workbuddy-a-wash)"></i><i style="background:var(--ch-workbuddy-a-lit)"></i></div>
+          <div class="cap">本色 / 文字 / 浅底 / 暗底</div></div>
+        <div class="chip"><div class="nm">Zcode</div><div class="hex">#1C7E92</div>
+          <div class="sw-row"><i style="background:var(--ch-zcode-a)"></i><i style="background:var(--ch-zcode-a-ink)"></i><i style="background:var(--ch-zcode-a-wash)"></i><i style="background:var(--ch-zcode-a-lit)"></i></div>
+          <div class="cap">本色 / 文字 / 浅底 / 暗底</div></div>
+        <div class="chip"><div class="nm">Qoder</div><div class="hex">#AB21C6</div>
+          <div class="sw-row"><i style="background:var(--ch-qoder-a)"></i><i style="background:var(--ch-qoder-a-ink)"></i><i style="background:var(--ch-qoder-a-wash)"></i><i style="background:var(--ch-qoder-a-lit)"></i></div>
+          <div class="cap">本色 / 文字 / 浅底 / 暗底</div></div>
+        <div class="chip"><div class="nm">OpenCode</div><div class="hex">#C71F71</div>
+          <div class="sw-row"><i style="background:var(--ch-opencode-a)"></i><i style="background:var(--ch-opencode-a-ink)"></i><i style="background:var(--ch-opencode-a-wash)"></i><i style="background:var(--ch-opencode-a-lit)"></i></div>
+          <div class="cap">本色 / 文字 / 浅底 / 暗底</div></div>
+      </div>
+    </div>
+    <div class="verdict"><b>适合：</b>你舍不得现在的调性，想小改。<b>注意：</b>紫 → 品红的跨度只拉到 38°，Qoder 那格仍然偏"洋红"，喜欢暖色的会觉得它跳。</div>
+  </div>
+
+  <!-- 方案 B -->
+  <div class="scheme" data-scheme="b">
+    <div class="sh-h">
+      <div class="badge">B</div>
+      <div><h3>均匀四分 · 蓝/青/紫/橙</h3><div class="sub">色相拉开最大，一眼分得清</div></div>
+      <div class="metrics">
+        <span class="mchip">色相 30/195/255/315</span>
+        <span class="mchip good">最小间距 60°</span>
+        <span class="mchip good">AA 全达标</span>
+      </div>
+    </div>
+    <div class="pv-frame">
+      <div class="pv-label">暗色侧栏环境（机架面 #0f1120）</div>
+      <div class="rack">
+        <div class="rack-side">
+          <div class="rack-brand"><div class="rack-logo"></div><b>Prism</b></div>
+          <div class="rack-nav">
+            <div class="rk on"><span class="dot" style="background:var(--ch-workbuddy-b-lit)"></span><span class="txt">WorkBuddy</span></div>
+            <div class="rk"><span class="dot" style="background:var(--ch-zcode-b-lit)"></span><span class="txt">Zcode</span></div>
+            <div class="rk"><span class="dot" style="background:var(--ch-qoder-b-lit)"></span><span class="txt">Qoder</span></div>
+            <div class="rk"><span class="dot" style="background:var(--ch-opencode-b-lit)"></span><span class="txt">OpenCode</span></div>
+          </div>
+        </div>
+        <div class="rk-main">
+          <div class="rk-title">通道状态 · 暗底文字版</div>
+          <div class="rk-cards">
+            <div class="rk-card"><div class="lb"><i style="background:var(--ch-workbuddy-b-lit)"></i>WorkBuddy</div><div class="vl">128</div></div>
+            <div class="rk-card"><div class="lb"><i style="background:var(--ch-zcode-b-lit)"></i>Zcode</div><div class="vl">42</div></div>
+            <div class="rk-card"><div class="lb"><i style="background:var(--ch-qoder-b-lit)"></i>Qoder</div><div class="vl">16</div></div>
+            <div class="rk-card"><div class="lb"><i style="background:var(--ch-opencode-b-lit)"></i>OpenCode</div><div class="vl">8</div></div>
+          </div>
+        </div>
+      </div>
+      <div class="tbl-wrap">
+        <div class="pv-label" style="padding-left:0">亮色主内容区 · 表格与状态</div>
+        <div class="bar">
+          <i style="background:var(--ch-workbuddy-b);flex:34"></i>
+          <i style="background:var(--ch-qoder-b);flex:33"></i>
+          <i style="background:var(--ch-zcode-b);flex:20"></i>
+          <i style="background:var(--ch-opencode-b);flex:13"></i>
+        </div>
+        <table>
+          <thead><tr><th>通道</th><th>状态</th><th>延迟</th><th>今日请求</th><th>成功率</th></tr></thead>
+          <tbody>
+            <tr><td><span class="ch-dot" style="background:var(--ch-workbuddy-b)"></span>WorkBuddy</td>
+                <td><span class="ring" style="background:var(--ch-workbuddy-b-wash);color:var(--ch-workbuddy-b-ink)">● 正常</span></td>
+                <td>312ms</td><td>842,110</td><td>99.8%</td></tr>
+            <tr><td><span class="ch-dot" style="background:var(--ch-zcode-b)"></span>Zcode</td>
+                <td><span class="ring" style="background:var(--ch-zcode-b-wash);color:var(--ch-zcode-b-ink)">● 正常</span></td>
+                <td>428ms</td><td>611,904</td><td>99.6%</td></tr>
+            <tr><td><span class="ch-dot" style="background:var(--ch-qoder-b)"></span>Qoder</td>
+                <td><span class="ring" style="background:var(--ch-qoder-b-wash);color:var(--ch-qoder-b-ink)">● 正常</span></td>
+                <td>356ms</td><td>402,338</td><td>99.9%</td></tr>
+            <tr><td><span class="ch-dot" style="background:var(--ch-opencode-b)"></span>OpenCode</td>
+                <td><span class="ring" style="background:#fdf1dc;color:#7a5210">▲ 降级</span></td>
+                <td>1,204ms</td><td>288,140</td><td>97.2%</td></tr>
+          </tbody>
+        </table>
+      </div>
+      <div class="chips">
+        <div class="chip"><div class="nm">WorkBuddy</div><div class="hex">#1970D0</div>
+          <div class="sw-row"><i style="background:var(--ch-workbuddy-b)"></i><i style="background:var(--ch-workbuddy-b-ink)"></i><i style="background:var(--ch-workbuddy-b-wash)"></i><i style="background:var(--ch-workbuddy-b-lit)"></i></div>
+          <div class="cap">本色 / 文字 / 浅底 / 暗底</div></div>
+        <div class="chip"><div class="nm">Zcode</div><div class="hex">#1D8181</div>
+          <div class="sw-row"><i style="background:var(--ch-zcode-b)"></i><i style="background:var(--ch-zcode-b-ink)"></i><i style="background:var(--ch-zcode-b-wash)"></i><i style="background:var(--ch-zcode-b-lit)"></i></div>
+          <div class="cap">本色 / 文字 / 浅底 / 暗底</div></div>
+        <div class="chip"><div class="nm">Qoder</div><div class="hex">#A522D2</div>
+          <div class="sw-row"><i style="background:var(--ch-qoder-b)"></i><i style="background:var(--ch-qoder-b-ink)"></i><i style="background:var(--ch-qoder-b-wash)"></i><i style="background:var(--ch-qoder-b-lit)"></i></div>
+          <div class="cap">本色 / 文字 / 浅底 / 暗底</div></div>
+        <div class="chip"><div class="nm">OpenCode</div><div class="hex">#CE2617</div>
+          <div class="sw-row"><i style="background:var(--ch-opencode-b)"></i><i style="background:var(--ch-opencode-b-ink)"></i><i style="background:var(--ch-opencode-b-wash)"></i><i style="background:var(--ch-opencode-b-lit)"></i></div>
+          <div class="cap">本色 / 文字 / 浅底 / 暗底</div></div>
+      </div>
+    </div>
+    <div class="verdict"><b>适合：</b>最看重"一眼分清通道"的场景，数据界面里辨识度最高。<b>注意：</b>OpenCode 变成正红，和状态色的 `--danger #c22f3c` 偏近，红色系要重测一遍语义是否混淆。</div>
+  </div>
+
+  <!-- 方案 C -->
+  <div class="scheme" data-scheme="c">
+    <div class="sh-h">
+      <div class="badge">C</div>
+      <div><h3>低彩度灰调 · 克制耐看</h3><div class="sub">像 Linear / Vercel 那样安静，靠明度分层</div></div>
+      <div class="metrics">
+        <span class="mchip">色相 25/210/268/330</span>
+        <span class="mchip good">最小间距 55°</span>
+        <span class="mchip good">AA 全达标</span>
+        <span class="mchip">彩度 C≈.10–.13</span>
+      </div>
+    </div>
+    <div class="pv-frame">
+      <div class="pv-label">暗色侧栏环境（机架面 #0f1120）</div>
+      <div class="rack">
+        <div class="rack-side">
+          <div class="rack-brand"><div class="rack-logo"></div><b>Prism</b></div>
+          <div class="rack-nav">
+            <div class="rk on"><span class="dot" style="background:var(--ch-workbuddy-c-lit)"></span><span class="txt">WorkBuddy</span></div>
+            <div class="rk"><span class="dot" style="background:var(--ch-zcode-c-lit)"></span><span class="txt">Zcode</span></div>
+            <div class="rk"><span class="dot" style="background:var(--ch-qoder-c-lit)"></span><span class="txt">Qoder</span></div>
+            <div class="rk"><span class="dot" style="background:var(--ch-opencode-c-lit)"></span><span class="txt">OpenCode</span></div>
+          </div>
+        </div>
+        <div class="rk-main">
+          <div class="rk-title">通道状态 · 暗底文字版</div>
+          <div class="rk-cards">
+            <div class="rk-card"><div class="lb"><i style="background:var(--ch-workbuddy-c-lit)"></i>WorkBuddy</div><div class="vl">128</div></div>
+            <div class="rk-card"><div class="lb"><i style="background:var(--ch-zcode-c-lit)"></i>Zcode</div><div class="vl">42</div></div>
+            <div class="rk-card"><div class="lb"><i style="background:var(--ch-qoder-c-lit)"></i>Qoder</div><div class="vl">16</div></div>
+            <div class="rk-card"><div class="lb"><i style="background:var(--ch-opencode-c-lit)"></i>OpenCode</div><div class="vl">8</div></div>
+          </div>
+        </div>
+      </div>
+      <div class="tbl-wrap">
+        <div class="pv-label" style="padding-left:0">亮色主内容区 · 表格与状态</div>
+        <div class="bar">
+          <i style="background:var(--ch-workbuddy-c);flex:34"></i>
+          <i style="background:var(--ch-qoder-c);flex:33"></i>
+          <i style="background:var(--ch-zcode-c);flex:20"></i>
+          <i style="background:var(--ch-opencode-c);flex:13"></i>
+        </div>
+        <table>
+          <thead><tr><th>通道</th><th>状态</th><th>延迟</th><th>今日请求</th><th>成功率</th></tr></thead>
+          <tbody>
+            <tr><td><span class="ch-dot" style="background:var(--ch-workbuddy-c)"></span>WorkBuddy</td>
+                <td><span class="ring" style="background:var(--ch-workbuddy-c-wash);color:var(--ch-workbuddy-c-ink)">● 正常</span></td>
+                <td>312ms</td><td>842,110</td><td>99.8%</td></tr>
+            <tr><td><span class="ch-dot" style="background:var(--ch-zcode-c)"></span>Zcode</td>
+                <td><span class="ring" style="background:var(--ch-zcode-c-wash);color:var(--ch-zcode-c-ink)">● 正常</span></td>
+                <td>428ms</td><td>611,904</td><td>99.6%</td></tr>
+            <tr><td><span class="ch-dot" style="background:var(--ch-qoder-c)"></span>Qoder</td>
+                <td><span class="ring" style="background:var(--ch-qoder-c-wash);color:var(--ch-qoder-c-ink)">● 正常</span></td>
+                <td>356ms</td><td>402,338</td><td>99.9%</td></tr>
+            <tr><td><span class="ch-dot" style="background:var(--ch-opencode-c)"></span>OpenCode</td>
+                <td><span class="ring" style="background:#fdf1dc;color:#7a5210">▲ 降级</span></td>
+                <td>1,204ms</td><td>288,140</td><td>97.2%</td></tr>
+          </tbody>
+        </table>
+      </div>
+      <div class="chips">
+        <div class="chip"><div class="nm">WorkBuddy</div><div class="hex">#5975C7</div>
+          <div class="sw-row"><i style="background:var(--ch-workbuddy-c)"></i><i style="background:var(--ch-workbuddy-c-ink)"></i><i style="background:var(--ch-workbuddy-c-wash)"></i><i style="background:var(--ch-workbuddy-c-lit)"></i></div>
+          <div class="cap">本色 / 文字 / 浅底 / 暗底</div></div>
+        <div class="chip"><div class="nm">Zcode</div><div class="hex">#0F8A9A</div>
+          <div class="sw-row"><i style="background:var(--ch-zcode-c)"></i><i style="background:var(--ch-zcode-c-ink)"></i><i style="background:var(--ch-zcode-c-wash)"></i><i style="background:var(--ch-zcode-c-lit)"></i></div>
+          <div class="cap">本色 / 文字 / 浅底 / 暗底</div></div>
+        <div class="chip"><div class="nm">Qoder</div><div class="hex">#A45B9F</div>
+          <div class="sw-row"><i style="background:var(--ch-qoder-c)"></i><i style="background:var(--ch-qoder-c-ink)"></i><i style="background:var(--ch-qoder-c-wash)"></i><i style="background:var(--ch-qoder-c-lit)"></i></div>
+          <div class="cap">本色 / 文字 / 浅底 / 暗底</div></div>
+        <div class="chip"><div class="nm">OpenCode</div><div class="hex">#B75B55</div>
+          <div class="sw-row"><i style="background:var(--ch-opencode-c)"></i><i style="background:var(--ch-opencode-c-ink)"></i><i style="background:var(--ch-opencode-c-wash)"></i><i style="background:var(--ch-opencode-c-lit)"></i></div>
+          <div class="cap">本色 / 文字 / 浅底 / 暗底</div></div>
+      </div>
+    </div>
+    <div class="verdict"><b>适合：</b>长时间盯屏、想要安静不刺眼。<b>注意：</b>四色彩度都压到 .10–.13，"一束色"的识别性比现在弱一些，色点在小尺寸下辨识度下降。</div>
+  </div>
+
+  <!-- 方案 D -->
+  <div class="scheme" data-scheme="d">
+    <div class="sh-h">
+      <div class="badge">D</div>
+      <div><h3>高区分 · 蓝/青/紫/琥珀</h3><div class="sub">区分度最高，且避开状态红</div></div>
+      <div class="metrics">
+        <span class="mchip">色相 45/190/255/320</span>
+        <span class="mchip good">最小间距 65°</span>
+        <span class="mchip good">AA 全达标</span>
+        <span class="mchip good">与 danger 区分开</span>
+      </div>
+    </div>
+    <div class="pv-frame">
+      <div class="pv-label">暗色侧栏环境（机架面 #0f1120）</div>
+      <div class="rack">
+        <div class="rack-side">
+          <div class="rack-brand"><div class="rack-logo"></div><b>Prism</b></div>
+          <div class="rack-nav">
+            <div class="rk on"><span class="dot" style="background:var(--ch-workbuddy-d-lit)"></span><span class="txt">WorkBuddy</span></div>
+            <div class="rk"><span class="dot" style="background:var(--ch-zcode-d-lit)"></span><span class="txt">Zcode</span></div>
+            <div class="rk"><span class="dot" style="background:var(--ch-qoder-d-lit)"></span><span class="txt">Qoder</span></div>
+            <div class="rk"><span class="dot" style="background:var(--ch-opencode-d-lit)"></span><span class="txt">OpenCode</span></div>
+          </div>
+        </div>
+        <div class="rk-main">
+          <div class="rk-title">通道状态 · 暗底文字版</div>
+          <div class="rk-cards">
+            <div class="rk-card"><div class="lb"><i style="background:var(--ch-workbuddy-d-lit)"></i>WorkBuddy</div><div class="vl">128</div></div>
+            <div class="rk-card"><div class="lb"><i style="background:var(--ch-zcode-d-lit)"></i>Zcode</div><div class="vl">42</div></div>
+            <div class="rk-card"><div class="lb"><i style="background:var(--ch-qoder-d-lit)"></i>Qoder</div><div class="vl">16</div></div>
+            <div class="rk-card"><div class="lb"><i style="background:var(--ch-opencode-d-lit)"></i>OpenCode</div><div class="vl">8</div></div>
+          </div>
+        </div>
+      </div>
+      <div class="tbl-wrap">
+        <div class="pv-label" style="padding-left:0">亮色主内容区 · 表格与状态</div>
+        <div class="bar">
+          <i style="background:var(--ch-workbuddy-d);flex:34"></i>
+          <i style="background:var(--ch-qoder-d);flex:33"></i>
+          <i style="background:var(--ch-zcode-d);flex:20"></i>
+          <i style="background:var(--ch-opencode-d);flex:13"></i>
+        </div>
+        <table>
+          <thead><tr><th>通道</th><th>状态</th><th>延迟</th><th>今日请求</th><th>成功率</th></tr></thead>
+          <tbody>
+            <tr><td><span class="ch-dot" style="background:var(--ch-workbuddy-d)"></span>WorkBuddy</td>
+                <td><span class="ring" style="background:var(--ch-workbuddy-d-wash);color:var(--ch-workbuddy-d-ink)">● 正常</span></td>
+                <td>312ms</td><td>842,110</td><td>99.8%</td></tr>
+            <tr><td><span class="ch-dot" style="background:var(--ch-zcode-d)"></span>Zcode</td>
+                <td><span class="ring" style="background:var(--ch-zcode-d-wash);color:var(--ch-zcode-d-ink)">● 正常</span></td>
+                <td>428ms</td><td>611,904</td><td>99.6%</td></tr>
+            <tr><td><span class="ch-dot" style="background:var(--ch-qoder-d)"></span>Qoder</td>
+                <td><span class="ring" style="background:var(--ch-qoder-d-wash);color:var(--ch-qoder-d-ink)">● 正常</span></td>
+                <td>356ms</td><td>402,338</td><td>99.9%</td></tr>
+            <tr><td><span class="ch-dot" style="background:var(--ch-opencode-d)"></span>OpenCode</td>
+                <td><span class="ring" style="background:#fdf1dc;color:#7a5210">▲ 降级</span></td>
+                <td>1,204ms</td><td>288,140</td><td>97.2%</td></tr>
+          </tbody>
+        </table>
+      </div>
+      <div class="chips">
+        <div class="chip"><div class="nm">WorkBuddy</div><div class="hex">#186DCB</div>
+          <div class="sw-row"><i style="background:var(--ch-workbuddy-d)"></i><i style="background:var(--ch-workbuddy-d-ink)"></i><i style="background:var(--ch-workbuddy-d-wash)"></i><i style="background:var(--ch-workbuddy-d-lit)"></i></div>
+          <div class="cap">本色 / 文字 / 浅底 / 暗底</div></div>
+        <div class="chip"><div class="nm">Zcode</div><div class="hex">#1C7E7A</div>
+          <div class="sw-row"><i style="background:var(--ch-zcode-d)"></i><i style="background:var(--ch-zcode-d-ink)"></i><i style="background:var(--ch-zcode-d-wash)"></i><i style="background:var(--ch-zcode-d-lit)"></i></div>
+          <div class="cap">本色 / 文字 / 浅底 / 暗底</div></div>
+        <div class="chip"><div class="nm">Qoder</div><div class="hex">#A720C2</div>
+          <div class="sw-row"><i style="background:var(--ch-qoder-d)"></i><i style="background:var(--ch-qoder-d-ink)"></i><i style="background:var(--ch-qoder-d-wash)"></i><i style="background:var(--ch-qoder-d-lit)"></i></div>
+          <div class="cap">本色 / 文字 / 浅底 / 暗底</div></div>
+        <div class="chip"><div class="nm">OpenCode</div><div class="hex">#AF4D17</div>
+          <div class="sw-row"><i style="background:var(--ch-opencode-d)"></i><i style="background:var(--ch-opencode-d-ink)"></i><i style="background:var(--ch-opencode-d-wash)"></i><i style="background:var(--ch-opencode-d-lit)"></i></div>
+          <div class="cap">本色 / 文字 / 浅底 / 暗底</div></div>
+      </div>
+    </div>
+    <div class="verdict"><b>适合：</b>既要区分度又不想和状态红混淆。琥珀色给了暖色锚点，四色在色环上间隔最均匀（65°/65°/85°）。<b>这是我的推荐。</b></div>
+  </div>
+</div>
+
+<!-- 我的推荐 -->
+<div class="diag" style="margin-top:40px">
+  <h2>我的推荐：D</h2>
+  <p class="why">理由三条：</p>
+  <div style="font-size:13.5px;color:var(--muted);line-height:1.75">
+    <p style="margin-bottom:10px"><b style="color:var(--ink)">① 最小色相间距 65°，是四套里最大的</b>（现状只有 24°）。表格里并排出现时，一眼能分清谁是谁 —— 这正是「一束色」存在的意义。</p>
+    <p style="margin-bottom:10px"><b style="color:var(--ink)">② 琥珀色避开了状态红</b>。方案 B 的 OpenCode 是正红 <code>#CE2617</code>，和你的 <code>--danger #c22f3c</code> 挨太近，"通道色"和"故障色"会混淆。D 用 <code>#AF4D17</code> 橙，语义干净。</p>
+    <p style="margin-bottom:0"><b style="color:var(--ink)">③ 暖色锚点解决了"糊在一起"</b>。现状四个色全在冷色半区（217°–360°），没有节奏。D 的 45° 琥珀把冷暖对比拉开，整排读起来有起伏。</p>
+  </div>
+</div>
+
+</div>
+</body>
+</html>
