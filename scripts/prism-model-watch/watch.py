@@ -99,7 +99,10 @@ def read_trae_model(config_env):
         for line in Path(config_env).read_text(encoding="utf-8", errors="replace").splitlines():
             line = line.strip()
             if line.startswith(DEFAULT_TRAE_KEY + "="):
-                return line.split("=", 1)[1].strip().strip('"').strip("'")
+                raw = line.split('=', 1)[1].split('#', 1)[0].strip()
+                if len(raw) >= 2 and raw[0] == raw[-1] and raw[0] in (chr(34), chr(39)):
+                    raw = raw[1:-1]
+                return raw
     except Exception:
         return None
     return None
