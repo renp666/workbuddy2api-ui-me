@@ -1369,7 +1369,8 @@ func (h *server) routeCatalog(ctx context.Context) []routeChannelCatalog {
 }
 
 // fetchChannelModels 抓一个通道的模型目录并统一加上公共前缀。core 的 ID 本身
-// 已带命名空间、glm 上游直接下发带前缀的名字，这两类保持原样。
+// 已带命名空间、glm 上游直接下发带前缀的名字，这两类保持原样。GLM 通道额外按账号
+// 权益/档位裁剪（见下），与 /admin/zcode 的目录口径一致。
 func (h *server) fetchChannelModels(ctx context.Context, c routeChannel) ([]string, bool) {
 	base, key := h.channelUpstream(c)
 	if base == nil {
@@ -1390,6 +1391,15 @@ func (h *server) fetchChannelModels(ctx context.Context, c routeChannel) ([]stri
 	list, ok := parseModelList(response)
 	if !ok {
 		return nil, false
+	}
+	// GLM 通道（zcode）必须按账号真实权益裁剪目录。上游 /v1/models 会把整个目录都列出来
+	// （glm-4.5-air、glm-4.6… 这些当前计划未授权的也在内），而 /admin/zcode 展示时已用
+	// filterZcodeModels 裁过一次。若这里拿原始目录去播种探测，探测就会挑中一个「计划根本
+	// 不允许」的模型，稳定拿 3006 model not allowed，把通道永久钉成红灯——这个红与真实可用
+	// 状态无关（踩过：glm 红灯报 model not allowed，别名真正用的 glm-5.3-flash 却是另一回事）。
+	// 目录与探测必须用同一份「账号真能服务」的清单，因此这里复用同一判据。
+	if c == channelGLM {
+		list = filterZcodeModels(list, h.zcodeEntitlements(ctx), h.zcodePlan(ctx))
 	}
 	ids := make([]string, 0, len(list))
 	for _, item := range list {

@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -1214,5 +1215,87 @@ func TestRaccoonPrefixRoutesAndMerges(t *testing.T) {
 	}
 	if !strings.Contains(mw.Body.String(), "cn:workbuddy") {
 		t.Fatalf("core models must survive: %s", mw.Body)
+	}
+}
+
+// fetchChannelModels 对 GLM 通道必须按账号权益/档位裁剪，与 /admin/zcode 的目录口径一致。
+// 上游 /v1/models 会把整个目录都列出来（含当前计划未授权的 glm-4.5-air），若原样拿去
+// 播种探测，探测就挑中一个「计划根本不允许」的模型，稳定拿 3006 model not allowed，把
+// 通道钉成与真实可用状态无关的假红灯。这里锁死不裁剪就漏这条。
+func TestFetchChannelModelsFiltersGlmByPlan(t *testing.T) {
+	h, _ := testConsoleWithZcode(t, zcodePair{
+		coreHandler: func(w http.ResponseWriter, r *http.Request) { mockInfo(w, r) },
+		zcodeHandler: func(w http.ResponseWriter, r *http.Request) {
+			switch r.URL.Path {
+			case "/v1/models":
+				fmt.Fprint(w, `{"object":"list","data":[{"id":"glm-4.5-air"},{"id":"glm-4.6"},{"id":"glm-5.3-flash"}]}`)
+			case "/quota":
+				fmt.Fprint(w, `{"balances":[]}`)
+			}
+		},
+		// 权益取不到时退回档位启发式：start-plan 只留 -flash。
+		controlHandler: (&fakeControl{resp: map[string]string{
+			"status": `{"ok":true,"plan":"start-plan","proxyPort":8080,"loggedIn":true}`,
+		}}).handler,
+	})
+	ids, ok := h.(*server).fetchChannelModels(context.Background(), channelGLM)
+	if !ok {
+		t.Fatalf("fetchChannelModels 失败")
+	}
+	want := []string{"glm-5.3-flash"}
+	if len(ids) != len(want) || ids[0] != want[0] {
+		t.Fatalf("glm 目录未按 start-plan 裁剪：got %v want %v", ids, want)
+	}
+}
+
+// 权益可用时以权益为准，优先于档位启发式（同一份 start-plan 下账号权益可能是多个模型）。
+func TestFetchChannelModelsGlmUsesEntitlements(t *testing.T) {
+	h, _ := testConsoleWithZcode(t, zcodePair{
+		coreHandler: func(w http.ResponseWriter, r *http.Request) { mockInfo(w, r) },
+		zcodeHandler: func(w http.ResponseWriter, r *http.Request) {
+			switch r.URL.Path {
+			case "/v1/models":
+				fmt.Fprint(w, `{"object":"list","data":[{"id":"glm-4.5-air"},{"id":"glm-4.6"},{"id":"glm-5.3"},{"id":"glm-5.3-flash"}]}`)
+			case "/quota":
+				fmt.Fprint(w, `{"balances":[{"showName":"GLM-4.6"},{"showName":"GLM-5.3"}]}`)
+			}
+		},
+		controlHandler: (&fakeControl{resp: map[string]string{
+			"status": `{"ok":true,"plan":"start-plan","proxyPort":8080,"loggedIn": true}`,
+		}}).handler,
+	})
+	ids, ok := h.(*server).fetchChannelModels(context.Background(), channelGLM)
+	if !ok {
+		t.Fatalf("fetchChannelModels 失败")
+	}
+	want := []string{"glm-4.6", "glm-5.3"}
+	if len(ids) != len(want) {
+		t.Fatalf("glm 目录未按权益裁剪：got %v want %v", ids, want)
+	}
+	for i := range want {
+		if ids[i] != want[i] {
+			t.Fatalf("glm 目录未按权益裁剪：got %v want %v", ids, want)
+		}
+	}
+}
+
+// 没接控制端、档位取不到时不过滤，保持既有行为（整个目录摊开给用户）。
+func TestFetchChannelModelsGlmUnfilteredWithoutControl(t *testing.T) {
+	h, _ := testConsoleWithZcode(t, zcodePair{
+		coreHandler: func(w http.ResponseWriter, r *http.Request) { mockInfo(w, r) },
+		zcodeHandler: func(w http.ResponseWriter, r *http.Request) {
+			if r.URL.Path == "/v1/models" {
+				fmt.Fprint(w, `{"object":"list","data":[{"id":"glm-4.5-air"},{"id":"glm-5.3-flash"}]}`)
+				return
+			}
+			fmt.Fprint(w, `{"balances":[]}`)
+		},
+	})
+	ids, ok := h.(*server).fetchChannelModels(context.Background(), channelGLM)
+	if !ok {
+		t.Fatalf("fetchChannelModels 失败")
+	}
+	if len(ids) != 2 {
+		t.Fatalf("无控制端时不应裁剪：got %v", ids)
 	}
 }
