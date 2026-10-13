@@ -90,6 +90,19 @@ func snapshotChannel(t *testing.T, snap map[string]any, channel string) map[stri
 	return byModel
 }
 
+func TestProbeTimeoutPerChannel(t *testing.T) {
+	// qoder 走 CLI 子进程，实测 12–43s，必须比默认 30s 宽，否则可用的 qoder 模型
+	// 会被误判成「探测超时」；其余通道维持默认，避免为一条慢通道拖长全局失败判定。
+	if got := probeTimeoutFor(channelQoder); got <= probeRequestTimeout {
+		t.Fatalf("qoder probe timeout = %s, want > %s", got, probeRequestTimeout)
+	}
+	for _, c := range []routeChannel{channelCore, channelGLM, channelOpenCode, channelAutoClaw, channelTrae, channelRaccoon} {
+		if got := probeTimeoutFor(c); got != probeRequestTimeout {
+			t.Fatalf("%s probe timeout = %s, want default %s", c, got, probeRequestTimeout)
+		}
+	}
+}
+
 func TestProbeAdminAuthAndValidation(t *testing.T) {
 	h, _ := routeConsole(t, func(w http.ResponseWriter, r *http.Request) {
 		fmt.Fprint(w, `{"data":[]}`)

@@ -34,6 +34,23 @@ const (
 	probeMaxTokens      = 256
 )
 
+// probeChannelTimeouts 覆盖个别通道的探测超时。qoder 走 CLI 子进程（每次请求
+// 拉起 qoderclicn 跑一轮），实测单发 12–43s、并发时尾延迟更高，30s 会把本来
+// 可用的 qoder 模型误判成「探测超时」——控制台与看门狗都据此显示不可用。
+// 给 qoder 单独放宽到 60s，其余通道维持默认 30s，不为一个慢通道拖长全局失败
+// 判定。未列出的通道一律用 probeRequestTimeout。
+var probeChannelTimeouts = map[routeChannel]time.Duration{
+	channelQoder: 60 * time.Second,
+}
+
+// probeTimeoutFor 返回某通道的探测超时。
+func probeTimeoutFor(c routeChannel) time.Duration {
+	if d, ok := probeChannelTimeouts[c]; ok {
+		return d
+	}
+	return probeRequestTimeout
+}
+
 // probeJob 是一次探测里的单个模型任务，public 是对外形态的模型名。
 type probeJob struct {
 	channel routeChannel
@@ -213,7 +230,7 @@ func (h *server) probeOne(c routeChannel, public string) map[string]any {
 		u.Path = "/v1/chat/completions"
 		target = u.String()
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), probeRequestTimeout)
+	ctx, cancel := context.WithTimeout(context.Background(), probeTimeoutFor(c))
 	defer cancel()
 	req, err := http.NewRequestWithContext(ctx, "POST", target, strings.NewReader(string(body)))
 	if err != nil {

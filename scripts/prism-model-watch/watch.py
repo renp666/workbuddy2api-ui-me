@@ -108,20 +108,32 @@ def read_trae_model(config_env):
     return None
 
 
-def repin(config_env, key_name, new_alias, apply):
+def repin(config_env, key_name, new_alias, apply, old_alias=""):
+    import shutil
+
     path = Path(config_env)
     lines = path.read_text(encoding="utf-8").splitlines()
     changed = False
+    old = old_alias
     for i, line in enumerate(lines):
         if line.strip().startswith(key_name + "="):
-            lines[i] = '%s="%s"' % (key_name, new_alias)
+            stripped = line.strip()
+            head, sep, comment = stripped.partition("#")
+            if not old:
+                old = head.split("=", 1)[1].strip().strip('"').strip("'")
+            # Keep the original trailing comment (the change history) and record
+            # this repin on the same line, so nothing is lost on a rewrite.
+            tail = ("  " + sep + comment) if sep else ""
+            lines[i] = '%s="%s"  # repin %s -> %s%s' % (key_name, new_alias, old, new_alias, tail)
             changed = True
     if not changed:
         return False, "%s not found in %s" % (key_name, config_env)
     if not apply:
-        return True, "[dry-run] would set %s=%s in %s" % (key_name, new_alias, config_env)
+        return True, "[dry-run] would repin %s: %s -> %s in %s" % (key_name, old, new_alias, config_env)
+    backup = "%s.bak-repin-%s" % (config_env, time.strftime("%Y%m%d-%H%M%S"))
+    shutil.copy2(config_env, backup)
     path.write_text("\n".join(lines) + "\n", encoding="utf-8")
-    return True, "set %s=%s in %s" % (key_name, new_alias, config_env)
+    return True, "repinned %s: %s -> %s in %s (backup %s)" % (key_name, old, new_alias, config_env, backup)
 
 
 def main(argv=None):
@@ -133,6 +145,12 @@ def main(argv=None):
     ap.add_argument("--update-baseline", action="store_true", help="record current state as new baseline and exit")
     ap.add_argument("--requests", type=int, default=1, help="probe attempts per alias (must all pass)")
     ap.add_argument("--timeout", type=float, default=30.0)
+    ap.add_argument(
+        "--qoder-timeout",
+        type=float,
+        default=60.0,
+        help="probe timeout for qoder-realm aliases (they run a CLI subprocess; 30s is too tight)",
+    )
     ap.add_argument("--config-env", default=DEFAULT_CONFIG_ENV)
     ap.add_argument("--auto-repin", action="store_true", help="GATED: rewrite WF_TRAE_MODEL when its own alias fails")
     ap.add_argument("--apply", action="store_true", help="with --auto-repin, actually write (default dry-run)")
@@ -205,8 +223,14 @@ def main(argv=None):
             continue
         ok = True
         detail = ""
+        # qoder aliases route to a CLI-subprocess proxy whose real latency is
+        # 12-43s; a 30s probe would report them as timeouts while they work.
+        # Give the qoder realm its own (wider) timeout, keep 30s for the rest.
+        probe_timeout = (
+            args.qoder_timeout if (aliases[name].get("realm") or "") == "qoder" else args.timeout
+        )
         for _ in range(max(1, args.requests)):
-            ok, dt, err = probe_alias(args.base_url, key, name, args.timeout)
+            ok, dt, err = probe_alias(args.base_url, key, name, probe_timeout)
             if not ok:
                 detail = "%s (%ss)" % (err, dt)
                 break
@@ -228,16 +252,19 @@ def main(argv=None):
     if disabled and args.verbose:
         print("disabled (console switch, not alerted): %s" % ", ".join(sorted(disabled)))
 
-    if args.auto_repin and trae and trae in failed:
+    # Pinned alias is broken if its probe failed OR it vanished from /v1/models
+    # entirely (the most common rotation shape: the alias is dropped upstream).
+    pinned_broken = bool(trae) and (trae in failed or trae not in aliases)
+    if args.auto_repin and pinned_broken:
         fallback = next(
             (n for n in sorted(aliases) if n not in failed and n != trae and n not in costly and n not in disabled),
             None,
         )
         if fallback:
-            _ok, msg = repin(args.config_env, DEFAULT_TRAE_KEY, fallback, args.apply)
+            _ok, msg = repin(args.config_env, DEFAULT_TRAE_KEY, fallback, args.apply, old_alias=trae)
             problems.append("auto-repin: %s" % msg)
         else:
-            problems.append("auto-repin: no healthy fallback alias available")
+            problems.append("auto-repin: no healthy fallback alias available (pinned %s broken)" % trae)
 
     if problems:
         print("PRISM MODEL WATCH: anomaly detected")
