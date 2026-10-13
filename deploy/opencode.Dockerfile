@@ -2,9 +2,11 @@
 # 基础镜像用 Debian（glibc）：OW Bridge 首启会从 npm 下载 opencode-ai 官方二进制
 # （Bun 编译，仅 glibc 构建），musl/alpine 无法运行。
 FROM node:22-slim
+# OW Bridge 上游版本固定（tag v0.2.9, 2026-10-09），不跟随默认分支：避免上游提交让镜像
+# 「同名不同料」。升级步骤：改 tag → 重建 → 复核 entrypoint 与 console 的分流假设仍成立。
 RUN apt-get update \
     && apt-get install -y --no-install-recommends git ca-certificates \
-    && git clone --depth 1 https://github.com/louchi1984-coder/ow-bridge.git /app \
+    && git clone --depth 1 --branch v0.2.9 https://github.com/louchi1984-coder/ow-bridge.git /app \
     && cd /app \
     && npm install --omit=dev --ignore-scripts \
     && apt-get purge -y git \

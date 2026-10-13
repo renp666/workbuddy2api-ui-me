@@ -11,7 +11,12 @@ import tempfile
 from pathlib import Path, PurePosixPath
 
 
-CANONICAL_REPOSITORY = "https://github.com/Sliverkiss/workbuddy2api"
+# 上游跟踪源。原作者仓库 Sliverkiss/workbuddy2api 于 2026-10 前后下线（GitHub 返回 404），
+# 社区续作仓 HanawaBanana/workbuddy2api 承接同一代码库（同 internal/upstream、cmd、scripts 结构）。
+# 本常量与 upstream.lock 的 repository 必须一致（update 流程会校验），迁移时两处一起改。
+# 注意：upstream.lock 里的 commit/source_sha256 仍描述「当前已物化的快照」，与跟踪源解耦；
+# 下次真正更新时用 `overlay.py update --ref <续作仓里的 commit/tag>` 重新取快照并重写这三项。
+CANONICAL_REPOSITORY = "https://github.com/HanawaBanana/workbuddy2api"
 UPDATE_PATHS = (
     "upstream",
     "upstream.lock",

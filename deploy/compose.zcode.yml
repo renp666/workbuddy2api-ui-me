@@ -8,7 +8,7 @@
 # routes public /v1 requests whose model starts with "glm-" to the proxy. Everything else stays on core.
 services:
   zcode-proxy:
-    image: ghcr.io/tridefender/zcode-proxy:4.7.0
+    image: ghcr.io/tridefender/zcode-proxy:4.8.0
     platform: linux/amd64
     restart: unless-stopped
     # android entry keeps the process resident: proxy stopped until the Zcode tab enables it,

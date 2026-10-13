@@ -1,7 +1,12 @@
 FROM node:20-alpine
+# 上游版本固定：两个来源都不跟随默认分支/最新版，避免上游改动让镜像「同名不同料」、
+# 也让本仓的构建期补丁（relax-token-guard / fix-e2big-argv）有确定的上下文可依。
+#   升级步骤：改下面的 tag/版本号 → 重建镜像 → 复核两个 .cjs 补丁仍能应用。
+#   qoder-proxy    : https://github.com/avaritiachaos/qoder-proxy  (tag v1.6.0, 2026-09-05)
+#   qoderclicn npm : @qodercn-ai/qoderclicn@1.1.69                (2026-10-12)
 RUN apk add --no-cache git \
-    && npm install -g @qodercn-ai/qoderclicn \
-    && git clone --depth 1 https://github.com/avaritiachaos/qoder-proxy.git /app \
+    && npm install -g @qodercn-ai/qoderclicn@1.1.69 \
+    && git clone --depth 1 --branch v1.6.0 https://github.com/avaritiachaos/qoder-proxy.git /app \
     && cd /app \
     && npm install --production \
     && apk del git
