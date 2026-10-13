@@ -457,3 +457,117 @@ func TestAdminHealthRaccoonCredentialHint(t *testing.T) {
 		}
 	}
 }
+
+// corePinHint 把「严格 pin 被锁账号在冷却」翻译成可直接执行的下一步。
+// core 的 realm 是 patch 0010 的严格锁定（被锁账号不可用即 503，不做故障转移），
+// 域内其余账号再健康也用不上，所以 pinned_account_unavailable 必须带上
+// 「锁的是谁 / 卡在哪 / 多久恢复 / 域内有没有替补」才有人能照着处置。
+func TestAdminHealthCorePinHint(t *testing.T) {
+	core := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/internal/v1/info":
+			mockInfo(w, r)
+		case "/internal/v1/status":
+			fmt.Fprint(w, `{
+			  "realm_totals":{
+			    "cn":{"healthy":2,"cooling":0,"total":2},
+			    "global":{"healthy":1,"cooling":1,"total":2}},
+			  "accounts":[
+			    {"uid":"u-gp","realm":"global","nickname":"renp666","reason":"429 rate limit",
+			     "cooling":true,"cool_remaining_sec":343},
+			    {"uid":"u-gs","realm":"global","nickname":"renp886"},
+			    {"uid":"u-cp","realm":"cn","nickname":"19258020078"},
+			    {"uid":"u-cs","realm":"cn","nickname":"R.P"}]}`)
+		case "/internal/v1/pin":
+			fmt.Fprint(w, `{"pins":{
+			  "global":{"uid":"u-gp","realm":"global","nickname":"renp666","exists":true},
+			  "cn":{"uid":"u-cp","realm":"cn","nickname":"19258020078","exists":true}}}`)
+		default:
+			w.WriteHeader(404)
+		}
+	}))
+	t.Cleanup(core.Close)
+
+	h, err := NewServer(testConfig(core.URL))
+	if err != nil {
+		t.Fatal(err)
+	}
+	srv := h.(*server)
+	srv.probe.record(channelCore, "global:deepseek-v4.1-flash", map[string]any{
+		"ok":       false,
+		"category": "error",
+		"error":    `{"error":{"code":"pinned_account_unavailable"}}`,
+	})
+
+	cookie, csrf := login(t, h)
+	w := adminRequest(h, "GET", "/admin/health", "", cookie, csrf)
+	if w.Code != 200 {
+		t.Fatalf("health status=%d %s", w.Code, w.Body)
+	}
+	var got healthResponse
+	if err := json.Unmarshal(w.Body.Bytes(), &got); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	var item *healthChannelResult
+	for i := range got.Channels {
+		if got.Channels[i].Channel == channelCore {
+			item = &got.Channels[i]
+		}
+	}
+	if item == nil {
+		t.Fatal("missing core channel")
+	}
+	hint := item.ProbeHint
+	for _, want := range []string{"global", "renp666", "429 rate limit", "343 秒", "不做故障转移", "renp886", "解除锁定"} {
+		if !strings.Contains(hint, want) {
+			t.Fatalf("core probe_hint=%q，缺少片段 %q", hint, want)
+		}
+	}
+	// cn 域被锁账号健康：不该被写进解释里（否则红灯原因被摊成两份，人更难定位）。
+	if strings.Contains(hint, "cn 域") {
+		t.Fatalf("cn 域 pin 健康却仍被写进 hint：%q", hint)
+	}
+}
+
+// 被锁账号本身健康时不出提示：红灯另有原因，硬套 pin 说法反而误导。
+func TestCorePinHintSkipsHealthyPin(t *testing.T) {
+	h, err := NewServer(testConfig("http://127.0.0.1:1"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	srv := h.(*server)
+	if hint := srv.corePinHint(context.Background()); hint != "" {
+		// core 不可达：必须安静返回空，而不是把探测链路本身弄崩。
+		t.Fatalf("core 不可达时 probe_hint=%q，want empty", hint)
+	}
+}
+
+// 被锁账号健康（域内有冷却账号但不是锁定的那个）时不出提示。
+func TestCorePinHintSilentWhenPinHealthy(t *testing.T) {
+	core := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/internal/v1/status":
+			fmt.Fprint(w, `{
+			  "realm_totals":{"cn":{"healthy":2,"cooling":0,"total":2},
+			                 "global":{"healthy":1,"cooling":1,"total":2}},
+			  "accounts":[
+			    {"uid":"u-gp","realm":"global","nickname":"renp666"},
+			    {"uid":"u-gs","realm":"global","nickname":"renp886",
+			     "reason":"429 rate limit","cooling":true,"cool_remaining_sec":120}]}`)
+		case "/internal/v1/pin":
+			fmt.Fprint(w, `{"pins":{"global":{"uid":"u-gp","realm":"global","nickname":"renp666","exists":true}}}`)
+		default:
+			w.WriteHeader(404)
+		}
+	}))
+	t.Cleanup(core.Close)
+
+	h, err := NewServer(testConfig(core.URL))
+	if err != nil {
+		t.Fatal(err)
+	}
+	hint := h.(*server).corePinHint(context.Background())
+	if hint != "" {
+		t.Fatalf("pin 账号健康时不应出提示，got %q", hint)
+	}
+}

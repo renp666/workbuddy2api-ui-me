@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"net/http"
+	"strings"
 	"sync"
 	"time"
 )
@@ -55,8 +56,9 @@ type healthChannelResult struct {
 	// ProbeDetail 是首个失败模型的原因摘要，便于页面直接解释红灯。
 	ProbeDetail string `json:"probe_detail,omitempty"`
 	// ProbeHint 是通道侧补充的「可执行下一步」，只在红灯且通道确有线索时出现。
-	// 例：raccoon 的凭证被上游拒 → 「token_expired: 请重新导入凭证」，让红灯自带
-	// 处置办法，而不是只丢一句笼统的 no_healthy_account 让人去猜。
+	// 例：raccoon 的凭证被上游拒 → 「token_expired: 请重新导入凭证」；core 的严格 pin
+	// 账号在冷却 → 指出锁的是谁、卡在哪、多久恢复。让红灯自带处置办法，而不是只丢一句
+	// 笼统的 no_healthy_account / pinned_account_unavailable 让人去猜。
 	ProbeHint string `json:"probe_hint,omitempty"`
 }
 
@@ -296,7 +298,129 @@ func (h *server) probeChannelHealth(ctx context.Context, c routeChannel) healthC
 	if c == channelRaccoon && result.ProbeState != "ok" {
 		result.ProbeHint = h.raccoonAccountHint(ctx)
 	}
+	if c == channelCore && result.ProbeState != "ok" {
+		result.ProbeHint = h.corePinHint(ctx)
+	}
 	return result
+}
+
+// corePinHintTimeout 是取 core 账号池/pin 快照的超时。只在红灯时调用，开销有界。
+const corePinHintTimeout = 3 * time.Second
+
+// corePinHint 在 core 红灯时补一条账号侧的可执行解释。
+//
+// core 的账号是「严格 pin」的（patch 0010：同一 realm 锁定一个账号，被锁账号不可用即
+// 503 pinned_account_unavailable，且不做故障转移），realm 内其余账号再健康也用不上。
+// 于是 pinned_account_unavailable 单独摆在那儿，人完全不知道下一步该干什么。这里把 pin
+// 与账号池快照拼成一句人话：域里锁的是谁、卡在哪、预计多久恢复、域内有没有能顶上却因
+// 锁定而不会顶上的账号。
+func (h *server) corePinHint(ctx context.Context) string {
+	if h.cfg.CoreURL == nil {
+		return ""
+	}
+	status, code, err := h.coreCtl(ctx, "GET", "/internal/v1/status", corePinHintTimeout)
+	if err != nil || code != 200 {
+		return ""
+	}
+	pins, _, _ := h.coreCtl(ctx, "GET", "/internal/v1/pin", corePinHintTimeout)
+
+	type account struct {
+		uid, nickname, realm, reason string
+		cooling                      bool
+		remaining                    float64
+	}
+	var accounts []account
+	for _, item := range sliceOf(status["accounts"]) {
+		m, ok := item.(map[string]any)
+		if !ok {
+			continue
+		}
+		accounts = append(accounts, account{
+			uid:        strOf(m, "uid"),
+			nickname:   orDefault(strOf(m, "nickname"), strOf(m, "uid")),
+			realm:      strOf(m, "realm"),
+			reason:     strOf(m, "reason"),
+			cooling:    m["cooling"] == true,
+			remaining:  numOf(m, "cool_remaining_sec"),
+		})
+	}
+
+	// pin 按 realm 索引，用来判断「正在出问题的账号是不是恰好被锁住的那个」。
+	pinned := map[string]string{}
+	for realm, item := range mapOf(pins["pins"]) {
+		if m, ok := item.(map[string]any); ok {
+			pinned[realm] = strOf(m, "uid")
+		}
+	}
+
+	var parts []string
+	for _, realm := range []string{"global", "cn"} {
+		locked := -1
+		for i := range accounts {
+			if accounts[i].realm == realm && accounts[i].uid == pinned[realm] {
+				locked = i
+				break
+			}
+		}
+		if locked < 0 {
+			continue // 这个域没有 pin 或 pin 的账号不在池内：不是本机制能解释的红灯
+		}
+		if !accounts[locked].cooling {
+			continue // 被锁账号本身健康：红灯另有原因，别硬找说法
+		}
+		pin := accounts[locked]
+		part := fmt.Sprintf("%s 域锁定的 %s %s", realm, pin.nickname, orDefault(pin.reason, "暂不可用"))
+		if pin.remaining > 0 {
+			part += fmt.Sprintf("，约 %.0f 秒后恢复", pin.remaining)
+		}
+		// 严格锁定下，域内其他健康账号不会顶上——这句话必须说出来，
+		// 否则「域里其实有健康账号」和「红灯」看起来互相矛盾。
+		var spare string
+		for i := range accounts {
+			if i != locked && accounts[i].realm == realm && !accounts[i].cooling {
+				spare = accounts[i].nickname
+				break
+			}
+		}
+		if spare != "" {
+			part += fmt.Sprintf("；严格锁定不做故障转移，域内 %s 可用但不会顶上（需先解除锁定）", spare)
+		} else {
+			part += "；严格锁定不做故障转移，且域内无其他可用账号"
+		}
+		parts = append(parts, part)
+	}
+	return strings.Join(parts, "；")
+}
+
+// strOf 取 map 里的字符串字段；不存在或类型不对时返回空串。
+func strOf(m map[string]any, key string) string {
+	v, _ := m[key].(string)
+	return strings.TrimSpace(v)
+}
+
+// numOf 取 map 里的数值字段（JSON 数字一律解成 float64）。
+func numOf(m map[string]any, key string) float64 {
+	v, _ := m[key].(float64)
+	return v
+}
+
+// mapOf / sliceOf 把 JSON 里解出来的 any 收窄成常用容器，nil 时返回空值而非 panic。
+func mapOf(v any) map[string]any {
+	m, _ := v.(map[string]any)
+	return m
+}
+
+func sliceOf(v any) []any {
+	s, _ := v.([]any)
+	return s
+}
+
+// orDefault 在 s 为空时给一个兜底说法，避免拼出「域锁定的 xx 」这种断尾句子。
+func orDefault(s, fallback string) string {
+	if s == "" {
+		return fallback
+	}
+	return s
 }
 
 // channelReachable 按通道复用既有探测口径判定可达性。core 与 glm/qoder 没有

@@ -46,6 +46,34 @@ func (h *server) coreInfo(ctx context.Context) (coreInfo, error) {
 	}
 	return info, nil
 }
+
+// coreCtl 调 core 的只读管理端点（经桥接密钥鉴权，不带 owner，因此只能取全局快照，
+// 不能动账号池）。body 上限 1 MiB：账号池状态只含汇总字段。
+//
+// owner 传空与 raccoonCtl/trae 控制链路的差别在于：这里不注入 X-Console-Owner，
+// core 就不会按 owner 过滤，返回的是整池状态。只在失败时调用（见 corePinHint），
+// 不在正常路径上打 core。
+func (h *server) coreCtl(ctx context.Context, method, path string, timeout time.Duration) (map[string]any, int, error) {
+	ctx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+	response, err := h.bridgeRequest(ctx, method, path, "")
+	if err != nil {
+		return nil, 0, err
+	}
+	defer response.Body.Close()
+	raw, err := io.ReadAll(io.LimitReader(response.Body, 1<<20))
+	if err != nil {
+		return nil, response.StatusCode, err
+	}
+	if len(raw) == 0 {
+		return nil, response.StatusCode, nil
+	}
+	var out map[string]any
+	if json.Unmarshal(raw, &out) != nil {
+		return nil, response.StatusCode, errors.New("core 返回了非 JSON")
+	}
+	return out, response.StatusCode, nil
+}
 func stripPrivateHeaders(headers http.Header) {
 	for name := range headers {
 		lower := strings.ToLower(name)
