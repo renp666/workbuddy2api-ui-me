@@ -97,12 +97,18 @@ type healthResponse struct {
 
 // TestAdminHealthAggregatesAllChannels 锁定「网关 + 七通道」总览：七条通道
 // 无论是否启用都要出现，且顺序与 routeChannelOrder 一致；全部健康时 ok=true。
+// 「全部健康」现在要求每条已启用通道都有真调用证据（probe_state=ok）——所以
+// 这里给每条通道记一条可用结论，模拟已完成探测。
 func TestAdminHealthAggregatesAllChannels(t *testing.T) {
 	stubs := map[routeChannel]healthChannelStub{}
 	for _, c := range routeChannelOrder {
 		stubs[c] = healthyStub(c)
 	}
 	h := healthConsole(t, stubs, false)
+	srv := h.(*server)
+	for _, c := range routeChannelOrder {
+		srv.probe.record(c, string(c)+":probe-model", map[string]any{"ok": true})
+	}
 	cookie, csrf := login(t, h)
 	w := adminRequest(h, "GET", "/admin/health", "", cookie, csrf)
 	if w.Code != 200 {
@@ -171,6 +177,8 @@ func TestAdminHealthReportsUnreachableChannel(t *testing.T) {
 // 只配 core 时，其余六条 enabled=false 且不参与 ok 判定。
 func TestAdminHealthOnlyProbesEnabledChannels(t *testing.T) {
 	h := healthConsole(t, nil, false)
+	// 只有 core 启用；给它记一条可用结论，总览才有资格报 ok=true。
+	h.(*server).probe.record(channelCore, "cn:glm-5.3", map[string]any{"ok": true})
 	cookie, csrf := login(t, h)
 	w := adminRequest(h, "GET", "/admin/health", "", cookie, csrf)
 	var got healthResponse
@@ -334,6 +342,40 @@ func TestAdminHealthNotGreenWhenProbeFails(t *testing.T) {
 	for _, item := range got.Channels {
 		if item.Channel == channelRaccoon || item.Channel == channelCore {
 			continue
+		}
+		if item.ProbeState != "" {
+			t.Fatalf("channel %q probe_state=%q, want empty（未探测）", item.Channel, item.ProbeState)
+		}
+	}
+}
+
+// TestAdminHealthNotGreenWhenUnproven 锁定「未知不是健康」：端口/服务全部存活、
+// 但没有任何真调用结论（未探测）时，总览不得报 ok=true——否则就是「假绿」的另一种
+// 形态（修复前只把 probe_state=failed 当不健康，未探测仍算绿）。
+func TestAdminHealthNotGreenWhenUnproven(t *testing.T) {
+	stubs := map[routeChannel]healthChannelStub{}
+	for _, c := range routeChannelOrder {
+		stubs[c] = healthyStub(c)
+	}
+	h := healthConsole(t, stubs, false)
+	cookie, csrf := login(t, h)
+	w := adminRequest(h, "GET", "/admin/health", "", cookie, csrf)
+	if w.Code != 200 {
+		t.Fatalf("health status=%d %s", w.Code, w.Body)
+	}
+	var got healthResponse
+	if err := json.Unmarshal(w.Body.Bytes(), &got); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if got.OK {
+		t.Fatal("端口全活但没有任何真调用结论时，总览不得报 ok=true（未探测 ≠ 健康）")
+	}
+	for _, item := range got.Channels {
+		if !item.Enabled {
+			continue
+		}
+		if !item.Reachable {
+			t.Fatalf("channel %q 应判可达（存活与可用是两回事）", item.Channel)
 		}
 		if item.ProbeState != "" {
 			t.Fatalf("channel %q probe_state=%q, want empty（未探测）", item.Channel, item.ProbeState)

@@ -24,6 +24,15 @@ const healthProbeTimeout = 10 * time.Second
 // healthHistorySize 是留存的历史轮数（内存态，重启清空）。
 const healthHistorySize = 20
 
+// healthProbeSeedInterval 是后台「补齐真调用结论」的节流间隔。总览的绿灯必须有真
+// 调用证据支撑：已启用通道若「没有任何结论」或「结论为失败」，每隔这个间隔用最小
+// 代价重探一次（每通道取目录前 N 个模型），既不让「没测过」长期挂在未知态，也不让
+// 一次瞬时失败把通道永久钉在红灯。上游额度消耗被节流到 ≤ 通道数×N 次/间隔。
+const healthProbeSeedInterval = 5 * time.Minute
+
+// healthProbeSeedModels 是补齐探测每通道取的模型数（取目录前 N 个）。
+const healthProbeSeedModels = 1
+
 // healthChannelResult 是单条通道一轮探活的结论。
 //
 // Reachable 只回答「端口/服务是否活着」，不回答「模型能不能真跑」——两者必须
@@ -37,8 +46,8 @@ type healthChannelResult struct {
 	LatencyMs int64        `json:"latency_ms"`
 	// Detail 是附加说明：失败时是原因，autoclaw 成功时附带 healthy/total 计数。
 	Detail string `json:"detail,omitempty"`
-	// ProbeState 取自手工测速探测结论：空=未探测，ok=有可用模型，
-	// failed=有结论但无一可用。仅作参考，不触发任何上游调用。
+	// ProbeState 取自真调用结论（手工测速探测；opencode 取 OW Bridge /health）：
+	// 空=未探测（未知，不计为健康），ok=有可用模型，failed=有结论但无一可用。
 	ProbeState string `json:"probe_state,omitempty"`
 	// ProbeOKModels / ProbeTotalModels 是真调用结论里的可用模型数与已测模型数。
 	ProbeOKModels    int `json:"probe_ok_models,omitempty"`
@@ -47,11 +56,16 @@ type healthChannelResult struct {
 	ProbeDetail string `json:"probe_detail,omitempty"`
 }
 
-// probeVerdict 从手工测速探测缓存里归纳某通道的真调用结论。
+// probeVerdict 归纳某通道的真调用结论。
 // 无结论时 state 为空串——「没测过」与「测了不行」必须区分，不得把未知当健康。
-func (h *server) probeVerdict(c routeChannel) (state string, okModels, totalModels int, detail string) {
+// opencode 没有手工探测：它的逐模型结论来自 OW Bridge 自带 /health.modelResults，
+// 单独取；其余通道读手工测速探测缓存。
+func (h *server) probeVerdict(ctx context.Context, c routeChannel) (state string, okModels, totalModels int, detail string) {
 	results := h.probe.channelResults(c)
 	if len(results) == 0 {
+		if c == channelOpenCode {
+			return h.opencodeProbeVerdict(ctx)
+		}
 		return "", 0, 0, ""
 	}
 	totalModels = len(results)
@@ -72,6 +86,50 @@ func (h *server) probeVerdict(c routeChannel) (state string, okModels, totalMode
 		return "ok", okModels, totalModels, ""
 	}
 	return "failed", 0, totalModels, detail
+}
+
+// opencodeProbeVerdict 从 OW Bridge /health.modelResults 归纳 opencode 的真调用结论，
+// 与手工探测缓存同构（ok/failed/空）。OW Bridge 的 /health 本身就是逐模型探测结果，
+// 所以这里不额外产生上游调用，只是把已有结论接进总览——否则 opencode 会因「没有
+// 手工结论」被误判成未探测，甚至被当成不可用。
+func (h *server) opencodeProbeVerdict(ctx context.Context) (string, int, int, string) {
+	health := h.opencodeHealth(ctx)
+	if health == nil {
+		return "", 0, 0, ""
+	}
+	raw, _ := health["modelResults"].(map[string]any)
+	if len(raw) == 0 {
+		return "", 0, 0, ""
+	}
+	total, okModels := 0, 0
+	detail := ""
+	for name, value := range raw {
+		entry, ok := value.(map[string]any)
+		if !ok {
+			continue
+		}
+		total++
+		if success, _ := entry["ok"].(bool); success {
+			okModels++
+			continue
+		}
+		if detail == "" {
+			if note, _ := entry["error"].(string); note != "" {
+				detail = note
+			} else if category, _ := entry["category"].(string); category != "" {
+				detail = category
+			} else {
+				detail = name
+			}
+		}
+	}
+	if total == 0 {
+		return "", 0, 0, ""
+	}
+	if okModels > 0 {
+		return "ok", okModels, total, ""
+	}
+	return "failed", 0, total, detail
 }
 
 // healthRound 是一轮「网关 + 七通道」总览。
@@ -100,8 +158,9 @@ func (r healthRound) historyEntry() healthHistoryEntry {
 
 // healthCache 保留最近 healthHistorySize 轮后台探活结论（内存态，重启清空）。
 type healthCache struct {
-	mu      sync.Mutex
-	history []healthHistoryEntry
+	mu       sync.Mutex
+	history  []healthHistoryEntry
+	lastSeed time.Time
 }
 
 func (c *healthCache) record(round healthRound) {
@@ -111,6 +170,20 @@ func (c *healthCache) record(round healthRound) {
 	if len(c.history) > healthHistorySize {
 		c.history = c.history[len(c.history)-healthHistorySize:]
 	}
+}
+
+// seedDue 报告距上次补齐探测是否已过一个节流间隔。零值 lastSeed 让启动后立即补齐。
+func (c *healthCache) seedDue(interval time.Duration) bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return time.Since(c.lastSeed) >= interval
+}
+
+// markSeeded 记录一次补齐探测的发起时刻（成功发起才调用）。
+func (c *healthCache) markSeeded() {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.lastSeed = time.Now()
 }
 
 func (c *healthCache) snapshot() []healthHistoryEntry {
@@ -133,13 +206,44 @@ func (h *server) healthAutoStart() {
 }
 
 func (h *server) healthOnce() {
+	h.maybeSeedProbes()
 	ctx, cancel := context.WithTimeout(context.Background(), healthProbeTimeout)
 	defer cancel()
 	h.health.record(h.runHealthRound(ctx))
 }
 
-// runHealthRound 并行探活 routeChannelOrder 里的全部已启用通道，
-// 任一已启用通道不可达即整轮 OK=false（core 恒启用，故 core 不可达必然失败）。
+// maybeSeedProbes 在后台按节流间隔，给「没有结论」或「结论为失败」的已启用通道补一次
+// 轻量真调用探测（每通道 1 个模型），让总览的绿/红都有真调用证据：绿灯不再可能建立在
+// 「没测过」之上；一次瞬时失败也会在下一个间隔被重探，不会永久钉在红灯。已有 ok 结论
+// 的通道不打扰（真实额度消耗因此有界）。
+func (h *server) maybeSeedProbes() {
+	if !h.health.seedDue(healthProbeSeedInterval) {
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	var need []routeChannel
+	for _, c := range routeChannelOrder {
+		if c == channelOpenCode || !h.channelEnabled(c) {
+			continue
+		}
+		if state, _, _, _ := h.probeVerdict(ctx, c); state != "ok" {
+			need = append(need, c)
+		}
+	}
+	if len(need) == 0 {
+		h.health.markSeeded()
+		return
+	}
+	if err := h.probe.lightStart(h, ctx, need, healthProbeSeedModels); err != nil {
+		return // 已有探测在跑 / 当前没有可探测的模型：下一个间隔再试
+	}
+	h.health.markSeeded()
+}
+
+// runHealthRound 并行探活 routeChannelOrder 里的全部已启用通道，任一已启用通道
+// 「不可达 / 无真调用证据 / 真调用失败」即整轮 OK=false（core 恒启用，故 core
+// 不可达必然失败）。
 func (h *server) runHealthRound(ctx context.Context) healthRound {
 	results := make([]healthChannelResult, len(routeChannelOrder))
 	var wg sync.WaitGroup
@@ -160,9 +264,9 @@ func (h *server) runHealthRound(ctx context.Context) healthRound {
 		if !result.Enabled {
 			continue
 		}
-		// 端口不可达、或端口活着但真调用结论表明该通道无一跳可用，都算不健康。
-		// 只认 Reachable 就是「假绿」：手工探测已测出模型全挂时总览仍报 ok=true。
-		if !result.Reachable || result.ProbeState == "failed" {
+		// 端口不可达、真调用结论为失败、或根本没有真调用结论，都不算健康。
+		// 只认 Reachable 就是「假绿」；把「没测过」也算绿同样是把未知当健康。
+		if !result.Reachable || result.ProbeState != "ok" {
 			round.OK = false
 		}
 	}
@@ -181,7 +285,7 @@ func (h *server) probeChannelHealth(ctx context.Context, c routeChannel) healthC
 	}
 	// 并入手工测速探测的真调用结论（只读缓存，不触发上游调用）。端口活着但
 	// 真调用失败时必须显式暴露，否则总览的绿灯会把「服务在、模型跑不动」瞒过去。
-	result.ProbeState, result.ProbeOKModels, result.ProbeTotalModels, result.ProbeDetail = h.probeVerdict(c)
+	result.ProbeState, result.ProbeOKModels, result.ProbeTotalModels, result.ProbeDetail = h.probeVerdict(ctx, c)
 	return result
 }
 

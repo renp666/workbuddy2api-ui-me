@@ -120,6 +120,18 @@ func (p *probeRunner) snapshot() map[string]any {
 // start 同步抓取各通道目录并规划任务，随后异步执行。ctx 只用于抓目录
 // （随请求生命周期），探测本身用独立 context，避免页面断开中断在途探测。
 func (p *probeRunner) start(h *server, ctx context.Context, wanted []routeChannel) error {
+	return p.startLimited(h, ctx, wanted, 0)
+}
+
+// lightStart 与 start 相同，但每通道只取目录里的前 limit 个模型——供后台
+// 「补齐结论」的轻量探测使用：为了一条通道的状态去跑完整目录（几十个模型、
+// 真消耗额度）代价过高，取代表模型即可判定「该通道当前有没有一跳能真跑通」。
+func (p *probeRunner) lightStart(h *server, ctx context.Context, wanted []routeChannel, limit int) error {
+	return p.startLimited(h, ctx, wanted, limit)
+}
+
+// startLimited 是 start/lightStart 的公共实现；limit<=0 表示不限量（整目录）。
+func (p *probeRunner) startLimited(h *server, ctx context.Context, wanted []routeChannel, limit int) error {
 	var jobs []probeJob
 	for _, c := range wanted {
 		if c == channelOpenCode || !h.channelEnabled(c) {
@@ -128,6 +140,9 @@ func (p *probeRunner) start(h *server, ctx context.Context, wanted []routeChanne
 		ids, ok := h.fetchChannelModels(ctx, c)
 		if !ok {
 			continue
+		}
+		if limit > 0 && len(ids) > limit {
+			ids = ids[:limit]
 		}
 		for _, id := range ids {
 			jobs = append(jobs, probeJob{channel: c, public: id})

@@ -3325,13 +3325,13 @@ test('overview aggregates every enabled channel and filters the metric cards by 
 test('概览通道状态读网关自探结论：没点开过页签的通道也必须有准确状态',async()=>{
   const items=[{ts:1000,uid:'u1',account:'a',model:'cn:m',mode:'sync',prompt_tokens:1,completion_tokens:1,credit:0}];
   const health={ok:false,checked_at:'2026-10-09T03:20:00+08:00',history:[],channels:[
-    {channel:'core',enabled:true,reachable:true,latency_ms:3},
-    {channel:'glm',enabled:true,reachable:true,latency_ms:4},
+    {channel:'core',enabled:true,reachable:true,latency_ms:3,probe_state:'ok'},
+    {channel:'glm',enabled:true,reachable:true,latency_ms:4,probe_state:'ok'},
     {channel:'qoder',enabled:true,reachable:false,latency_ms:3000,detail:'模型目录不可达'},
     {channel:'opencode',enabled:false,reachable:false},
-    {channel:'autoclaw',enabled:true,reachable:true},
+    {channel:'autoclaw',enabled:true,reachable:true,probe_state:'ok'},
     {channel:'trae',enabled:true,reachable:true},
-    {channel:'raccoon',enabled:true,reachable:true},
+    {channel:'raccoon',enabled:true,reachable:true,probe_state:'ok'},
   ]};
   const {ctx,get}=overviewFixture(items,{enabled:true,reachable:true,model_count:3},null,health);
   await vm.runInContext("signedIn({csrf:'c',global_enabled:true,zcode_enabled:true,qoder_enabled:true,opencode_enabled:true,autoclaw_enabled:true,trae_enabled:true,raccoon_enabled:true})",ctx);
@@ -3341,8 +3341,9 @@ test('概览通道状态读网关自探结论：没点开过页签的通道也�
   await new Promise(r=>setImmediate(r));
   const rows=get('overview-channels-body').children;
   const text=td=>td.children.length?td.children[0].textContent:td.textContent;
-  assert.deepEqual(rows.map(tr=>text(tr.children[1])),['运行中','在线','不可达','未启用','在线','在线','在线'],
-    '通道状态没有读网关自探结论，仍在按页签加载时机显示「未加载」');
+  // trae 可达但没有真调用结论（probe_state 缺省）→ 必须标「未探测」，不得画绿灯。
+  assert.deepEqual(rows.map(tr=>text(tr.children[1])),['运行中','在线','不可达','未启用','在线','未探测','在线'],
+    '通道状态没有读网关自探结论（未探测不得当健康）');
   assert.match(get('overview-health-stamp').textContent,/最近一轮/,'自探时间戳缺失，看不出状态是不是实时的');
 });
 
@@ -3577,9 +3578,9 @@ test('状态徽章分五档：可用、打折、不可达、未启用、未探�
   // 概览不能画「在线」——那正是本次要消灭的假绿。
   vm.runInContext("healthState={channels:[{channel:'glm',enabled:true,reachable:true,probe_state:'failed'}]}",ctx);
   assert.equal(pair("overviewChannelStatus('zcode')"),'模型不可用|bad','端口活着但真调用全挂，必须报不可用而不是在线');
-  // 未探测（probe_state 为空）不得被当成失败，仍按页签缓存如实标注。
+  // 未探测（probe_state 为空）既不是失败、也不是健康：如实标「未探测」，绝不画绿灯。
   vm.runInContext("healthState={channels:[{channel:'glm',enabled:true,reachable:true,probe_state:''}]}",ctx);
-  assert.equal(pair("overviewChannelStatus('zcode')"),'在线|ok','未探测不等于失败，不得误报');
+  assert.equal(pair("overviewChannelStatus('zcode')"),'未探测|unknown','未探测不等于失败，但也不等于健康，不得画绿灯');
   vm.runInContext("healthState=null",ctx);
 
   vm.runInContext("lastStatus=null",ctx);

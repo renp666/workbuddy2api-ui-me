@@ -583,10 +583,17 @@ function overviewChannelStatus(channel){
  if(channel==='workbuddy'){
   // core 的探活只回答「桥接通不通」，账号池里有没有账号是另一件事，两者一起读才准。
   if(result&&!result.reachable)return{label:'不可达',tone:'bad'};
+  // 没有真调用结论时不给绿灯——「没测过」不是「健康」，否则就是假绿。
+  if(result&&result.probe_state!=='ok')return{label:'未探测',tone:'unknown'};
   if(!lastStatus)return{label:'未知',tone:'unknown'};
   return lastStatus.total?{label:'运行中',tone:'ok'}:{label:'等待账号',tone:'idle'};
  }
- if(result)return result.reachable?{label:'在线',tone:'ok'}:{label:'不可达',tone:'bad'};
+ if(result){
+  if(!result.reachable)return{label:'不可达',tone:'bad'};
+  // 端口活着但没有真调用结论时标「未探测」，不给绿灯（未知 ≠ 健康）。
+  if(result.probe_state!=='ok')return{label:'未探测',tone:'unknown'};
+  return{label:'在线',tone:'ok'};
+ }
  // 探活还没出结论（或部署没开探活）时退回页签缓存，仍如实标「未加载」，不伪造在线。
  const st=channelStatusOf(channel);
  if(!st)return{label:'未加载',tone:'unknown'};
