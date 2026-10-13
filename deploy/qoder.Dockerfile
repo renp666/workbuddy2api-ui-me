@@ -4,9 +4,13 @@ FROM node:20-alpine
 #   升级步骤：改下面的 tag/版本号 → 重建镜像 → 复核两个 .cjs 补丁仍能应用。
 #   qoder-proxy    : https://github.com/avaritiachaos/qoder-proxy  (tag v1.6.0, 2026-09-05)
 #   qoderclicn npm : @qodercn-ai/qoderclicn@1.1.69                (2026-10-12)
+# GITHUB_MIRROR：github.com 被网络策略拦截时改用镜像（默认仍是官方地址，行为不变）。
+#   语义是「/owner/repo 之前的完整前缀」，所以镜像要连 https://github.com 一起带上，例如：
+#   docker compose build --build-arg GITHUB_MIRROR=https://ghfast.top/https://github.com qoder-proxy
+ARG GITHUB_MIRROR=https://github.com
 RUN apk add --no-cache git \
     && npm install -g @qodercn-ai/qoderclicn@1.1.69 \
-    && git clone --depth 1 --branch v1.6.0 https://github.com/avaritiachaos/qoder-proxy.git /app \
+    && git clone --depth 1 --branch v1.6.0 ${GITHUB_MIRROR}/avaritiachaos/qoder-proxy.git /app \
     && cd /app \
     && npm install --production \
     && apk del git

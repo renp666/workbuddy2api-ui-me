@@ -4,9 +4,13 @@
 FROM node:22-slim
 # OW Bridge 上游版本固定（tag v0.2.9, 2026-10-09），不跟随默认分支：避免上游提交让镜像
 # 「同名不同料」。升级步骤：改 tag → 重建 → 复核 entrypoint 与 console 的分流假设仍成立。
+# GITHUB_MIRROR：github.com 被网络策略拦截时改用镜像（默认仍是官方地址，行为不变）。
+#   语义是「/owner/repo 之前的完整前缀」，所以镜像要连 https://github.com 一起带上，例如：
+#   docker compose build --build-arg GITHUB_MIRROR=https://ghfast.top/https://github.com opencode-proxy
+ARG GITHUB_MIRROR=https://github.com
 RUN apt-get update \
     && apt-get install -y --no-install-recommends git ca-certificates \
-    && git clone --depth 1 --branch v0.2.9 https://github.com/louchi1984-coder/ow-bridge.git /app \
+    && git clone --depth 1 --branch v0.2.9 ${GITHUB_MIRROR}/louchi1984-coder/ow-bridge.git /app \
     && cd /app \
     && npm install --omit=dev --ignore-scripts \
     && apt-get purge -y git \
