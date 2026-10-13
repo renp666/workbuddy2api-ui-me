@@ -600,6 +600,14 @@ function overviewChannelStatus(channel){
  if(!st.enabled)return{label:'未启用',tone:'idle'};
  return st.reachable?{label:'在线',tone:'ok'}:{label:'不可达',tone:'bad'};
 }
+// 红灯原因挂在状态徽标的 title 上：总览每通道只放一个徽标，但排查时要能直接看到
+// 「为什么红、下一步做什么」——优先通道侧的可执行提示（如 raccoon 凭证失效需重导），
+// 其次首个失败模型的原因，最后才是可达性说明。
+function overviewChannelHint(channel){
+ const result=healthChannelResult(channel);
+ if(!result)return '';
+ return result.probe_hint||result.probe_detail||result.detail||'';
+}
 function overviewChannelModelCount(channel){
  if(channel==='workbuddy')return modelList.length;
  const st=channelStatusOf(channel);
@@ -617,11 +625,12 @@ function renderOverview(){
   if(!enabled)continue;
   const s=summarizeUsage(byChannel.get(c)||[]);
   const status=overviewChannelStatus(c);
+  const hint=overviewChannelHint(c);
   const count=overviewChannelModelCount(c);
   const credit=s.calls?formatCreditGroup(s.credit,s.creditMissing,s.calls):'—';
   const tr=document.createElement('tr');
   tr.className='ch-'+c+' ch-band';
-  const td=document.createElement('td');const tag=document.createElement('span');tag.className='badge'+(status.tone?' '+status.tone:'');tag.textContent=status.label;td.append(tag);
+  const td=document.createElement('td');const tag=document.createElement('span');tag.className='badge'+(status.tone?' '+status.tone:'');tag.textContent=status.label;if(hint)tag.title=hint;td.append(tag);
   tr.append(channelCell(usageChannelNames[c],c),td,numCell(count===null?'—':String(count)),numCell(String(s.calls)),tokenCell(s.prompt,s.promptMissing,s.calls),tokenCell(s.completion,s.completionMissing,s.calls),numCell(credit));
   body.append(tr);
  }

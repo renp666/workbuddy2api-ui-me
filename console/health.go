@@ -54,6 +54,10 @@ type healthChannelResult struct {
 	ProbeTotalModels int `json:"probe_total_models,omitempty"`
 	// ProbeDetail 是首个失败模型的原因摘要，便于页面直接解释红灯。
 	ProbeDetail string `json:"probe_detail,omitempty"`
+	// ProbeHint 是通道侧补充的「可执行下一步」，只在红灯且通道确有线索时出现。
+	// 例：raccoon 的凭证被上游拒 → 「token_expired: 请重新导入凭证」，让红灯自带
+	// 处置办法，而不是只丢一句笼统的 no_healthy_account 让人去猜。
+	ProbeHint string `json:"probe_hint,omitempty"`
 }
 
 // probeVerdict 归纳某通道的真调用结论。
@@ -286,6 +290,12 @@ func (h *server) probeChannelHealth(ctx context.Context, c routeChannel) healthC
 	// 并入手工测速探测的真调用结论（只读缓存，不触发上游调用）。端口活着但
 	// 真调用失败时必须显式暴露，否则总览的绿灯会把「服务在、模型跑不动」瞒过去。
 	result.ProbeState, result.ProbeOKModels, result.ProbeTotalModels, result.ProbeDetail = h.probeVerdict(ctx, c)
+	// 账号池通道在红灯时补一条可执行提示：raccoon 的失败绝大多数来自凭证侧
+	// （refresh_token 被上游拒），把账号池记录的 reason 带出来，人才能直接知道要重登
+	// 桌面端再导入，而不是对着 no_healthy_account 干瞪眼。只在失败时取，开销有界。
+	if c == channelRaccoon && result.ProbeState != "ok" {
+		result.ProbeHint = h.raccoonAccountHint(ctx)
+	}
 	return result
 }
 

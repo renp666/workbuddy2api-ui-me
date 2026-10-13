@@ -103,6 +103,21 @@ func TestProbeTimeoutPerChannel(t *testing.T) {
 	}
 }
 
+// TestProbeConcurrencyPerChannel 锁定「core 必须串行探测」这条经验：
+// core 的账号是严格 pin 的，同一 realm 的并发上限等于被锁定账号的在途名额，并发探测
+// 会自己把自己挤成 pinned_account_unavailable，把可用通道成片误判成不可用（本仓踩过：
+// 4 并发扫 core 得到假失败，串行重跑立刻恢复）。其余通道维持默认并发。
+func TestProbeConcurrencyPerChannel(t *testing.T) {
+	if got := probeConcurrencyFor(channelCore); got != 1 {
+		t.Fatalf("core probe concurrency = %d, want 1（严格 pin 账号只能串行）", got)
+	}
+	for _, c := range []routeChannel{channelGLM, channelQoder, channelOpenCode, channelAutoClaw, channelTrae, channelRaccoon} {
+		if got := probeConcurrencyFor(c); got != probeConcurrency {
+			t.Fatalf("%s probe concurrency = %d, want default %d", c, got, probeConcurrency)
+		}
+	}
+}
+
 func TestProbeAdminAuthAndValidation(t *testing.T) {
 	h, _ := routeConsole(t, func(w http.ResponseWriter, r *http.Request) {
 		fmt.Fprint(w, `{"data":[]}`)

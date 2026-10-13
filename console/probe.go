@@ -51,6 +51,25 @@ func probeTimeoutFor(c routeChannel) time.Duration {
 	return probeRequestTimeout
 }
 
+// probeChannelConcurrency 覆盖个别通道的探测并发上限。
+//
+// core 的账号是「严格 pin」的（patch 0010：同一 realm 锁定一个账号、不做故障转移），
+// 其可并发上限 = 被锁定账号的在途名额。并发探测会自己把自己挤成
+// pinned_account_unavailable，把本来可用的通道成片误判成不可用——本仓踩过这个坑：
+// 4 并发扫 core 得到一片假失败，串行重跑立刻恢复（31/38）。因此 core 一律串行探测，
+// 其余通道维持默认并发。未列出的通道一律用 probeConcurrency。
+var probeChannelConcurrency = map[routeChannel]int{
+	channelCore: 1,
+}
+
+// probeConcurrencyFor 返回某通道的探测并发上限。
+func probeConcurrencyFor(c routeChannel) int {
+	if n, ok := probeChannelConcurrency[c]; ok && n > 0 {
+		return n
+	}
+	return probeConcurrency
+}
+
 // probeJob 是一次探测里的单个模型任务，public 是对外形态的模型名。
 type probeJob struct {
 	channel routeChannel
@@ -178,7 +197,9 @@ func (p *probeRunner) run(h *server, jobs []probeJob) {
 		wg.Add(1)
 		go func(c routeChannel, list []probeJob) {
 			defer wg.Done()
-			sem := make(chan struct{}, probeConcurrency)
+			// 并发上限按通道取：core 的严格 pin 账号只能串行（见 probeChannelConcurrency），
+			// 否则探测自己会把通道挤成 pinned_account_unavailable。
+			sem := make(chan struct{}, probeConcurrencyFor(c))
 			var inner sync.WaitGroup
 			for _, job := range list {
 				inner.Add(1)

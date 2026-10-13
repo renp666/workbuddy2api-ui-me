@@ -382,3 +382,78 @@ func TestAdminHealthNotGreenWhenUnproven(t *testing.T) {
 		}
 	}
 }
+
+// TestAdminHealthRaccoonCredentialHint 锁定「账号侧原因要带进健康结论」这条经验：
+// raccoon 端口活着但真调用全失败时，除了 probe_detail，还要把账号池记录的失效原因
+// 带进 probe_hint，让红灯自带可执行下一步（重登桌面端再导入凭证）——只报一句笼统的
+// no_healthy_account，人无法区分「临时冷却」与「凭证已死必须重导」，而后者才是常态。
+func TestAdminHealthRaccoonCredentialHint(t *testing.T) {
+	const reason = "token_expired: 刷新后仍被拒，请重新导入凭证"
+	raccoon := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/healthz":
+			fmt.Fprint(w, "ok")
+		case "/admin/api/accounts":
+			fmt.Fprintf(w, `{"accounts":[{"uid":"raccoon-desktop","reason":%q}]}`, reason)
+		default:
+			w.WriteHeader(404)
+		}
+	}))
+	t.Cleanup(raccoon.Close)
+
+	core := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if !mockInfo(w, r) {
+			fmt.Fprint(w, `{"core":true}`)
+		}
+	}))
+	t.Cleanup(core.Close)
+
+	cfg := testConfig(core.URL)
+	cfg.RaccoonURL = mustParseURL(t, raccoon.URL)
+	cfg.RaccoonKey = strings.Repeat("r", 32)
+	h, err := NewServer(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	srv := h.(*server)
+	srv.probe.record(channelRaccoon, "raccoon-sn-glm-5-3-flash", map[string]any{
+		"ok":       false,
+		"category": "error",
+		"error":    `{"error":{"code":"no_healthy_account"}}`,
+	})
+	srv.probe.record(channelCore, "global:deepseek-v4.1-flash", map[string]any{"ok": true})
+
+	cookie, csrf := login(t, h)
+	w := adminRequest(h, "GET", "/admin/health", "", cookie, csrf)
+	if w.Code != 200 {
+		t.Fatalf("health status=%d %s", w.Code, w.Body)
+	}
+	var got healthResponse
+	if err := json.Unmarshal(w.Body.Bytes(), &got); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if got.OK {
+		t.Fatal("raccoon 真调用全失败时总览不得报 ok=true")
+	}
+	var item *healthChannelResult
+	for i := range got.Channels {
+		if got.Channels[i].Channel == channelRaccoon {
+			item = &got.Channels[i]
+		}
+	}
+	if item == nil {
+		t.Fatal("missing raccoon channel")
+	}
+	if !item.Reachable {
+		t.Fatalf("raccoon 端口应仍判可达，got detail=%q", item.Detail)
+	}
+	if item.ProbeHint != reason {
+		t.Fatalf("raccoon probe_hint=%q, want %q", item.ProbeHint, reason)
+	}
+	// 健康通道不得带提示（只在红灯时才有意义）。
+	for _, c := range got.Channels {
+		if c.Channel == channelCore && c.ProbeHint != "" {
+			t.Fatalf("core probe_hint=%q, want empty", c.ProbeHint)
+		}
+	}
+}

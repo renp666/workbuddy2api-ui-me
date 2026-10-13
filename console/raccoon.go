@@ -115,6 +115,37 @@ func (h *server) raccoonHealth(ctx context.Context) bool {
 	return response.status == 200 && strings.TrimSpace(string(response.body)) == "ok"
 }
 
+// raccoonAccountHint 取 sidecar 账号池里记录的原因（凭证失效 / 无可用账号等），
+// 供健康总览在通道红灯时给出可执行解释。走本地 sidecar，成本可忽略；只在通道已经
+// 判失败时调用，所以健康轮询的额外开销有界。
+//
+// 背景：raccoon 在 Docker 下没有网页登录（登录态依赖宿主 DPAPI），凭证只能从桌面端
+// 导出后粘贴导入；一旦 refresh_token 被上游拒（code 200003），sidecar 只会回一句笼统的
+// no_healthy_account。只报这一句，人无法区分「临时冷却」与「凭证已死、必须重登桌面端再
+// 导入」——后者才是常态。把账号池里的 reason 带出来，红灯才可执行。
+func (h *server) raccoonAccountHint(ctx context.Context) string {
+	if h.cfg.RaccoonURL == nil {
+		return ""
+	}
+	out, code, err := h.raccoonCtl(ctx, "GET", "/admin/api/accounts", nil, raccoonCtlTimeout)
+	if err != nil || code != 200 {
+		return ""
+	}
+	accounts, _ := out["accounts"].([]any)
+	var reasons []string
+	for _, item := range accounts {
+		account, ok := item.(map[string]any)
+		if !ok {
+			continue
+		}
+		reason, _ := account["reason"].(string)
+		if reason = strings.TrimSpace(reason); reason != "" {
+			reasons = append(reasons, reason)
+		}
+	}
+	return strings.Join(reasons, "；")
+}
+
 // adminRaccoonStatus 汇总可选 Raccoon 通道供页签展示。sidecar 不可达仍是成功应答，
 // 只是 reachable:false。/v1/models 与 /status 走桥接密钥鉴权。
 func (h *server) adminRaccoonStatus(w http.ResponseWriter, r *http.Request) {

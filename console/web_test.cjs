@@ -3347,6 +3347,35 @@ test('概览通道状态读网关自探结论：没点开过页签的通道也�
   assert.match(get('overview-health-stamp').textContent,/最近一轮/,'自探时间戳缺失，看不出状态是不是实时的');
 });
 
+test('概览红灯徽标挂可执行提示：raccoon 凭证失效要能直接看到下一步',async()=>{
+  const items=[{ts:1000,uid:'u1',account:'a',model:'cn:m',mode:'sync',prompt_tokens:1,completion_tokens:1,credit:0}];
+  const hint='token_expired: 刷新后仍被拒，请重新导入凭证';
+  const health={ok:false,checked_at:'2026-10-13T05:40:00+08:00',history:[],channels:[
+    {channel:'core',enabled:true,reachable:true,latency_ms:3,probe_state:'ok'},
+    {channel:'glm',enabled:true,reachable:true,latency_ms:4,probe_state:'ok'},
+    {channel:'qoder',enabled:true,reachable:true,probe_state:'ok'},
+    {channel:'opencode',enabled:true,reachable:true,probe_state:'ok'},
+    {channel:'autoclaw',enabled:true,reachable:true,probe_state:'ok'},
+    {channel:'trae',enabled:true,reachable:true,probe_state:'ok'},
+    // raccoon：端口活、真调用失败，并带上账号池记录的可执行原因。
+    {channel:'raccoon',enabled:true,reachable:true,probe_state:'failed',probe_detail:'{"error":{"code":"no_healthy_account"}}',probe_hint:hint},
+  ]};
+  const {ctx,get}=overviewFixture(items,{enabled:true,reachable:true,model_count:3},null,health);
+  await vm.runInContext("signedIn({csrf:'c',global_enabled:true,zcode_enabled:true,qoder_enabled:true,opencode_enabled:true,autoclaw_enabled:true,trae_enabled:true,raccoon_enabled:true})",ctx);
+  await vm.runInContext('loadHealth()',ctx);
+  await vm.runInContext('loadOverview()',ctx);
+  await new Promise(r=>setImmediate(r));
+  const rows=get('overview-channels-body').children;
+  const raccoon=rows.find(tr=>tr.children[1].children[0].textContent==='模型不可用');
+  assert.ok(raccoon,'raccoon 真调用失败应标「模型不可用」');
+  assert.equal(raccoon.children[1].children[0].title,hint,
+    '红灯徽标必须带上通道侧可执行提示，否则人只能看到笼统的「模型不可用」');
+  // 健康通道不得挂提示：title 只在有线索时才出现。
+  const core=rows.find(tr=>tr.children[1].children[0].textContent==='运行中');
+  assert.ok(core,'core 应有绿灯');
+  assert.ok(!core.children[1].children[0].title,'健康通道不该挂红灯提示');
+});
+
 test('overview hides channels the deployment never enabled',async()=>{
   const {ctx,get}=overviewFixture([{ts:1000,uid:'u1',account:'alice',model:'cn:m',mode:'sync',prompt_tokens:1,completion_tokens:2,credit:0}],{enabled:false});
   await vm.runInContext("signedIn({csrf:'c',global_enabled:true,zcode_enabled:true,qoder_enabled:false,opencode_enabled:false})",ctx);
