@@ -56,6 +56,9 @@ SPEC.md
 /spark-output/
 /rp_probe.txt
 
+# Local scratch: channel health-check raw data & helper scripts (out/hc/*)
+/out/
+
 # Host-only entry pin (this machine only; production stays a bare up -d on docker-compose.yml)
 /docker-compose.override.yml
 

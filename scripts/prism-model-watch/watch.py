@@ -67,7 +67,10 @@ def probe_alias(base_url, key, alias, timeout):
     payload = {
         "model": alias,
         "messages": [{"role": "user", "content": "ping"}],
-        "max_tokens": 1,
+        # 32 而不是 1：部分模型族（如 gpt-5.x）对 max_tokens 有下限，给 1 会被上游
+        # 以 400 integer_below_min_value 拒绝，别名本身没问题却被判成探针失败。
+        # 探针只校验 HTTP 200，不校验内容，故 32 足够绕开下限又不拖长生成。
+        "max_tokens": 32,
         "temperature": 0,
     }
     t0 = time.time()
