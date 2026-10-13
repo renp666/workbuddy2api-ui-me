@@ -13,3 +13,4 @@
 0012-stream-interrupt-explicit.patch
 0013-chat-retry-backoff.patch
 0014-auth-denied-trail.patch
+0015-drop-stale-global-model-name.patch

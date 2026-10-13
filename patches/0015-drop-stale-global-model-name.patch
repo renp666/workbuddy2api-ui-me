@@ -1,0 +1,51 @@
+上游模型名单清理（补丁 0015）：从 GlobalModelNames 静态兜底名单移除 deep-model，并同步更新 global_models_test.go 的合并断言。上游已不再提供该模型名——对话返回 400 code=11102 "model [deep-model] service info not found"；而该静态名单只在「global 模型探测失败」时兜底启用，留着它会让 /v1/models 列出一个必然失败的模型，也会让「通道是否可用」的判定把「上游不存在的模型」算成「通道故障」。名单由 21 名变 20 名；探测成功时仍以探测结果为准并追加探测独有模型名，语义不变。
+
+diff --git a/internal/upstream/global_models.go b/internal/upstream/global_models.go
+index e09a028..8c59610 100644
+--- a/internal/upstream/global_models.go
++++ b/internal/upstream/global_models.go
+@@ -19,6 +19,9 @@ import (
+ // GlobalModelNames 国际版（global realm）模型名静态名单兜底（PLAN §7.2 附录 21 名）。
+ // 只含模型名、不含倍率。探测失败 / 无 global 账号时直接输出此名单；
+ // 探测成功时以其 "权威 21 名" 为基底，追加探测独有的模型名（去重）。
++// 补丁 0015：移除 deep-model——上游已不再提供该模型名（对话返回 400 code=11102
++// "model [deep-model] service info not found"），静态兜底名单里留着它，会让
++// /v1/models 列出一个必然失败的模型，也让探测把「上游没有的模型」算成「通道坏」。
+ var GlobalModelNames = []string{
+ 	"default-model",
+ 	"fast-model",
+@@ -27,7 +30,6 @@ var GlobalModelNames = []string{
+ 	"hy4-preview",
+ 	"gpt-5.6-sol",
+ 	"gpt-5.6-terra",
+-	"deep-model",
+ 	"deepseek-v4.1-flash",
+ 	"gpt-6-astra",
+ 	"hy4-preview-f",
+diff --git a/internal/upstream/global_models_test.go b/internal/upstream/global_models_test.go
+index 1ce2a70..203bb58 100644
+--- a/internal/upstream/global_models_test.go
++++ b/internal/upstream/global_models_test.go
+@@ -81,9 +81,9 @@ func TestFetchGlobalModelsProbeMergesAndHeaders(t *testing.T) {
+ 	if gotAuthz != "Bearer at" {
+ 		t.Errorf("probe authz=%q want Bearer at", gotAuthz)
+ 	}
+-	// 合并去重：静态 21 全在；probe-only-x 追加；gpt-5.4 去重为 1；disabled-y 不入。
++	// 合并去重：静态 20 全在；probe-only-x 追加；gpt-5.4 去重为 1；disabled-y 不入。
+ 	counts := map[string]int{}
+-	wantHas := []string{"gpt-5.4", "probe-only-x", "default-model", "kimi-k2.6", "kimi-k3", "deep-model"}
++	wantHas := []string{"gpt-5.4", "probe-only-x", "default-model", "kimi-k2.6", "kimi-k3"}
+ 	for _, id := range got {
+ 		counts[id]++
+ 	}
+@@ -92,6 +92,10 @@ func TestFetchGlobalModelsProbeMergesAndHeaders(t *testing.T) {
+ 			t.Errorf("model %q appears %d times want 1 (overlay+dedupe)", id, counts[id])
+ 		}
+ 	}
++	// 补丁 0015：deep-model 上游已不再提供，静态兜底名单不得再列出它。
++	if _, ok := counts["deep-model"]; ok {
++		t.Errorf("deep-model 上游已不再提供，静态兜底名单不应再列出它")
++	}
+ 	if _, ok := counts["disabled-y"]; ok {
+ 		t.Errorf("disabled model disabled-y should not appear")
+ 	}
