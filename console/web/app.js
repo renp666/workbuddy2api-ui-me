@@ -1041,19 +1041,25 @@ const usageAPINames={chat:'Chat',messages:'Messages',responses:'Responses'};
 // 其余 uid 都是核心账号池的真实账号。分布表按此口径聚合，明细按当前筛选过滤。
 const usageChannelNames={workbuddy:'WorkBuddy',zcode:'GLM（Zcode）',qoder:'Qoder',opencode:'OpenCode',autoclaw:'AutoClaw',trae:'Trae',raccoon:'小浣熊'};
 const usageChannelOrder=['workbuddy','zcode','qoder','opencode','autoclaw','trae','raccoon'];
-// 客户端列的通道标签：旁路那一路的 client 是上游 sidecar 自己报的（Trae 报「Hermes 0.18.0」、
-// GLM 报「WorkBuddy/2.8.0」），光看串认不出是谁；核心那一路本来就是客户端 UA，不加前缀。
+// 客户端列的通道标签：client 一律是调用方自报的 User-Agent（旁路在 console 的 newUsageCapture
+// 取公开口入站头，核心由 console 转发后在 core 的 OriginOf 取），和「通道」列是两个维度——
+// 同一条 UA 能走任一通道，同一通道也混着多个调用方。认不出是谁发的，才前置通道标签
+// 说明这束用量从哪条路进来；核心那一路本来就是客户端 UA，不加前缀。
 // workbuddy 的标签留空即「原样显示」，键的顺序与 usageChannelOrder 一致（有判据按同序反查）。
 const usageChannelTags={workbuddy:'',zcode:'GLM',qoder:'Qoder',opencode:'OpenCode',autoclaw:'AutoClaw',trae:'Trae',raccoon:'小浣熊'};
 function usageChannelOf(entry){const uid=entry.uid||'';return uid==='zcode'||uid==='qoder'||uid==='opencode'||uid==='autoclaw'||uid==='trae'||uid==='raccoon'?uid:'workbuddy';}
-// 客户端列的「准确名称」对照表：旁路 sidecar 报的 raw 串里认得出的关键词 → 这个 agent 的真名。
+// 客户端列的「准确名称」对照表：raw 串里认得出的关键词 → 这个调用方的真名。
 // 只增不改、按序匹配、忽略大小写、含即中（UA 常带版本号，如「Hertz/0.10.1」也认得出）。
-// 只填实测确认过的：认得出就显示「真名（原始串）」，认不出就退回下面的通道标签，绝不猜。
-// 例：Trae CN 的 sidecar 走字节自家的 Hertz 框架，UA 只报「Hertz」，光看串认不出是 Trae。
-const clientAgentNames=[['hertz','Trae CN']];
+// 认得出就显示「真名（原始串）」，认不出就退回上面的通道标签，绝不猜。
+// - Trae CN 的客户端走字节自家的 Hertz 框架，UA 只报「hertz」，光看串认不出是谁
+//   （2026-10-14 从 Trae 发一次调用、落到 core 账号池那行实测）。
+// - hermesApp 用 openai 的 Python SDK，UA 是 SDK 默认串；同族还有 1.86.0、2.8.1 不是它，
+//   所以关键词钉到带版本号的整串。代价：以后再有程序用同一版本 SDK 也会被叫成 Hermes。
+const clientAgentNames=[['hertz','Trae CN'],['openai/python 2.24.0','Hermes']];
 function clientAgentName(raw){const s=String(raw||'').toLowerCase();for(const [needle,name] of clientAgentNames){if(s.includes(needle))return name;}return '';}
 // clientLabel：认得出真名就显示「真名（原始串）」——通道另有专列，不重复挂标签；
-// 认不出才退回通道标签（旁路报的串认不出是谁）；空值仍由调用点显示「—」，不编出「GLM · —」。
+// 认不出才退回通道标签（那条只说明用量从哪条路进来，不代表是谁发的）；
+// 空值仍由调用点显示「—」，不编出「GLM · —」。
 function clientLabel(raw,channel){
  if(!raw)return '';
  const agent=clientAgentName(raw);

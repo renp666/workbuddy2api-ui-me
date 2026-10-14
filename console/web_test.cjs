@@ -3735,8 +3735,8 @@ test('通道归类：usageChannelOrder 里每条通道都能从账本 uid 认出
 test('调用明细的客户端列：旁路通道前置通道标签认是谁报的，核心原样，空值不加前缀',async()=>{
   const items=[
     {ts:1000,uid:'u1',account:'alice',model:'cn:m',mode:'sync',prompt_tokens:1,completion_tokens:1,credit:0,client:'pi/0.78.2'},
-    {ts:1001,uid:'trae',account:'Trae 通道',model:'trae-doubao',mode:'sync',prompt_tokens:1,completion_tokens:1,credit:0,client:'Hermes 0.18.0'},
-    {ts:1002,uid:'zcode',account:'GLM 通道',model:'glm-5.2',mode:'sync',prompt_tokens:1,completion_tokens:1,credit:0,client:'WorkBuddy/2.8.0'},
+    {ts:1001,uid:'trae',account:'Trae 通道',model:'trae-doubao',mode:'sync',prompt_tokens:1,completion_tokens:1,credit:0,client:'curl/8.21.0'},
+    {ts:1002,uid:'zcode',account:'GLM 通道',model:'glm-5.2',mode:'sync',prompt_tokens:1,completion_tokens:1,credit:0,client:'Python-urllib/3.12'},
     {ts:1003,uid:'qoder',account:'Qoder 通道',model:'qoder-x',mode:'sync',prompt_tokens:1,completion_tokens:1,credit:0},
   ];
   const usage=taskFixture(async()=>({ok:true,status:200,json:async()=>({range:'today',items,summary:{}})}));
@@ -3744,7 +3744,9 @@ test('调用明细的客户端列：旁路通道前置通道标签认是谁报�
   const rows=usage.get('usage-body').children;
   const clientOf=tr=>tr.children[10].textContent;
   // 明细最新在上：qoder（无 client）→ zcode → trae → 核心。
-  assert.deepEqual(rows.map(clientOf),['—','GLM · WorkBuddy/2.8.0','Trae · Hermes 0.18.0','pi/0.78.2'],
+  // 两条旁路的 client 都取自「调用方打到 console 公开口的 User-Agent」（账本实测：trae 那路是 curl、zcode 那路是 urllib），
+  // 认不出是谁发的，所以前置通道标签。
+  assert.deepEqual(rows.map(clientOf),['—','GLM · Python-urllib/3.12','Trae · curl/8.21.0','pi/0.78.2'],
     '客户端列没按通道加标签：旁路报的串看不出是谁，核心的 UA 反而被改了写');
   // 色点/类名不受影响：仍然只挂通道名那一格。
   assert.equal(rows[2].children[1].className,'ch-name ch-trae','客户端列的改动串到了通道列');
@@ -3754,7 +3756,7 @@ test('调用明细的客户端列：认得出的串显示准确 agent 名，格�
   const items=[
     {ts:2000,uid:'trae',account:'Trae 通道',model:'trae-x',mode:'sync',prompt_tokens:1,completion_tokens:1,credit:0,client:'Hertz'},
     {ts:2001,uid:'trae',account:'Trae 通道',model:'trae-x',mode:'sync',prompt_tokens:1,completion_tokens:1,credit:0,client:'Hertz/0.10.1'},
-    {ts:2002,uid:'trae',account:'Trae 通道',model:'trae-x',mode:'sync',prompt_tokens:1,completion_tokens:1,credit:0,client:'Hermes 0.18.0'},
+    {ts:2002,uid:'trae',account:'Trae 通道',model:'trae-x',mode:'sync',prompt_tokens:1,completion_tokens:1,credit:0,client:'Go-http-client/1.1'},
     {ts:2003,uid:'u1',account:'alice',model:'cn:m',mode:'sync',prompt_tokens:1,completion_tokens:1,credit:0,client:''},
   ];
   const usage=taskFixture(async()=>({ok:true,status:200,json:async()=>({range:'today',items,summary:{}})}));
@@ -3762,7 +3764,7 @@ test('调用明细的客户端列：认得出的串显示准确 agent 名，格�
   const rows=usage.get('usage-body').children;
   const clientOf=tr=>tr.children[10].textContent;
   // 明细最新在上：空值 → 未识别 → 带版本号的 Hertz → 裸 Hertz。
-  assert.deepEqual(rows.map(clientOf),['—','Trae · Hermes 0.18.0','Trae CN（Hertz/0.10.1）','Trae CN（Hertz）'],
+  assert.deepEqual(rows.map(clientOf),['—','Trae · Go-http-client/1.1','Trae CN（Hertz/0.10.1）','Trae CN（Hertz）'],
     '认得出的串没显示准确 agent 名，或未识别的串没退回通道标签');
   // 原始串必须原样带出：真名是补充，不是替换，否则对不上现场抓的 UA。
   assert.equal(rows[3].children[10].textContent,'Trae CN（Hertz）','原始串被吞了，光看真名对不上现场抓的 UA');
@@ -3781,6 +3783,21 @@ test('调用明细的客户端列：认得出的串显示准确 agent 名，格�
     assert.ok(Array.isArray(row)&&row.length===2&&typeof row[0]==='string'&&row[0].length>0&&typeof row[1]==='string'&&row[1].length>0,
       'clientAgentNames 里有一条不是「非空关键词 → 非空真名」：'+JSON.stringify(row));
   }
+});
+
+test('客户端对照表：Hermes 钉到「OpenAI/Python 2.24.0」整串，同 SDK 的其他版本不被顺带改名',()=>{
+  const {ctx}=taskFixture(async()=>({ok:true,status:200,json:async()=>({}),headers:{get:()=>null}}));
+  const call=expr=>vm.runInContext(expr,ctx);
+  // 2026-10-14 用户裁定：这台机器上报 OpenAI/Python 2.24.0 的调用方是 hermesApp。
+  // 这串是 openai Python SDK 的默认 UA、按版本分家，账本实测同族还有 1.86.0（5628 条）和 2.8.1，
+  // 所以关键词必须带到版本号，否则把不是 hermes 的环境一起改了名。
+  assert.equal(call("clientAgentName('OpenAI/Python 2.24.0')"),'Hermes','2.24.0 没被认成 Hermes');
+  assert.equal(call("clientAgentName('AsyncOpenAI/Python 2.24.0')"),'Hermes','同一个 app 的异步客户端入口没跟着认出来');
+  assert.equal(call("clientAgentName('OpenAI/Python 1.86.0')"),'','钉到版本失效：1.86.0 被顺带改名');
+  assert.equal(call("clientAgentName('OpenAI/Python 2.8.1')"),'','2.8.1 不该算成 2.24.0');
+  // core 侧 SanitizeClientText 会把连续空白并成一个空格再落盘，带空格的关键词才可能稳定 substring 命中。
+  assert.equal(call("clientLabel('OpenAI/Python 2.24.0','zcode')"),'Hermes（OpenAI/Python 2.24.0）',
+    '命中后没走「真名（原始串）」格式，或对旁路多挂了通道标签');
 });
 
 test('两条通道筛选下拉：选项正好等于 usageChannelOrder，新通道不许只加在脚本里',()=>{
