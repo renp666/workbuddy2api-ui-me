@@ -61,9 +61,24 @@ Python 3.10+（`bridge.py` 依赖 `httpx` + `websockets`；`check.py` 纯标准�
   "listen": "127.0.0.1:7865",
   "api_key": "",            // 留空不鉴权；建议设为随机长串
   "auth_dir": "./auths",
-  "mode": "auto"            // auto | openai | relay | proxy
+  "mode": "auto",           // auto | openai | relay | proxy
+  "normalize": true         // 见下方「agent → 模型 归一化」
 }
 ```
+
+### 1.1 `normalize`：把沙箱 agent 当模型反代给 IDE/agent 用
+
+上游 AutoClaw 全系模型背后是**云端沙箱 OpenClaw agent**，不是纯模型。不处理时会出现两个问题：调用方（IDE）的 system prompt 被丢弃、模型自述 `/root/.openclaw-autoclaw/workspace` 沙箱路径。
+
+`"normalize": true` 开启后，bridge 会：
+
+1. **折叠消息**：上游 agent 只接受一个 `message` 字段，把 system 提示词与对话历史折进正文（否则 system 永远到不了模型）；
+2. **前置「网关转发说明」**：告诉上游"调用方上下文随本消息转交、你沙箱内的路径与调用方项目无关"，让 agent 不再自述沙箱、不再调用工具；
+3. **派生会话键**：调用方没给 `user` 时按内容派生 `ac-<sha1>`，避免所有调用方共用 `main` 一个沙箱会话（跨调用方上下文互串）。
+
+> 说明必须是**关于其自身环境也成立的真话**。若写成"你是纯文本模型、不是 agent"，上游会据实反驳（"我具备工具调用能力…不会假装自己没有工具"）并继续自述沙箱。改动这段文案前先想清楚每句是否为真。
+
+实测（`autoclaw-cn:glm-5.3-flash` 经 console 7863）：调用方 system 里的工作目录被正确复述、`tools[]` 声明下不再返回 `tool_calls`、多轮历史保留、跨调用方不串。
 
 ### 2. 运行服务
 

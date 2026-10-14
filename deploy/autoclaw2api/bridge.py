@@ -513,7 +513,10 @@ class Pool:
 class Upstream:
     ZAI_PROXY_CHAT_URL = "https://autoglm-api.autoglm.ai/autoclaw-proxy/proxy/autoclaw/chat/completions"
 
-    def __init__(self, timeout: float = 120.0, user_api_override: str = ""):
+    def __init__(self, timeout: float = 120.0, user_api_override: str = "",
+                 fold_system: bool = False, normalize: bool = False):
+        self.fold_system = fold_system
+        self.normalize = normalize
         self.http = httpx.Client(timeout=timeout, limits=httpx.Limits(max_keepalive_connections=20),
                                  follow_redirects=True)  # 上游 userapi 偶发 307 重定向，默认不跟随会导致 parse failed
         self.user_api_override = user_api_override.rstrip("/")
@@ -702,7 +705,9 @@ class Upstream:
     def chat_proxy(self, a: Auth, body: bytes, model: str):
         url = self.base(a.region) + PROXY_CHAT_PATH
         headers = proxy_chat_headers(a.access_token, model, a.region)
-        payload = _prepare_proxy_body(body, model)
+        payload = _prepare_proxy_body(body, model,
+                                      getattr(self, "fold_system", False),
+                                      getattr(self, "normalize", False))
         resp = self.http.send(
             self.http.build_request("POST", url, content=payload, headers=headers),
             stream=True,
@@ -804,7 +809,7 @@ class Upstream:
         base = a.sandbox_endpoint
         if not base:
             raise UpstreamError("client", 0, 0, f"no sandbox endpoint for account {a.user_id}")
-        req = _build_relay_chat_req(body)
+        req = _build_relay_chat_req(body, getattr(self, "normalize", False))
         ws = None
         try:
             ws = self.open_device_ws(a)
@@ -893,7 +898,8 @@ def _prepare_model_body(body: bytes) -> bytes:
     return json.dumps(obj).encode()
 
 
-def _prepare_proxy_body(body: bytes, model: str) -> bytes:
+def _prepare_proxy_body(body: bytes, model: str, fold_system: bool = False,
+                        normalize: bool = False) -> bytes:
     try:
         obj = json.loads(body)
     except Exception:
@@ -901,6 +907,14 @@ def _prepare_proxy_body(body: bytes, model: str) -> bytes:
     if model:
         obj["model"] = model
     obj.pop("user", None)
+    if fold_system or normalize:
+        msgs = obj.get("messages") or []
+        if any(m.get("role") == "system" for m in msgs) or len(msgs) > 1:
+            try:
+                obj["messages"] = [{"role": "user",
+                                    "content": _fold_messages(msgs, normalize)}]
+            except Exception:
+                pass
     return json.dumps(obj).encode()
 
 
@@ -919,6 +933,25 @@ def _strip_route_prefix(model: str) -> str:
     return model
 
 
+
+# 网关转发说明：必须是「关于自身环境也成立」的陈述。
+# 若这里写"你是纯文本模型"，上游 agent 会据实反驳（"我具备工具调用能力"），
+# 因为那是假话；下面这段关于"谁在读消息、文件内容从哪来"的描述是真的，实测不再反驳。
+NORMALIZE_DIRECTIVE = (
+    "\u3010\u7f51\u5173\u8f6c\u53d1\u8bf4\u660e\u3011\n"
+    "\u4f60\u6b63\u5728\u88ab\u4e00\u4e2a OpenAI \u517c\u5bb9\u7f51\u5173\u8c03\u7528\u3002"
+    "\u8c03\u7528\u65b9\uff08\u4e00\u4e2a IDE/\u7f16\u7801 agent\uff09\u7684\u4e0a\u4e0b\u6587"
+    "\u2014\u2014\u5de5\u4f5c\u76ee\u5f55\u3001\u9879\u76ee\u7ed3\u6784\u3001\u6587\u4ef6\u5185\u5bb9"
+    "\u2014\u2014\u7531\u672c\u6d88\u606f\u4e00\u5e76\u8f6c\u4ea4\u7ed9\u4f60\uff0c"
+    "\u89c1\u4e0b\u65b9\u3010\u8c03\u7528\u65b9\u4e0a\u4e0b\u6587\u3011\u3002\n"
+    "\u8981\u6c42\uff1a\u4ee5\u7eaf\u6587\u672c\u56de\u590d\u8c03\u7528\u65b9\uff1b"
+    "\u4e0d\u8981\u8c03\u7528\u5de5\u5177\u53bb\u8bfb\u6587\u4ef6\u6216\u6267\u884c\u547d\u4ee4"
+    "\uff0c\u56e0\u4e3a\u6240\u9700\u6587\u4ef6\u5185\u5bb9\u5df2\u968f\u6d88\u606f\u63d0\u4f9b\uff1b"
+    "\u4f60\u6c99\u7bb1\u5185\u7684\u8def\u5f84\u4e0e\u8c03\u7528\u65b9\u9879\u76ee\u65e0\u5173\uff0c"
+    "\u53bb\u8bfb\u53ea\u4f1a\u62ff\u5230\u65e0\u5173\u5185\u5bb9\u3002\u9700\u8981\u6539\u4ee3\u7801\u65f6"
+    "\u76f4\u63a5\u8f93\u51fa\u4ee3\u7801\u5757\u3002\n"
+)
+
 def _content_parts_text(parts) -> str:
     sb = []
     for p in parts or []:
@@ -927,24 +960,59 @@ def _content_parts_text(parts) -> str:
     return "".join(sb).strip()
 
 
-def _build_relay_chat_req(body: bytes) -> dict:
-    obj = json.loads(body)
-    req = {"sessionKey": (obj.get("user") or "").strip() or "main"}
-    message = ""
-    for m in reversed(obj.get("messages") or []):
-        if m.get("role") != "user":
-            continue
-        c = m.get("content")
-        if isinstance(c, str):
-            message = c.strip()
-            break
-        if isinstance(c, list):
-            message = _content_parts_text(c)
-            if message:
+def _flat_text(content) -> str:
+    if isinstance(content, str):
+        return content.strip()
+    if isinstance(content, list):
+        return _content_parts_text(content)
+    return ""
+
+
+def _fold_messages(msgs: list, normalize: bool = False) -> str:
+    """把 system 提示词与历史折进单条正文。
+
+    上游 agent 只接受一个 message 字段，直接发 system 角色会被丢掉，
+    调用方（IDE/agent）的工作目录、身份与规则因此永远不生效。
+    normalize=True 时额外前置一段网关转发说明，并给调用方上下文加小标题。
+    """
+    systems = [_flat_text(m.get("content")) for m in msgs if m.get("role") == "system"]
+    systems = [s for s in systems if s]
+    last_user = ""
+    for m in reversed(msgs):
+        if m.get("role") == "user":
+            last_user = _flat_text(m.get("content"))
+            if last_user:
                 break
-    if not message:
+    if not last_user:
         raise ValueError("no user text message found")
-    req["message"] = message
+    parts = []
+    if normalize:
+        parts.append(NORMALIZE_DIRECTIVE)
+    if systems:
+        head = "\u3010\u8c03\u7528\u65b9\u4e0a\u4e0b\u6587\u3011\n" if normalize else ""
+        parts.append(head + "\n\n".join(systems))
+    hist = []
+    for m in msgs:
+        if m.get("role") in ("user", "assistant"):
+            t = _flat_text(m.get("content"))
+            if t:
+                hist.append(f"{m['role']}: {t}")
+    if len(hist) > 1:
+        parts.append("[\u5bf9\u8bdd\u5386\u53f2]\n" + "\n".join(hist[:-1]))
+    parts.append(last_user)
+    return "\n\n".join(parts)
+
+
+def _build_relay_chat_req(body: bytes, normalize: bool = False) -> dict:
+    obj = json.loads(body)
+    msgs = obj.get("messages") or []
+    # 会话键：调用方给了就用；否则按本轮对话内容派生，避免所有调用方共用 "main"
+    # 这一个沙箱 agent 会话（跨调用方上下文互串）。
+    sk = (obj.get("user") or "").strip()
+    if not sk:
+        seed = json.dumps(msgs, ensure_ascii=False, sort_keys=True)
+        sk = "ac-" + hashlib.sha1(seed.encode()).hexdigest()[:16]
+    req = {"sessionKey": sk, "message": _fold_messages(msgs, normalize)}
     if (obj.get("reasoning_effort") or "").strip():
         req["thinking"] = obj["reasoning_effort"].strip()
     return req
@@ -1344,7 +1412,10 @@ class Bridge:
         self.err_cooldown = _dur(cfg.get("cooldown", {}).get("err_cooldown"), 600)
         self.refresh_skew = 600
         self.timeout = float((cfg.get("upstream") or {}).get("timeout_seconds") or 120)
-        self.up = Upstream(self.timeout, (cfg.get("upstream") or {}).get("user_api_base_override") or "")
+        self.up = Upstream(self.timeout,
+                           (cfg.get("upstream") or {}).get("user_api_base_override") or "",
+                           fold_system=bool(cfg.get("fold_system")),
+                           normalize=bool(cfg.get("normalize")))
         self.pools = {
             "cn": Pool("cn", (cfg.get("state_file") or "./data/state.json").replace(".json", ".cn.json")),
             "global": Pool("global", (cfg.get("state_file") or "./data/state.json").replace(".json", ".global.json")),
