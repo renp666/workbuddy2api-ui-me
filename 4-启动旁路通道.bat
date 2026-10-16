@@ -1,6 +1,6 @@
 @echo off
-rem [4] Start the three optional sidecar channels (zcode + qoder + opencode)
-rem next to the already-running core/console stack.
+rem [4] Start every optional sidecar channel (all deploy\compose.*.yml overlays:
+rem zcode, qoder, opencode, autoclaw, trae, traeai, raccoon, freellm).
 rem The first run recreates console once so it picks up the channel routing
 rem env vars (brief 7863 downtime; admin sessions drop).
 rem Sidecars share console's network namespace (network_mode: service:console).
@@ -26,10 +26,21 @@ if not exist "runtime\zcode\config.yaml" (
   pause
   exit /b 1
 )
-rem Full -f chain: all three channels plus the local-image overlays that the
+rem Full -f chain: every channel overlay plus the local-image overlays that the
 rem network-restricted environment needs (qoder/opencode images are built
 rem locally, not pulled).
-docker compose -f docker-compose.build.yaml -f .build\compose.local-build.yaml -f deploy\compose.zcode.yml -f deploy\compose.qoder.yml -f .build\compose.qoder-local.yaml -f deploy\compose.opencode.yml -f .build\compose.opencode-local.yaml up -d
+set FILES=-f docker-compose.build.yaml -f .build\compose.local-build.yaml
+if exist deploy\compose.zcode.yml set FILES=%FILES% -f deploy\compose.zcode.yml
+if exist deploy\compose.qoder.yml set FILES=%FILES% -f deploy\compose.qoder.yml
+if exist .build\compose.qoder-local.yaml set FILES=%FILES% -f .build\compose.qoder-local.yaml
+if exist deploy\compose.opencode.yml set FILES=%FILES% -f deploy\compose.opencode.yml
+if exist .build\compose.opencode-local.yaml set FILES=%FILES% -f .build\compose.opencode-local.yaml
+if exist deploy\compose.autoclaw.yml set FILES=%FILES% -f deploy\compose.autoclaw.yml
+if exist deploy\compose.trae.yml set FILES=%FILES% -f deploy\compose.trae.yml
+if exist deploy\compose.traeai.yml set FILES=%FILES% -f deploy\compose.traeai.yml
+if exist deploy\compose.raccoon.yml set FILES=%FILES% -f deploy\compose.raccoon.yml
+if exist deploy\compose.freellm.yml set FILES=%FILES% -f deploy\compose.freellm.yml
+docker compose %FILES% up -d
 if errorlevel 1 (
   echo [ERROR] Start failed. Check the output above.
   pause

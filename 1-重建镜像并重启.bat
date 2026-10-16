@@ -5,7 +5,7 @@ rem (app.js/index.html are baked into the console binary via go:embed, so a
 rem git push alone never changes the running UI), patches, extensions or the
 rem Dockerfiles. If you changed nothing, use [2] instead (no build step).
 rem
-rem Sidecars (zcode/qoder/opencode) share console's network namespace via
+rem Every sidecar (all deploy\compose.*.yml channels) shares console's network
 rem network_mode: service:console. Recreating console destroys the old
 rem namespace, so every existing sidecar is force-recreated in the SAME
 rem compose call and joins the new namespace. Sidecars you removed with [5]
@@ -40,6 +40,11 @@ if exist deploy\compose.qoder.yml set FILES=%FILES% -f deploy\compose.qoder.yml
 if exist .build\compose.qoder-local.yaml set FILES=%FILES% -f .build\compose.qoder-local.yaml
 if exist deploy\compose.opencode.yml set FILES=%FILES% -f deploy\compose.opencode.yml
 if exist .build\compose.opencode-local.yaml set FILES=%FILES% -f .build\compose.opencode-local.yaml
+if exist deploy\compose.autoclaw.yml set FILES=%FILES% -f deploy\compose.autoclaw.yml
+if exist deploy\compose.trae.yml set FILES=%FILES% -f deploy\compose.trae.yml
+if exist deploy\compose.traeai.yml set FILES=%FILES% -f deploy\compose.traeai.yml
+if exist deploy\compose.raccoon.yml set FILES=%FILES% -f deploy\compose.raccoon.yml
+if exist deploy\compose.freellm.yml set FILES=%FILES% -f deploy\compose.freellm.yml
 
 rem Services: always core + console, plus any sidecar container that EXISTS.
 rem Use docker ps -a (all states): when console stops, sidecars that share
@@ -47,7 +52,7 @@ rem its network are auto-stopped too, so they show Exited but still need to
 rem come back. A FOR-loop body expands %SVCS% only once at parse time, so
 rem accumulating it REQUIRES delayed expansion (!SVCS!), not %SVCS%.
 set SVCS=core console
-for %%n in (zcode-proxy qoder-proxy opencode-proxy) do (
+for %%n in (zcode-proxy qoder-proxy opencode-proxy autoclaw-proxy trae-proxy traeai-proxy raccoon-proxy freellmapi) do (
   docker ps -a --format "{{.Names}}" | findstr /c:"workbuddy2api-ui-me-%%n-1" >nul
   if not errorlevel 1 set SVCS=!SVCS! %%n
 )

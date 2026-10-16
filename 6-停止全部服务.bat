@@ -1,6 +1,6 @@
 @echo off
-rem [6] Stop and remove the ENTIRE local stack: core + console + all three
-rem sidecars. Containers and the compose network are removed; both :dev
+rem [6] Stop and remove the ENTIRE local stack: core + console + every
+rem sidecar. Containers and the compose network are removed; both :dev
 rem images and everything under runtime\ stay untouched, so the next start
 rem restores accounts, keys and data as-is.
 rem (Stopping console also takes down the sidecars that share its network,
@@ -18,7 +18,17 @@ if not exist ".build\compose.local-build.yaml" (
   pause
   exit /b 1
 )
-set FILES=-f docker-compose.build.yaml -f .build\compose.local-build.yaml -f deploy\compose.zcode.yml -f deploy\compose.qoder.yml -f .build\compose.qoder-local.yaml -f deploy\compose.opencode.yml -f .build\compose.opencode-local.yaml
+set FILES=-f docker-compose.build.yaml -f .build\compose.local-build.yaml
+if exist deploy\compose.zcode.yml set FILES=%FILES% -f deploy\compose.zcode.yml
+if exist deploy\compose.qoder.yml set FILES=%FILES% -f deploy\compose.qoder.yml
+if exist .build\compose.qoder-local.yaml set FILES=%FILES% -f .build\compose.qoder-local.yaml
+if exist deploy\compose.opencode.yml set FILES=%FILES% -f deploy\compose.opencode.yml
+if exist .build\compose.opencode-local.yaml set FILES=%FILES% -f .build\compose.opencode-local.yaml
+if exist deploy\compose.autoclaw.yml set FILES=%FILES% -f deploy\compose.autoclaw.yml
+if exist deploy\compose.trae.yml set FILES=%FILES% -f deploy\compose.trae.yml
+if exist deploy\compose.traeai.yml set FILES=%FILES% -f deploy\compose.traeai.yml
+if exist deploy\compose.raccoon.yml set FILES=%FILES% -f deploy\compose.raccoon.yml
+if exist deploy\compose.freellm.yml set FILES=%FILES% -f deploy\compose.freellm.yml
 docker compose %FILES% down
 if errorlevel 1 (
   echo [ERROR] Stop failed. Check the output above.

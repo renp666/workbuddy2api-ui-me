@@ -1,6 +1,6 @@
 @echo off
-rem [5] Stop and remove the three optional sidecar channels
-rem (zcode-proxy + qoder-proxy + opencode-proxy).
+rem [5] Stop and remove every optional sidecar channel
+rem (zcode/qoder/opencode/autoclaw/trae/traeai/raccoon + freellmapi).
 rem Core and console keep running; runtime\zcode, runtime\qoder and
 rem runtime\opencode data stay on disk. Console keeps the channel env vars
 rem until the next restart, so the tabs simply report the channels as
@@ -18,20 +18,30 @@ if not exist ".build\compose.local-build.yaml" (
   pause
   exit /b 1
 )
-set FILES=-f docker-compose.build.yaml -f .build\compose.local-build.yaml -f deploy\compose.zcode.yml -f deploy\compose.qoder.yml -f .build\compose.qoder-local.yaml -f deploy\compose.opencode.yml -f .build\compose.opencode-local.yaml
-docker compose %FILES% stop zcode-proxy qoder-proxy opencode-proxy
+set FILES=-f docker-compose.build.yaml -f .build\compose.local-build.yaml
+if exist deploy\compose.zcode.yml set FILES=%FILES% -f deploy\compose.zcode.yml
+if exist deploy\compose.qoder.yml set FILES=%FILES% -f deploy\compose.qoder.yml
+if exist .build\compose.qoder-local.yaml set FILES=%FILES% -f .build\compose.qoder-local.yaml
+if exist deploy\compose.opencode.yml set FILES=%FILES% -f deploy\compose.opencode.yml
+if exist .build\compose.opencode-local.yaml set FILES=%FILES% -f .build\compose.opencode-local.yaml
+if exist deploy\compose.autoclaw.yml set FILES=%FILES% -f deploy\compose.autoclaw.yml
+if exist deploy\compose.trae.yml set FILES=%FILES% -f deploy\compose.trae.yml
+if exist deploy\compose.traeai.yml set FILES=%FILES% -f deploy\compose.traeai.yml
+if exist deploy\compose.raccoon.yml set FILES=%FILES% -f deploy\compose.raccoon.yml
+if exist deploy\compose.freellm.yml set FILES=%FILES% -f deploy\compose.freellm.yml
+docker compose %FILES% stop zcode-proxy qoder-proxy opencode-proxy autoclaw-proxy trae-proxy traeai-proxy raccoon-proxy freellmapi
 if errorlevel 1 (
   echo [ERROR] Stop failed. Check the output above.
   pause
   exit /b 1
 )
-docker compose %FILES% rm -f zcode-proxy qoder-proxy opencode-proxy
+docker compose %FILES% rm -f zcode-proxy qoder-proxy opencode-proxy autoclaw-proxy trae-proxy traeai-proxy raccoon-proxy freellmapi
 if errorlevel 1 (
   echo [ERROR] Remove failed. Check the output above.
   pause
   exit /b 1
 )
 echo.
-echo All three channels stopped and removed. Start them again with [4].
+echo All channels stopped and removed. Start them again with [4].
 pause
 exit /b 0
