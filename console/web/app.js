@@ -26,6 +26,9 @@ let modelsGroupByAccount = true;
 let overviewUsageRange = 'today', overviewUsageChannel = 'all', overviewUsageItems = [], overviewGeneration = 0;
 // healthState 是 GET /admin/health 的最近一轮结论（console 自己探的网关与全部已登记通道）。
 let healthState = null, healthGeneration = 0, healthPollTimer;
+// errorsWindow 是错误统计区块当前的窗口档（15m/1h/24h，默认 15m，与后端默认一致）；
+// errorsState 是 GET /admin/errors 的最近一份聚合（成功+失败样本，重启从零累计）。
+let errorsWindow = '15m', errorsState = null, errorsGeneration = 0;
 let selectedTaskRun, historyGeneration = 0, historyLoading = false, taskHistoryKey;
 const taskIntents = new Map(), taskReads = new Set();
 function newConversation() { return `web-${Date.now()}-${Math.random().toString(36).slice(2)}`; }
@@ -74,6 +77,7 @@ function signedOut() {
  probeSnapshot={running:false,done:0,total:0,channels:{}};probeTarget='';probeBusy=false;clearTimeout(probeTimer);probeTimer=undefined;for(const n of Object.keys(probeChannelNames)){$('probe-'+n+'-progress').hidden=true;$('probe-'+n+'-progress').textContent='';}
 $('refresh-stamp').hidden=true;$('refresh-stamp').textContent='';
  overviewUsageItems=[];overviewGeneration++;healthState=null;healthGeneration++;clearTimeout(healthPollTimer);healthPollTimer=undefined;
+ errorsState=null;errorsGeneration++;errorsWindow='15m';setErrorsWindowButtons();
  pinState={cn:null,global:null};lastStatus=null;renderPinBanner();
 }
 async function signedIn(session) {
@@ -92,7 +96,7 @@ async function signedIn(session) {
  traeEnabled = !!session.trae_enabled; $('nav-trae').classList.toggle('nav-muted', !traeEnabled);
  raccoonEnabled = !!session.raccoon_enabled; $('nav-raccoon').classList.toggle('nav-muted', !raccoonEnabled);
  await refreshStatus(); await refreshModels(); await loadPins();
- void loadModelHeat(); void loadModelSwitch(); void loadGlobalHeat(); void loadOverview(true); void restoreProbe(); void loadHealth(true);
+ void loadModelHeat(); void loadModelSwitch(); void loadGlobalHeat(); void loadOverview(true); void restoreProbe(); void loadHealth(true); void loadErrorStats(true);
 }
 const pageNames = {overview:'运行概览',workbuddy:'WorkBuddy 通道',zcode:'Zcode 通道',qoder:'Qoder 通道',opencode:'OpenCode 通道',freellm:'FreeLLMAPI 通道',ccr:'CCR 网关',autoclaw:'AutoClaw 通道',trae:'Trae 通道',traeai:'Trae 国际版通道',raccoon:'小浣熊通道',usage:'调用统计',routes:'Agent 接入',access:'API 接入'};
 const workbuddyNames = {accounts:'账号管理',tasks:'自动任务',models:'模型列表',chat:'对话测试'};
@@ -125,7 +129,7 @@ function showPage(value) {
  if (page !== 'access') { $('api-key').value = ''; $('api-key').type = 'password'; }
  if (page === 'workbuddy') setWorkBuddyView(workbuddyView);
  if (page === 'workbuddy' && workbuddyView === 'tasks') loadTaskPage();
- if (page === 'overview') { loadOverview(); loadHealth(); loadMissingChannelStatuses(); scheduleHealthPoll(); }
+ if (page === 'overview') { loadOverview(); loadHealth(); loadErrorStats(); loadMissingChannelStatuses(); scheduleHealthPoll(); }
  if (page === 'usage') { loadUsage(); loadUsageDaily(); }
  if (page === 'zcode') loadZcode();
  if (page === 'qoder') loadQoder();
@@ -209,7 +213,10 @@ const modelChannels={zcode:{body:'zcode-models-body',empty:'zcode-models-empty',
  core:{body:'core-models-body',empty:'core-models-empty',namePrefix:''}};
 // alias_disabled / model_disabled 是别名测试在发出上游请求之前就判定的结果，
 // 与探测失败（真的打了上游才失败）区分开，页面上一眼能看出该去哪儿改。
-const modelFailureLabels={timeout:'探测超时',access:'地区限制',error:'调用失败',model_error:'模型错误',auth:'未授权',rate_limit:'限流',empty:'空返回',alias_disabled:'别名已停用',model_disabled:'模型已停用'};
+// 前端已认识的键（timeout/access/error/model_error/auth/rate_limit/empty/alias_disabled/
+// model_disabled）语义必须原样不变；健康检查 M1 只做加法，补上后端新口径的两个键
+// （upstream_error/pin）与保留值 form_error，未登记的键仍原样回显，不吞掉信息。
+const modelFailureLabels={timeout:'探测超时',access:'地区限制',error:'调用失败',model_error:'模型错误',auth:'未授权',rate_limit:'限流',upstream_error:'上游错误',pin:'账号锁定',form_error:'响应串味',empty:'空返回',alias_disabled:'别名已停用',model_disabled:'模型已停用'};
 const modelProbeSources={probe:'探测',request:'真实请求'};
 // 公共模型名带通道前缀（opencode-OC · X / glm-X / opencode/x）与 realm 前缀（cn:/global:），去掉后作为跨源对齐键。
 function modelKey(id){return String(id||'').replace(/^opencode-OC · /,'').replace(/^OC · /,'').replace(/^opencode\//,'').replace(/^(?:cn|global):/,'').replace(/^glm-/,'').replace(/^qoder-/,'').replace(/^autoclaw-/,'').replace(/^trae-/,'').replace(/^traeai-/,'').replace(/^raccoon-/,'').replace(/^freellm-/,'').toLowerCase().replace(/[^a-z0-9\u4e00-\u9fa5]+/g,'');}
@@ -677,7 +684,125 @@ function renderOverview(){
  $('overview-usage-note').textContent=notes.join('；');$('overview-usage-note').hidden=!notes.length;
  renderTrend(items);
  renderCards();
+ renderErrorStats();
 }
+// ── 错误统计区块（健康检查 M1 · F5，PRD §2-F5）──
+// 数据源是 GET /admin/errors?window=15m|1h|24h：窗口内的成功/失败调用聚合（成功是错误率
+// 的分母，所以窗口是「无数据=无统计」而不是「只记失败」）。这里只渲染服务端给的数，不在
+// 前端重算错误率或补零——样本为 0 时错误率写「—」，绝不把「没观测」粉饰成 0%。
+const errorsWindowButtons=[['15m','errors-window-15m'],['1h','errors-window-1h'],['24h','errors-window-24h']];
+const errorsWindowLabels={'15m':'近 15 分钟','1h':'近 1 小时','24h':'近 24 小时'};
+function errorCategoryLabel(category){return modelFailureLabels[category]||category||'未知';}
+// formatErrorRate 把 0..1 的错误率写成一位小数百分比；非数值（含未观测）写「—」。
+function formatErrorRate(value){
+ const n=Number(value);
+ return Number.isFinite(n)?(n*100).toFixed(1)+'%':'—';
+}
+function formatErrorTime(ts){
+ const at=new Date(Number(ts));
+ return Number.isNaN(at.getTime())?'':at.toLocaleTimeString('zh-CN',{hour12:false});
+}
+function setErrorsWindowButtons(){
+ // 老测试夹具的假元素不一定实现 setAttribute（只实现了 textContent/hidden 等）；
+ // 缺方法时静默跳过，按钮态是纯展示，不该把页面初始化拖挂。
+ for(const [key,id] of errorsWindowButtons){const button=$(id);if(button&&typeof button.setAttribute==='function')button.setAttribute('aria-pressed',String(key===errorsWindow));}
+}
+// setErrorsWindow 切换三档窗口：只改档位并重取聚合，样本切片由后端做（前端不缓存各档）。
+function setErrorsWindow(key){
+ if(key===errorsWindow||!errorsWindowButtons.some(entry=>entry[0]===key))return;
+ errorsWindow=key;setErrorsWindowButtons();
+ if(page==='overview')void loadErrorStats();
+}
+async function loadErrorStats(quiet){
+ if(!csrf)return;
+ const generation=errorsGeneration;
+ try{
+  const data=await jsonAPI('errors?window='+errorsWindow);
+  if(generation!==errorsGeneration)return;
+  errorsState=data;
+  renderErrorStats();
+ }catch(error){
+  if(generation!==errorsGeneration)return;
+  // 失败信息落在区块自己的时间戳行上，不抢整页的 notice（健康页同时有多个加载器）。
+  const stamp=$('errors-stamp');if(stamp)stamp.textContent=`错误统计读取失败：${error.message}`;
+  if(!quiet)notice(error.message);
+ }
+}
+function renderErrorStats(){
+ const data=errorsState||{window:errorsWindow,ok:0,fail:0,error_rate:0,channels:[],categories:[],recent:[]};
+ const calls=(data.ok||0)+(data.fail||0);
+ $('errors-calls').textContent=String(calls);
+ $('errors-fail').textContent=String(data.fail||0);
+ // 样本为 0 时错误率是「没有观测」而不是「0%」：写「—」，不伪造一个漂亮数字。
+ $('errors-rate').textContent=calls?formatErrorRate(data.error_rate):'—';
+ const stamp=$('errors-stamp');
+ if(stamp)stamp.textContent=`窗口：${errorsWindowLabels[errorsWindow]||errorsWindow} · 样本 ${calls} 次`;
+ renderErrorCategories(data);
+ renderErrorChannels(data);
+ renderErrorRecent(data);
+}
+// renderErrorCategories 类别分布：失败次数 + 占比条（占比分母是窗口内失败总数）。
+function renderErrorCategories(data){
+ const body=$('errors-categories-body');body.replaceChildren();
+ const rows=data.categories||[];
+ $('errors-categories-empty').hidden=rows.length>0;
+ for(const row of rows){
+  const tr=document.createElement('tr');
+  tr.append(cell(errorCategoryLabel(row.category)),numCell(String(row.fail)),shareCell(row.share,1));
+  body.append(tr);
+ }
+}
+// renderErrorChannels 按通道错误数表：一行一条通道，类别与失败最多的模型挂在同一行。
+function renderErrorChannels(data){
+ const body=$('errors-channels-body');body.replaceChildren();
+ const rows=data.channels||[];
+ $('errors-channels-empty').hidden=rows.length>0;
+ for(const row of rows){
+  const key=channelKeyOf(row.channel);
+  const tr=document.createElement('tr');tr.className='ch-'+key+' ch-band';
+  const categories=Object.entries(row.categories||{}).map(([name,count])=>`${errorCategoryLabel(name)} ×${count}`).join('、')||'—';
+  const top=(row.top_models||[])[0];
+  tr.append(channelCell(usageChannelNames[key]||row.channel,row.channel),numCell(String(row.ok||0)),numCell(String(row.fail||0)),numCell(formatErrorRate(row.error_rate)),cell(categories),cell(top?`${top.model}（失败 ${top.fail}）`:'—'));
+  body.append(tr);
+ }
+}
+// renderErrorRecent 最近 20 条错误事件流水：每张卡一张事件，摘要收进 <details> 里，
+// 展开才看得到（摘要可能很长，默认全展开会把整页撑爆）。摘要已由服务端脱敏。
+function renderErrorRecent(data){
+ const wrap=$('errors-recent');wrap.replaceChildren();
+ const rows=(data.recent||[]).slice(0,20);
+ $('errors-recent-empty').hidden=rows.length>0;
+ for(const ev of rows){
+  const card=document.createElement('article');card.className='panel task-card';
+  const head=document.createElement('div');head.className='task-card-heading';
+  const title=document.createElement('h3');title.textContent=`${errorCategoryLabel(ev.category)} · ${ev.channel||'未知通道'}`;
+  const when=document.createElement('span');when.className='muted small';when.textContent=formatErrorTime(ev.ts);
+  head.append(title,when);
+  const meta=document.createElement('p');meta.className='muted small';meta.textContent=errorEventMeta(ev);
+  card.append(head,meta);
+  if(ev.error_snippet){
+   const details=document.createElement('details');
+   const summary=document.createElement('summary');summary.textContent='展开上游摘要';
+   const pre=document.createElement('pre');pre.className='task-log';pre.textContent=ev.error_snippet;
+   details.append(summary,pre);card.append(details);
+  }
+  wrap.append(card);
+ }
+}
+// errorEventMeta 拼一张错误卡片的元信息行：别名 / 模型 / api / 模式 / 上游状态 / 耗时。
+// 缺失的字段整段省略，不写「undefined」也不编占位值。
+function errorEventMeta(ev){
+ const parts=[];
+ if(ev.alias)parts.push(`别名 ${ev.alias}`);
+ if(ev.model_resolved)parts.push(`模型 ${ev.model_resolved}`);
+ if(ev.api)parts.push(usageAPINames[ev.api]||ev.api);
+ if(ev.mode)parts.push(usageModeNames[ev.mode]||ev.mode);
+ if(ev.upstream_status)parts.push(`上游 ${ev.upstream_status}`);
+ if(Number.isFinite(Number(ev.duration_ms))&&Number(ev.duration_ms)>0)parts.push(`${ev.duration_ms} ms`);
+ return parts.join(' · ')||'无更多字段';
+}
+for(const [key,id] of errorsWindowButtons)$(id).addEventListener('click',()=>setErrorsWindow(key));
+setErrorsWindowButtons();
 // cardStats/cardActions 描述每张通道卡片的统计行与快捷入口。WorkBuddy 卡片直接读账号池
 // 快照（lastStatus/accounts），旁路卡片复用各页签已加载的状态缓存，缺失时如实显示「—」，
 // 不伪造在线或凭据态；未启用的通道不渲染卡片（与通道总览表同一口径）。
@@ -960,7 +1085,7 @@ async function refreshModels() {
 function updateModelHint() { const realm=$('model').value.startsWith('global:')?'global':'cn'; $('model-hint').textContent=accounts.some(a=>(a.realm||'cn')===realm&&!a.disabled)?'模型列表可能包含静态候选；是否可调用以实际回答为准。':'当前没有此版本的已启用账号，请先添加对应账号。'; }
 function updateEfforts() { const model=modelList.find(m=>m.id===$('model').value),previous=$('effort').value;$('effort').replaceChildren(new Option('默认',''));for(const e of model?.reasoning_supported_efforts||[])$('effort').append(new Option(e,e));$('effort').value=model?.reasoning_supported_efforts?.includes(previous)?previous:'';$('effort').disabled=!!activeRequest||protocol==='anthropic'||!model?.reasoning_supported_efforts?.length;updateModelHint(); }
 $('model').addEventListener('change',updateEfforts);
-runTopRefresh($('refresh'),async()=>{await refreshStatus();await refreshModels();await loadHealth();});
+runTopRefresh($('refresh'),async()=>{await refreshStatus();await refreshModels();await loadHealth();await loadErrorStats();});
 setInterval(()=>{if(csrf&&!document.hidden){refreshStatus();void loadPins();}},15000);
 
 const taskNames={checkin:'签到',travel:'猫猫旅行',activity:'活跃上报',keepalive:'Token 保活',school:'开学季',cat:'夜猫子'};

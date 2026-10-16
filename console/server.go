@@ -137,6 +137,9 @@ type server struct {
 	// ledger 是错误事件账本（errors-YYYYMMDD.jsonl，append-only、按天轮转）。
 	// 为 nil 时失败调用不落盘，只进内存窗口。
 	ledger *errorLedger
+	// alerts 是 P1 告警账本（alerts.jsonl 单文件、保留 30 天 + 内存环形缓冲）。
+	// 为 nil 时不做告警检测；与 outcomes/ledger 同一道模块总开关（HealthProbe）。
+	alerts *alertLedger
 	// zcodeQuota 缓存 zcode 账号在 Z.AI 侧的真实模型权益（sidecar GET /quota 的
 	// balances[].showName），GLM 目录按它过滤，不再靠档位名推断。
 	zcodeQuota *zcodeQuotaCache
@@ -272,6 +275,8 @@ func NewServer(cfg Config) (http.Handler, error) {
 		h.outcomes = newOutcomeWindow()
 		h.ledger = newErrorLedger(dir)
 		h.ledger.cleanup(time.Now())
+		h.alerts = newAlertLedger(dir)
+		h.alerts.cleanup(time.Now())
 	}
 	h.zcodeQuota = &zcodeQuotaCache{}
 	assets, err := fs.Sub(webFiles, "web")
@@ -401,6 +406,9 @@ func NewServer(cfg Config) (http.Handler, error) {
 	// 错误统计：GET 聚合窗口内的成功/失败样本（健康检查 M1 · F1），供健康页
 	// 「错误统计」区块消费；数据源是内存滚动窗口，不读失败账本（避免错误率虚高）。
 	h.mux.HandleFunc("GET /admin/errors", h.withAdmin(h.adminErrors))
+	// P1 告警：GET 最近告警事件（新在前），供 Hermes 定时轮询与页面留痕（健康检查
+	// M1 · F4）；检测与落盘在错误落账的异步链路上，通知侧不在 console 代码范围。
+	h.mux.HandleFunc("GET /admin/alerts", h.withAdmin(h.adminAlerts))
 	h.mux.HandleFunc("POST /admin/access", h.withAdmin(func(w http.ResponseWriter, r *http.Request) {
 		if _, err := h.coreInfo(r.Context()); err != nil {
 			adminError(w, 503, err.Error())

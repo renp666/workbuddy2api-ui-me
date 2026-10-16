@@ -3853,6 +3853,7 @@ test('overview page, probe buttons and the speed column exist in the page shell'
   assert.ok(!html.match(/尽在这里|开始你的下一次对话|接入你喜欢的客户端|一切，从连接开始|给模型起个名字/),'marketing page copy is back');
 });
 
+
 test('alias delete asks for a second click before it writes the route file',async()=>{
   const {ctx,get,posts}=routeFixture({enabled:true,auto_model:'gateway-auto',auto_fallback:'',default_auto_fallback:'cn:auto',
     auto_preview:{routed_model:'cn:workbuddy',channel:'core',reason:'探测可用',fallback:false},

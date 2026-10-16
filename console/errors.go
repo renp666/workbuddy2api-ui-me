@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/json"
+	"fmt"
 	"log"
 	"net/http"
 	"os"
@@ -20,9 +21,16 @@ import (
 //     并提供 GET /admin/errors 聚合查询。
 //   - F2 错误归类统一口径：与 probe 共用一份分类函数（probe.go 的 failureCategory）。
 //
-// 纪律（红线 1/3/4）：落账在独立协程里跑，绝不阻塞调用主链路，失败保持沉默——统计是
-// 尽力而为，不是调用契约；error_snippet 落盘前脱敏（不含 key/token/账号）；只用标准库
-// + JSONL，不建数据库、不新增第三方依赖（go.mod 不动）。
+// 健康检查模块 M1 · 批 D（PRD §2-F4/F5）：
+//
+//   - F4 P1 告警事件：在错误落账的同一条异步链路上检测 P1 规则（别名窗口错误率 >50%
+//     且样本 ≥5、任一 pin 类错误），命中后 append alerts.jsonl（单文件、保留 30 天）
+//     并提供 GET /admin/alerts。通知侧由 Hermes 轮询，console 不引入任何外部通知依赖。
+//   - F5 健康页错误统计区块消费 F1 的 /admin/errors（见 web/app.js）。
+//
+// 纪律（红线 1/3/4）：落账与告警检测都在独立协程里跑，绝不阻塞调用主链路，失败保持
+// 沉默——统计是尽力而为，不是调用契约；error_snippet 落盘前脱敏（不含 key/token/账号）；
+// 只用标准库 + JSONL，不建数据库、不新增第三方依赖（go.mod 不动）。
 //
 // 采集点在 proxy.go 的 observePublicExits：它包装 /v1/* 出口，记录响应状态与响应体
 // 摘要，请求结束后交给这里的 finishExitObserve 归档。
@@ -42,6 +50,24 @@ const (
 	errorRecentKeep = 50
 	// errorWindowMaxSamples 是滚动窗口的样本上限：超过丢最旧，保证内存有界。
 	errorWindowMaxSamples = 20000
+	// alertRetention 是 alerts.jsonl 的保留时长（PRD §2-F4：保留 30 天）。单文件追加，
+	// 过期靠「启动/跨天时按 ts 重写」实现——事件量小（P1 命中才有），重写代价可忽略。
+	alertRetention = 30 * 24 * time.Hour
+	// alertSuppressWindow 是同 (channel, category) 的抑制窗口（PRD §2-F4：30min 只出一条）。
+	alertSuppressWindow = 30 * time.Minute
+	// alertRecentKeep 是 /admin/alerts 内存留存的最近告警条数（新在前）。
+	alertRecentKeep = 200
+	// alertLevelP1 是 M1 唯一的告警级别：规则命中的都是「必须人看」的事。
+	alertLevelP1 = "P1"
+	// alertRuleAliasErrorRate / alertRulePinError 是两条 P1 规则的稳定标识。
+	alertRuleAliasErrorRate = "alias_error_rate"
+	alertRulePinError       = "pin_error"
+	// alertAliasWindow 是别名错误率规则看的滚动窗口（PRD §2-F4：15min）。
+	alertAliasWindow = 15 * time.Minute
+	// alertAliasMinSamples 是别名错误率规则的最小调用样本（PRD §2-F4：≥5）。
+	alertAliasMinSamples = 5
+	// alertAliasRateThreshold 是别名错误率阈值，严格大于才告警。
+	alertAliasRateThreshold = 0.5
 )
 
 // errorWindowFor 把查询参数换成窗口时长。未知值一律拒绝，不让前端拼错参数时静默
@@ -313,6 +339,7 @@ func (l *errorLedger) cleanup(now time.Time) {
 
 type outcomeSample struct {
 	ts       time.Time
+	alias    string // 命中别名时的客户端原名（未命中留空）
 	channel  routeChannel
 	model    string // 通道原生模型名
 	ok       bool
@@ -336,7 +363,7 @@ func (w *outcomeWindow) add(ev errorEvent, ok bool) {
 	w.mu.Lock()
 	defer w.mu.Unlock()
 	w.samples = append(w.samples, outcomeSample{
-		ts: time.UnixMilli(ev.Ts), channel: routeChannel(ev.Channel), model: ev.ModelResolved,
+		ts: time.UnixMilli(ev.Ts), alias: ev.Alias, channel: routeChannel(ev.Channel), model: ev.ModelResolved,
 		ok: ok, category: ev.Category,
 	})
 	if !ok {
@@ -424,6 +451,40 @@ func (w *outcomeWindow) collect(window time.Duration) outcomeAggregate {
 		}
 	}
 	return agg
+}
+
+// aliasWindowStats 汇总某个别名在窗口内的调用样本。样本不足时仍如实返回计数，
+// 是否告警由调用方按「样本 ≥5 且错误率 >50%」判定——这里不替调用方做决定。
+// alias 为空时返回零值（未命中别名的调用不参与别名级告警）。
+func (w *outcomeWindow) aliasWindowStats(alias string, window time.Duration) (stats windowStats, dominant string) {
+	if alias == "" {
+		return windowStats{}, ""
+	}
+	cutoff := w.now().Add(-window)
+	byCategory := map[string]int{}
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	for i := len(w.samples) - 1; i >= 0; i-- {
+		sample := w.samples[i]
+		if sample.ts.Before(cutoff) {
+			break
+		}
+		if sample.alias != alias {
+			continue
+		}
+		stats = stats.plus(sample)
+		if !sample.ok && sample.category != "" {
+			byCategory[sample.category]++
+		}
+	}
+	// 主因取窗口内失败最多的类别（同数按类别名稳定排序），用于告警归类与抑制键。
+	best := 0
+	for category, count := range byCategory {
+		if count > best || (count == best && category < dominant) {
+			best, dominant = count, category
+		}
+	}
+	return stats, dominant
 }
 
 // recentFailures 返回最近 n 条失败事件（新在前）。
@@ -611,10 +672,225 @@ func (h *server) finishExitObserve(obs exitObservation) {
 // recordErrorAsync 独立协程落账，纪律与 reportUsageAsync 一致：绝不阻塞或影响调用
 // 主链路；落账失败保持沉默。文件追加本身是有界小操作（每次只写一行），不需要超时
 // 上下文参与。
+//
+// F4 告警检测挂在同一条协程里：检测要读内存窗口（无 I/O、有锁但极短），落盘也是
+// 一次小追加。两者都不在请求路径上，合用一个协程即足够，不额外开第二个。
 func (h *server) recordErrorAsync(ev errorEvent) {
-	if h.ledger == nil {
+	if h.ledger == nil && h.alerts == nil {
 		return
 	}
-	ledger := h.ledger
-	go ledger.record(ev)
+	go func() {
+		if h.ledger != nil {
+			h.ledger.record(ev)
+		}
+		h.detectAlerts(ev)
+	}()
+}
+
+// —— F4 P1 告警事件（PRD §2-F4）————————————————
+//
+// console 侧只负责「检测与落盘」：命中 P1 规则的事件 append 到 alerts.jsonl（单文件、
+// 保留 30 天），并留一份内存环形缓冲供 GET /admin/alerts 快速读取。通知侧（看板卡 /
+// 桌面通知）由 Hermes 轮询这个端点，console 不引入任何外部通知依赖（PRD 原文）。
+//
+// 两条 P1 规则（M1 全量）：
+//  1. 在用别名 15min 滚动窗口错误率 >50% 且窗口调用样本 ≥5；
+//  2. 任一 pin 类错误事件（pinned_account_unavailable 极具误导性，必须人看）。
+//
+// 抑制：同 (channel, category) 30min 内只出一条告警事件。抑制键刻意不含 alias——
+// 同一通道的同一类错误在抑制窗口内应归为一条，避免一个别名抖动刷屏。
+
+// alertEvent 是告警账本的单行记录。字段面向 Hermes 看板卡：一眼能看出「哪条规则、
+// 哪条通道、什么错误、错多少」，rule 是稳定的规则标识（前端与轮询侧据此分支）。
+type alertEvent struct {
+	Ts           int64   `json:"ts"`
+	Level        string  `json:"level"`
+	Rule         string  `json:"rule"`
+	Alias        string  `json:"alias,omitempty"`
+	Channel      string  `json:"channel"`
+	Category     string  `json:"category"`
+	Model        string  `json:"model,omitempty"`
+	Message      string  `json:"message"`
+	ErrorRate    float64 `json:"error_rate"`
+	Samples      int     `json:"samples"`
+	Fail         int     `json:"fail"`
+	ErrorSnippet string  `json:"error_snippet,omitempty"`
+}
+
+// alertLedger 持有告警落盘器与抑制状态。
+type alertLedger struct {
+	mu         sync.Mutex
+	store      *jsonlStore
+	recent     []alertEvent         // 内存环形缓冲，新在前
+	suppressed map[string]time.Time // 抑制键 → 上次出告警时刻
+}
+
+func newAlertLedger(dir string) *alertLedger {
+	// alerts.jsonl 是单文件（PRD 原文的路径没有按天后缀），保留 30 天靠按 ts 重写。
+	return &alertLedger{store: newJSONLStore(dir, "alerts", true), suppressed: map[string]time.Time{}}
+}
+
+// alertSuppressKey 生成抑制键：同 (channel, category) 30min 内只出一条。
+func alertSuppressKey(channel, category string) string {
+	return channel + "\x00" + category
+}
+
+// record 落一条告警。抑制窗口内同类告警直接丢弃（返回 false）；落盘失败保持沉默
+// （红线 1：告警是观测，不是调用契约），但内存缓冲照常更新，接口仍能看到。
+func (l *alertLedger) record(ev alertEvent) bool {
+	key := alertSuppressKey(ev.Channel, ev.Category)
+	now := time.UnixMilli(ev.Ts)
+	l.mu.Lock()
+	if last, ok := l.suppressed[key]; ok && now.Sub(last) < alertSuppressWindow {
+		l.mu.Unlock()
+		return false
+	}
+	l.suppressed[key] = now
+	l.recent = append([]alertEvent{ev}, l.recent...)
+	if len(l.recent) > alertRecentKeep {
+		l.recent = l.recent[:alertRecentKeep]
+	}
+	store := l.store
+	l.mu.Unlock()
+	if store != nil {
+		if err := store.append(ev); err != nil {
+			log.Print("WARN: [alerts] 告警落盘失败（保持沉默）：", err)
+		}
+	}
+	return true
+}
+
+// recentAlerts 返回内存里最近 n 条告警（新在前）。
+func (l *alertLedger) recentAlerts(n int) []alertEvent {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if len(l.recent) < n {
+		n = len(l.recent)
+	}
+	out := make([]alertEvent, n)
+	copy(out, l.recent[:n])
+	return out
+}
+
+// cleanup 在启动时清理过期告警：单文件按 ts 重写，只留 alertRetention 内的行，并把
+// 留存行的抑制时刻回填进内存（重启后抑制窗口不因进程重启而失效，避免重启即重报）。
+func (l *alertLedger) cleanup(now time.Time) {
+	if l.store == nil {
+		return
+	}
+	cutoff := now.Add(-alertRetention)
+	path := l.store.pathFor("")
+	lines := readJSONLLines(path)
+	var kept [][]byte
+	recent := make([]alertEvent, 0, alertRecentKeep)
+	suppressed := map[string]time.Time{}
+	for _, line := range lines {
+		var ev alertEvent
+		if json.Unmarshal(line, &ev) != nil {
+			continue // 损坏行直接丢弃，不让一条脏数据卡住清理
+		}
+		ts := time.UnixMilli(ev.Ts)
+		if ts.Before(cutoff) {
+			continue
+		}
+		kept = append(kept, line)
+		recent = append(recent, ev)
+		if ts.After(suppressed[alertSuppressKey(ev.Channel, ev.Category)]) {
+			suppressed[alertSuppressKey(ev.Channel, ev.Category)] = ts
+		}
+	}
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	for key, ts := range suppressed {
+		l.suppressed[key] = ts
+	}
+	if len(recent) > 0 {
+		// 文件内旧在前：反转成新在前，并截到内存上限。
+		for i, j := 0, len(recent)-1; i < j; i, j = i+1, j-1 {
+			recent[i], recent[j] = recent[j], recent[i]
+		}
+		if len(recent) > alertRecentKeep {
+			recent = recent[:alertRecentKeep]
+		}
+		l.recent = recent
+	}
+	if len(kept) != len(lines) {
+		l.rewriteLocked(kept)
+	}
+}
+
+// rewriteLocked 用留存行整体重写单文件（清理过期行）。失败保持沉默：下次启动再试。
+func (l *alertLedger) rewriteLocked(kept [][]byte) {
+	path := l.store.pathFor("")
+	var buf []byte
+	for _, line := range kept {
+		buf = append(buf, line...)
+		buf = append(buf, '\n')
+	}
+	if err := os.WriteFile(path, buf, 0o600); err != nil {
+		log.Print("WARN: [alerts] 过期告警清理失败（保持沉默）：", err)
+	}
+}
+
+// detectAlerts 在错误事件落账后检测 P1 规则。命中即 record（内部做抑制）。
+// 检测只读内存窗口与当前事件，不产生任何上游调用，也不阻塞调用主链路。
+func (h *server) detectAlerts(ev errorEvent) {
+	if h.alerts == nil {
+		return
+	}
+	// 规则 2：任一 pin 类错误事件。该类错误极具误导性（core 严格 pin 被锁时回 503，
+	// 看起来像通道挂了），必须人看，因此不看样本数、不看错误率，命中即告警。
+	if ev.Category == "pin" {
+		h.alerts.record(alertEvent{
+			Ts: ev.Ts, Level: alertLevelP1, Rule: alertRulePinError,
+			Alias: ev.Alias, Channel: ev.Channel, Category: ev.Category, Model: ev.ModelResolved,
+			Message:      fmt.Sprintf("通道 %s 出现 pinned 账号拦截：上游回 %d，%s", ev.Channel, ev.UpstreamStatus, pinAlertHint),
+			ErrorSnippet: ev.ErrorSnippet,
+		})
+		return
+	}
+	// 规则 1：在用别名 15min 滚动窗口错误率 >50% 且样本 ≥5。只对命中别名的调用生效
+	// （未命中别名就没有「在用别名」这个维度）。
+	if ev.Alias == "" || h.outcomes == nil {
+		return
+	}
+	stats, dominant := h.outcomes.aliasWindowStats(ev.Alias, alertAliasWindow)
+	if stats.ok+stats.fail < alertAliasMinSamples {
+		return // 样本不足不告警（防呆：单次失败不触发）
+	}
+	rate := stats.rate()
+	if rate <= alertAliasRateThreshold {
+		return
+	}
+	category := dominant
+	if category == "" {
+		category = ev.Category
+	}
+	h.alerts.record(alertEvent{
+		Ts: ev.Ts, Level: alertLevelP1, Rule: alertRuleAliasErrorRate,
+		Alias: ev.Alias, Channel: ev.Channel, Category: category, Model: ev.ModelResolved,
+		Message:      fmt.Sprintf("别名 %s 15min 错误率 %.0f%%（%d/%d），主因 %s", ev.Alias, rate*100, stats.fail, stats.ok+stats.fail, category),
+		ErrorRate:    roundRate(rate),
+		Samples:      stats.ok + stats.fail,
+		Fail:         stats.fail,
+		ErrorSnippet: ev.ErrorSnippet,
+	})
+}
+
+// pinAlertHint 是 pin 告警的固定处置提示，与健康模块的排查习惯对齐（对照测试后
+// 决定扩白名单 / repin / 换通道），让人看到告警就知道下一步。
+const pinAlertHint = "该错误极易误判为通道故障，请先对照 corePinHint 与别名映射确认是否账号被锁"
+
+// adminAlerts 返回最近告警（新在前），供 Hermes 定时轮询与页面留痕。
+// 只读内存缓冲，不读文件——文件是排障用的持久留痕，重启由 cleanup 回填。
+func (h *server) adminAlerts(w http.ResponseWriter, r *http.Request) {
+	out := map[string]any{
+		"generated_at": time.Now().UnixMilli(),
+		"level":        alertLevelP1,
+		"alerts":       []alertEvent{},
+	}
+	if h.alerts != nil {
+		out["alerts"] = h.alerts.recentAlerts(alertRecentKeep)
+	}
+	writeJSON(w, 200, out)
 }

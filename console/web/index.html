@@ -29,6 +29,16 @@
    <p id="overview-usage-note" class="muted small" hidden></p>
    <div class="section-title"><h2>每日趋势</h2><span class="muted small">所选范围与通道内的按天用量；缺失观测不计入，范围不足两天时以数值提示代替折线</span></div>
    <article class="panel trend-panel"><div id="overview-trend" class="trend-chart"></div><p id="overview-trend-note" class="muted small" hidden></p></article>
+   <div class="section-title"><h2>错误统计</h2><span class="muted small">窗口内成功/失败调用由网关出口旁路观测（零额外上游调用）；错误率 = 失败 /（成功 + 失败），样本不足不粉饰</span></div>
+   <div class="panel"><div class="protocol-row"><div class="protocol-switch" role="group" aria-label="错误统计窗口"><button id="errors-window-15m" data-errors-window="15m" aria-pressed="true">近 15 分钟</button><button id="errors-window-1h" data-errors-window="1h" aria-pressed="false">近 1 小时</button><button id="errors-window-24h" data-errors-window="24h" aria-pressed="false">近 24 小时</button></div><span class="muted small" id="errors-stamp">正在读取窗口错误统计…</span></div>
+    <div class="metrics"><article><span>调用样本</span><strong id="errors-calls">—</strong><small>窗口内成功 + 失败</small></article><article><span>失败调用</span><strong id="errors-fail">—</strong><small>出口回 ≥400 的次数</small></article><article><span>窗口错误率</span><strong id="errors-rate">—</strong><small>失败 / 样本</small></article></div>
+   </div>
+   <div class="section-title"><h2>类别分布</h2><span class="muted small">窗口内失败按统一归类口径（probe 与调用共用同一份）</span></div>
+   <div class="panel table-wrap"><table><thead><tr><th>类别</th><th class="num">失败次数</th><th>占比</th></tr></thead><tbody id="errors-categories-body"></tbody></table><p id="errors-categories-empty" class="empty">窗口内没有失败调用。</p></div>
+   <div class="section-title"><h2>按通道错误数</h2><span class="muted small">每个通道一行：成功 / 失败 / 错误率与失败最多的模型</span></div>
+   <div class="panel table-wrap"><table><thead><tr><th>通道</th><th class="num">成功</th><th class="num">失败</th><th class="num">错误率</th><th>类别</th><th>失败最多的模型</th></tr></thead><tbody id="errors-channels-body"></tbody></table><p id="errors-channels-empty" class="empty">窗口内没有调用样本。</p></div>
+   <div class="section-title"><h2>最近错误事件</h2><span class="muted small">窗口内最近 20 条失败调用；展开可看脱敏后的上游摘要</span></div>
+   <div id="errors-recent" class="task-grid"></div><p id="errors-recent-empty" class="empty">窗口内没有失败事件。</p>
   </section>
   <section class="page" data-page="workbuddy" hidden><div class="page-heading"><div><h1>WorkBuddy 通道</h1><p class="muted">本网关的核心通道：账号授权、自动任务、模型列表与对话测试。上游为 WorkBuddy / CodeBuddy，账号池与调度器由 core 自持。全通道调用统计在左侧「调用统计」页。</p></div></div>
    <div class="workbuddy-tabs" role="tablist" aria-label="WorkBuddy 子页"><button id="workbuddy-view-accounts" class="workbuddy-tab active" role="tab" type="button">◎ 账号管理</button><button id="workbuddy-view-tasks" class="workbuddy-tab" role="tab" type="button">◷ 自动任务</button><button id="workbuddy-view-models" class="workbuddy-tab" role="tab" type="button">☰ 模型列表</button><button id="workbuddy-view-chat" class="workbuddy-tab" role="tab" type="button">↗ 对话测试</button></div>
