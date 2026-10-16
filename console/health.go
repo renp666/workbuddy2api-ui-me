@@ -2,8 +2,13 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
+	"log"
 	"net/http"
+	"os"
+	"path/filepath"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -22,8 +27,14 @@ const healthProbeInterval = 30 * time.Second
 // 这里再兜一层，避免个别通道挂死拖住整轮。
 const healthProbeTimeout = 10 * time.Second
 
-// healthHistorySize 是留存的历史轮数（内存态，重启清空）。
+// healthHistorySize 是留存的历史轮数。内存态保留最近这些轮；落盘的探测历史
+// （health-history-<YYYYMMDD>.jsonl）在启动时只回放最近这些轮进内存快照。
 const healthHistorySize = 20
+
+// healthHistoryPrefix 是探测历史 JSONL 的文件名前缀，按天轮转为
+// health-history-<YYYYMMDD>.jsonl，与错误账本 errors-<YYYYMMDD>.jsonl 同目录、
+// 同保留期（30 天，复用 jsonlStore 的轮转清理）。目录是 bind mount，重启不丢。
+const healthHistoryPrefix = "health-history"
 
 // healthProbeSeedInterval 是后台「补齐真调用结论」的节流间隔。总览的绿灯必须有真
 // 调用证据支撑：已启用通道若「没有任何结论」或「结论为失败」，每隔这个间隔用最小
@@ -60,6 +71,18 @@ type healthChannelResult struct {
 	// 账号在冷却 → 指出锁的是谁、卡在哪、多久恢复。让红灯自带处置办法，而不是只丢一句
 	// 笼统的 no_healthy_account / pinned_account_unavailable 让人去猜。
 	ProbeHint string `json:"probe_hint,omitempty"`
+	// public 是本轮代表模型（对外形态），category 是真调用失败时的归类。二者不对外
+	// 序列化（无 json tag 的未导出字段），只供探测历史落盘——历史行要能回答「哪条通道
+	// 上的哪个模型、因何失败」，让重启后的回放不是只有一串布尔值。
+	public   string
+	category string
+}
+
+// healthy 归纳一条通道记录是否「健康」。判定口径与 runHealthRound 完全一致：端口/服务
+// 可达，且真调用结论为 ok。端口活着但没测过或测出失败都不算健康——落盘历史与内存快照
+// 共用这一处判定，避免两套口径各说各话。
+func (r healthChannelResult) healthy() bool {
+	return r.Reachable && r.ProbeState == "ok"
 }
 
 // probeVerdict 归纳某通道的真调用结论。
@@ -156,17 +179,76 @@ func (r healthRound) historyEntry() healthHistoryEntry {
 	states := make(map[routeChannel]bool, len(r.Channels))
 	for _, c := range r.Channels {
 		if c.Enabled {
-			states[c.Channel] = c.Reachable
+			states[c.Channel] = c.healthy()
 		}
 	}
 	return healthHistoryEntry{CheckedAt: r.CheckedAt, OK: r.OK, Channels: states}
 }
 
-// healthCache 保留最近 healthHistorySize 轮后台探活结论（内存态，重启清空）。
+// healthHistoryLine 是落盘的一轮探测结论（PRD §2-F3）：一行一轮，rounds 数组逐通道
+// 记录代表模型、健康与否、失败归类与耗时。ts 是轮次时间（Unix 毫秒）。
+type healthHistoryLine struct {
+	Ts     int64                  `json:"ts"`
+	Rounds []healthHistoryChannel `json:"rounds"`
+}
+
+// healthHistoryChannel 是落盘历史里的单通道结论，字段名与 PRD §2-F3 的单行 schema
+// 一一对应。字段一律不带 omitempty：历史行是排障用的持久真源，schema 必须稳定，
+// 空值也要显式落出来（下游 jq/python 聚合才不必区分「键不存在」与「值为空」）。
+type healthHistoryChannel struct {
+	Channel    routeChannel `json:"channel"`
+	Public     string       `json:"public"`
+	OK         bool         `json:"ok"`
+	Category   string       `json:"category"`
+	DurationMs int64        `json:"durationMs"`
+}
+
+// historyLine 把一轮总览压成落盘行。只落已启用通道（与 historyEntry 同一取舍）：
+// 未启用通道的「不可达」是配置事实而非探测结论，落盘只会污染趋势。
+func (r healthRound) historyLine() healthHistoryLine {
+	rounds := make([]healthHistoryChannel, 0, len(r.Channels))
+	for _, c := range r.Channels {
+		if !c.Enabled {
+			continue
+		}
+		rounds = append(rounds, healthHistoryChannel{
+			Channel:    c.Channel,
+			Public:     c.public,
+			OK:         c.healthy(),
+			Category:   c.category,
+			DurationMs: c.LatencyMs,
+		})
+	}
+	return healthHistoryLine{Ts: r.CheckedAt.UnixMilli(), Rounds: rounds}
+}
+
+// entry 把落盘行还原成内存快照形态（启动回放时用）。整轮 OK 由各通道结论归并：
+// 任一通道不健康即 false，与 runHealthRound 的判定同源。
+func (l healthHistoryLine) entry() healthHistoryEntry {
+	states := make(map[routeChannel]bool, len(l.Rounds))
+	ok := true
+	for _, c := range l.Rounds {
+		states[c.Channel] = c.OK
+		if !c.OK {
+			ok = false
+		}
+	}
+	return healthHistoryEntry{CheckedAt: time.UnixMilli(l.Ts), OK: ok, Channels: states}
+}
+
+// healthCache 保留最近 healthHistorySize 轮后台探活结论。内存快照用于接口返回；
+// 同一轮还会 append 落盘到 health-history-<YYYYMMDD>.jsonl（按天轮转、保留 30 天），
+// 启动时回放最近 ≤healthHistorySize 轮——这样重启 console 不会丢掉探测结论。
 type healthCache struct {
 	mu       sync.Mutex
 	history  []healthHistoryEntry
 	lastSeed time.Time
+	// store 是探测历史的 JSONL 落盘器。为 nil 时只留内存（测试或未配置可写目录），
+	// 行为与改造前一致。
+	store *jsonlStore
+	// initOnce 保证「清理过期文件 + 回放历史」只跑一次（后台协程与 /admin/health
+	// 谁先到都行）。
+	initOnce sync.Once
 }
 
 func (c *healthCache) record(round healthRound) {
@@ -176,6 +258,93 @@ func (c *healthCache) record(round healthRound) {
 	if len(c.history) > healthHistorySize {
 		c.history = c.history[len(c.history)-healthHistorySize:]
 	}
+	if c.store == nil {
+		return
+	}
+	// 落盘失败保持沉默（探测结论是观测，不是调用契约）：内存快照已更新，接口照常。
+	// 在锁内 append 保证内存顺序与落盘顺序一致（写入频率低，一行小写入的代价可忽略）。
+	if err := c.store.append(round.historyLine()); err != nil {
+		log.Print("WARN: [health-history] 探测历史落盘失败（保持沉默）：", err)
+	}
+}
+
+// healthInit 在第一次探活/查询前完成一次性初始化：清理过期文件（保留 30 天），并把
+// 落盘历史回放最近 ≤healthHistorySize 轮进内存快照。这样重启 console 后健康接口立刻
+// 有结论（health present: True），而不是从空历史重来。未开启模块（HealthProbe=false）
+// 或没有可写目录时不碰磁盘，行为与改造前完全一致。
+func (c *healthCache) healthInit(cfg Config) {
+	c.initOnce.Do(func() {
+		if !cfg.HealthProbe {
+			return
+		}
+		dir := consoleDataDir(cfg.RouteFile)
+		if dir == "" {
+			return
+		}
+		store := newJSONLStore(dir, healthHistoryPrefix, false)
+		store.cleanup(time.Now())
+		history := replayHealthHistory(dir, healthHistorySize)
+		c.mu.Lock()
+		defer c.mu.Unlock()
+		c.store = store
+		if len(history) == 0 {
+			return
+		}
+		// 回放结果在前、内存里可能已有的轮次在后；超出上限时丢最旧的。
+		combined := append(history, c.history...)
+		if len(combined) > healthHistorySize {
+			combined = combined[len(combined)-healthHistorySize:]
+		}
+		c.history = combined
+	})
+}
+
+// replayHealthHistory 从落盘历史里回放最近 limit 轮（时间升序返回）。
+//
+// 读取顺序：文件名按日期升序，逐文件从最后一行往前读（同一文件内后写的在后），凑够
+// limit 轮即停；最后反转为时间升序，与内存快照的追加顺序一致。文件不存在（首次启动）
+// 返回 nil；损坏行跳过，不让单条脏数据毁掉整段回放。
+func replayHealthHistory(dir string, limit int) []healthHistoryEntry {
+	if limit <= 0 {
+		return nil
+	}
+	matches, _ := filepath.Glob(filepath.Join(dir, healthHistoryPrefix+"-*.jsonl"))
+	sort.Strings(matches)
+	var out []healthHistoryEntry // 新在前，最后反转
+	for i := len(matches) - 1; i >= 0 && len(out) < limit; i-- {
+		if _, ok := rotatedDay(healthHistoryPrefix, filepath.Base(matches[i])); !ok {
+			continue // 非本前缀的按天文件（如残留的半成品名）一律不读
+		}
+		lines := readJSONLLines(matches[i])
+		for j := len(lines) - 1; j >= 0 && len(out) < limit; j-- {
+			var line healthHistoryLine
+			if json.Unmarshal(lines[j], &line) != nil {
+				continue
+			}
+			out = append(out, line.entry())
+		}
+	}
+	for i, j := 0, len(out)-1; i < j; i, j = i+1, j-1 {
+		out[i], out[j] = out[j], out[i]
+	}
+	return out
+}
+
+// readJSONLLines 读出一个 JSONL 文件的全部非空行（保持文件内原始顺序）。读失败返回 nil。
+func readJSONLLines(path string) [][]byte {
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		return nil
+	}
+	var out [][]byte
+	for _, line := range strings.Split(string(raw), "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+		out = append(out, []byte(line))
+	}
+	return out
 }
 
 // seedDue 报告距上次补齐探测是否已过一个节流间隔。零值 lastSeed 让启动后立即补齐。
@@ -203,6 +372,7 @@ func (c *healthCache) snapshot() []healthHistoryEntry {
 // healthAutoStart 按固定间隔跑一轮探活并留存，启动即先跑一次，
 // 让刚起好的容器不用等一个完整间隔就有结论。
 func (h *server) healthAutoStart() {
+	h.health.healthInit(h.cfg)
 	ticker := time.NewTicker(healthProbeInterval)
 	defer ticker.Stop()
 	h.healthOnce()
@@ -272,7 +442,7 @@ func (h *server) runHealthRound(ctx context.Context) healthRound {
 		}
 		// 端口不可达、真调用结论为失败、或根本没有真调用结论，都不算健康。
 		// 只认 Reachable 就是「假绿」；把「没测过」也算绿同样是把未知当健康。
-		if !result.Reachable || result.ProbeState != "ok" {
+		if !result.healthy() {
 			round.OK = false
 		}
 	}
@@ -292,6 +462,9 @@ func (h *server) probeChannelHealth(ctx context.Context, c routeChannel) healthC
 	// 并入手工测速探测的真调用结论（只读缓存，不触发上游调用）。端口活着但
 	// 真调用失败时必须显式暴露，否则总览的绿灯会把「服务在、模型跑不动」瞒过去。
 	result.ProbeState, result.ProbeOKModels, result.ProbeTotalModels, result.ProbeDetail = h.probeVerdict(ctx, c)
+	// 代表模型与失败归类只为探测历史落盘准备（不对外序列化）：历史行要能回答
+	// 「哪条通道上的哪个模型、因何失败」。取目录里字典序最小的模型作稳定代表。
+	result.public, result.category = h.probeModelSummary(c)
 	// 账号池通道在红灯时补一条可执行提示：raccoon 的失败绝大多数来自凭证侧
 	// （refresh_token 被上游拒），把账号池记录的 reason 带出来，人才能直接知道要重登
 	// 桌面端再导入，而不是对着 no_healthy_account 干瞪眼。只在失败时取，开销有界。
@@ -302,6 +475,34 @@ func (h *server) probeChannelHealth(ctx context.Context, c routeChannel) healthC
 		result.ProbeHint = h.corePinHint(ctx)
 	}
 	return result
+}
+
+// probeModelSummary 给出某通道本轮的代表模型（对外形态）与失败归类，供探测历史落盘。
+//
+// 结论按公共模型名为键，map 遍历无序，所以这里按名字排序取第一个作稳定代表——同一
+// 状态下反复落盘的行完全一致，趋势比对不会被随机顺序搅乱。失败归类取「首个失败模型」
+// 的 category（与 probeVerdict 的 detail 取舍同源），无失败时为空。
+func (h *server) probeModelSummary(c routeChannel) (string, string) {
+	results := h.probe.channelResults(c)
+	if len(results) == 0 {
+		return "", ""
+	}
+	names := make([]string, 0, len(results))
+	for name := range results {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	public := names[0]
+	category := ""
+	for _, name := range names {
+		if ok, _ := results[name]["ok"].(bool); !ok {
+			if value, _ := results[name]["category"].(string); value != "" {
+				category = value
+			}
+			break
+		}
+	}
+	return public, category
 }
 
 // corePinHintTimeout 是取 core 账号池/pin 快照的超时。只在红灯时调用，开销有界。
@@ -482,8 +683,13 @@ func (h *server) channelReachable(ctx context.Context, c routeChannel) (bool, st
 }
 
 // adminHealth 返回「网关 + 七通道」总览：请求时即时跑一轮，保证页面看到的是
-// 当前状态而不是上一轮缓存；history 是后台定时探活留存的趋势。只读，不改配置。
+// 当前状态而不是上一轮缓存；history 是后台定时探活留存的趋势（含重启后从落盘
+// 历史回放的部分）。只读，不改配置。
 func (h *server) adminHealth(w http.ResponseWriter, r *http.Request) {
+	// 后台探活关闭时（测试或未配探活）也允许这里触发一次性回放：只要模块总开关
+	// 打开且有可写目录，重启后第一次查询就能看到落盘历史。healthInit 内部按
+	// HealthProbe 与目录自行门控，未开启时是空操作。
+	h.health.healthInit(h.cfg)
 	round := h.runHealthRound(r.Context())
 	writeJSON(w, 200, map[string]any{
 		"ok":         round.OK,

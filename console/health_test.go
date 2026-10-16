@@ -6,7 +6,10 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 )
@@ -65,6 +68,14 @@ func healthyStub(c routeChannel) healthChannelStub {
 // core 固定答 /internal/v1/info，让 core 通道恒可达。HealthProbe 由调用方决定。
 func healthConsole(t *testing.T, channels map[routeChannel]healthChannelStub, probe bool) http.Handler {
 	t.Helper()
+	return healthConsoleWith(t, channels, probe, "")
+}
+
+// healthConsoleWith 是 healthConsole 的加强版：routeFile 非空时写进 Config.RouteFile，
+// 让 console 有一处可写数据目录——探测历史落盘与回放都落在这里。为空时行为与
+// healthConsole 完全一致（不碰磁盘）。
+func healthConsoleWith(t *testing.T, channels map[routeChannel]healthChannelStub, probe bool, routeFile string) http.Handler {
+	t.Helper()
 	core := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if !mockInfo(w, r) {
 			fmt.Fprint(w, `{"core":true}`)
@@ -73,6 +84,7 @@ func healthConsole(t *testing.T, channels map[routeChannel]healthChannelStub, pr
 	t.Cleanup(core.Close)
 	cfg := testConfig(core.URL)
 	cfg.HealthProbe = probe
+	cfg.RouteFile = routeFile
 	for channel, stub := range channels {
 		stub := stub
 		ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -595,5 +607,239 @@ func TestCorePinHintSilentWhenPinHealthy(t *testing.T) {
 	hint := h.(*server).corePinHint(context.Background())
 	if hint != "" {
 		t.Fatalf("pin 账号健康时不应出提示，got %q", hint)
+	}
+}
+
+// —— F3 探测结论落盘（PRD §2-F3 / §5 判据 2）————————————————
+
+// readHealthHistoryRaw 读出目录下全部 health-history-*.jsonl 的原始行（解码成 map），
+// 用于核对落盘 schema 的字段完整性，避免结构体 omitempty 把缺字段伪装成零值。
+func readHealthHistoryRaw(t *testing.T, dir string) []map[string]any {
+	t.Helper()
+	matches, _ := filepath.Glob(filepath.Join(dir, healthHistoryPrefix+"-*.jsonl"))
+	var out []map[string]any
+	for _, path := range matches {
+		raw, err := os.ReadFile(path)
+		if err != nil {
+			continue
+		}
+		for _, line := range strings.Split(strings.TrimSpace(string(raw)), "\n") {
+			line = strings.TrimSpace(line)
+			if line == "" {
+				continue
+			}
+			var row map[string]any
+			if json.Unmarshal([]byte(line), &row) != nil {
+				continue
+			}
+			out = append(out, row)
+		}
+	}
+	return out
+}
+
+// TestHealthHistoryPersistedLineSchema 锁定 F3 落盘行结构：record() 在写内存快照的同时
+// 追加一行 health-history-<YYYYMMDD>.jsonl，行含 ts 与 rounds 数组，每个 round 的字段
+// （channel/public/ok/category/durationMs）与 PRD §2-F3 schema 一一对应。修复前不落盘。
+func TestHealthHistoryPersistedLineSchema(t *testing.T) {
+	dir := t.TempDir()
+	cache := &healthCache{}
+	cache.store = newJSONLStore(dir, healthHistoryPrefix, false)
+	cache.record(healthRound{
+		CheckedAt: time.UnixMilli(1760582400000),
+		OK:        false,
+		Channels: []healthChannelResult{
+			{Channel: channelCore, Enabled: true, Reachable: true, ProbeState: "ok", public: "global:deepseek-v4.1-flash", LatencyMs: 12},
+			{Channel: channelRaccoon, Enabled: true, Reachable: true, ProbeState: "failed", public: "raccoon-sn-glm-5-3-flash", category: "auth", LatencyMs: 88},
+			{Channel: channelTrae, Enabled: false, Reachable: false, public: "", LatencyMs: 0},
+		},
+	})
+
+	rows := readHealthHistoryRaw(t, dir)
+	if len(rows) != 1 {
+		t.Fatalf("落盘行数=%d，want 1（record 未落盘或落盘多次）", len(rows))
+	}
+	row := rows[0]
+	if ts, _ := row["ts"].(float64); int64(ts) != 1760582400000 {
+		t.Fatalf("ts=%v，want 1760582400000", row["ts"])
+	}
+	rounds, _ := row["rounds"].([]any)
+	if len(rounds) != 2 {
+		t.Fatalf("rounds 条数=%d，want 2（未启用通道不应落盘）", len(rounds))
+	}
+	first, _ := rounds[0].(map[string]any)
+	for _, key := range []string{"channel", "public", "ok", "category", "durationMs"} {
+		if _, present := first[key]; !present {
+			t.Fatalf("round 缺字段 %q：%v", key, first)
+		}
+	}
+	if first["channel"] != "core" || first["ok"] != true || first["category"] != "" {
+		t.Fatalf("core round 字段不对：%v", first)
+	}
+	if first["public"] != "global:deepseek-v4.1-flash" || first["durationMs"].(float64) != 12 {
+		t.Fatalf("core round 代表模型/耗时不对：%v", first)
+	}
+	second, _ := rounds[1].(map[string]any)
+	if second["channel"] != "raccoon" || second["ok"] != false || second["category"] != "auth" {
+		t.Fatalf("raccoon round 字段不对：%v", second)
+	}
+	// 落盘目录里不得混入其他前缀文件（errors-* 是另一模块）。
+	if matches, _ := filepath.Glob(filepath.Join(dir, "errors-*.jsonl")); len(matches) != 0 {
+		t.Fatalf("探测历史落盘不得生成 errors-* 文件：%v", matches)
+	}
+}
+
+// TestHealthHistoryReplayBounded 锁定启动回放：从落盘历史回放最近 ≤healthHistorySize
+// 轮（时间升序），更旧的轮次被丢弃。这正是「重启 console 后 health present: True」的
+// 数据基础——回放进内存快照，接口不再返回空历史。
+func TestHealthHistoryReplayBounded(t *testing.T) {
+	dir := t.TempDir()
+	store := newJSONLStore(dir, healthHistoryPrefix, false)
+	total := healthHistorySize + 7
+	for i := 0; i < total; i++ {
+		if err := store.append(healthHistoryLine{
+			Ts:     int64(i),
+			Rounds: []healthHistoryChannel{{Channel: channelCore, Public: "global:m", OK: true}},
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	// 模拟重启：新 cache 从同一目录回放。
+	restarted := &healthCache{}
+	restarted.healthInit(Config{HealthProbe: true, RouteFile: filepath.Join(dir, "routes.json")})
+	got := restarted.snapshot()
+	if len(got) != healthHistorySize {
+		t.Fatalf("回放轮数=%d，want %d（上限截断）", len(got), healthHistorySize)
+	}
+	// 时间升序，且是最近的 healthHistorySize 轮：首轮 ts = total-healthHistorySize。
+	if got[0].CheckedAt.UnixMilli() != int64(total-healthHistorySize) {
+		t.Fatalf("回放首轮 ts=%d，want %d（应丢最旧、留最近）", got[0].CheckedAt.UnixMilli(), total-healthHistorySize)
+	}
+	if got[len(got)-1].CheckedAt.UnixMilli() != int64(total-1) {
+		t.Fatalf("回放末轮 ts=%d，want %d（最新轮应在末尾）", got[len(got)-1].CheckedAt.UnixMilli(), total-1)
+	}
+	for i := 1; i < len(got); i++ {
+		if !got[i].CheckedAt.After(got[i-1].CheckedAt) {
+			t.Fatalf("回放未按时间升序：index %d %v 不在 %v 之后", i, got[i].CheckedAt, got[i-1].CheckedAt)
+		}
+	}
+}
+
+// TestHealthHistoryCleanupExpired 锁定保留期：启动清理删除 30 天前的历史文件，保留期内
+// 的文件与别前缀文件（errors-*）不受影响。
+func TestHealthHistoryCleanupExpired(t *testing.T) {
+	dir := t.TempDir()
+	expired := time.Now().Add(-31 * 24 * time.Hour).Format("20060102")
+	fresh := time.Now().Format("20060102")
+	writeFile := func(name string) {
+		if err := os.WriteFile(filepath.Join(dir, name), []byte("{}\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	writeFile(healthHistoryPrefix + "-" + expired + ".jsonl")
+	writeFile(healthHistoryPrefix + "-" + fresh + ".jsonl")
+	// 别前缀的按天文件（错误账本）不该被探测历史的清理误删。
+	writeFile("errors-" + expired + ".jsonl")
+
+	cache := &healthCache{}
+	cache.healthInit(Config{HealthProbe: true, RouteFile: filepath.Join(dir, "routes.json")})
+
+	if _, err := os.Stat(filepath.Join(dir, healthHistoryPrefix+"-"+expired+".jsonl")); !os.IsNotExist(err) {
+		t.Fatalf("31 天前的历史文件应被清理，err=%v", err)
+	}
+	if _, err := os.Stat(filepath.Join(dir, healthHistoryPrefix+"-"+fresh+".jsonl")); err != nil {
+		t.Fatalf("当天历史文件不应被清理：%v", err)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "errors-"+expired+".jsonl")); err != nil {
+		t.Fatalf("别前缀文件不应被探测历史清理误删：%v", err)
+	}
+}
+
+// TestHealthHistoryRecordConcurrentSafe 锁定 record 并发安全：并发写入不得丢行、不得
+// 出现撕裂行；内存快照同样有界（≤healthHistorySize）。落盘与内存都在同一把锁下完成，
+// -race 下同时跑这条用例可验证无数据竞争。
+func TestHealthHistoryRecordConcurrentSafe(t *testing.T) {
+	dir := t.TempDir()
+	cache := &healthCache{}
+	cache.store = newJSONLStore(dir, healthHistoryPrefix, false)
+
+	const writers, perWriter = 8, 10
+	var wg sync.WaitGroup
+	for w := 0; w < writers; w++ {
+		wg.Add(1)
+		go func(w int) {
+			defer wg.Done()
+			for i := 0; i < perWriter; i++ {
+				cache.record(healthRound{
+					CheckedAt: time.UnixMilli(int64(w*perWriter + i)),
+					OK:        true,
+					Channels:  []healthChannelResult{{Channel: channelCore, Enabled: true, Reachable: true, ProbeState: "ok", public: "global:m"}},
+				})
+			}
+		}(w)
+	}
+	wg.Wait()
+
+	if got := len(cache.snapshot()); got != healthHistorySize {
+		t.Fatalf("并发写入后内存快照=%d，want %d", got, healthHistorySize)
+	}
+	rows := readHealthHistoryRaw(t, dir)
+	if len(rows) != writers*perWriter {
+		t.Fatalf("并发落盘行数=%d，want %d（丢行说明 append 未串行化）", len(rows), writers*perWriter)
+	}
+}
+
+// TestAdminHealthReplaysHistoryAfterRestart 是 F3 的目标验收口径：先跑一轮探活落盘，
+// 模拟重启（用同一数据目录新建 console），重启后健康接口的 history 必须非空
+// （health present: True）。修复前不落盘，重启后 history 为空。
+func TestAdminHealthReplaysHistoryAfterRestart(t *testing.T) {
+	dir := t.TempDir()
+	routeFile := filepath.Join(dir, "routes.json")
+	stubs := map[routeChannel]healthChannelStub{}
+	for _, c := range routeChannelOrder {
+		stubs[c] = healthyStub(c)
+	}
+
+	// 第一个 console：跑一轮探活并把结论落盘（core 记一条可用结论才可能全绿）。
+	first := healthConsoleWith(t, stubs, true, routeFile)
+	firstSrv := first.(*server)
+	firstSrv.probe.record(channelCore, "global:deepseek-v4.1-flash", map[string]any{"ok": true})
+	cookie, csrf := login(t, first)
+	if w := adminRequest(first, "GET", "/admin/health", "", cookie, csrf); w.Code != 200 {
+		t.Fatalf("health status=%d %s", w.Code, w.Body)
+	}
+	deadline := time.Now().Add(3 * time.Second)
+	for len(firstSrv.health.snapshot()) == 0 && time.Now().Before(deadline) {
+		time.Sleep(10 * time.Millisecond)
+	}
+	if len(firstSrv.health.snapshot()) == 0 {
+		t.Fatal("首轮探活未写入内存快照")
+	}
+
+	// 模拟重启：同一数据目录、同一批 stub，新建 console。
+	second := healthConsoleWith(t, stubs, true, routeFile)
+	secondSrv := second.(*server)
+	secondDeadline := time.Now().Add(3 * time.Second)
+	for len(secondSrv.health.snapshot()) == 0 && time.Now().Before(secondDeadline) {
+		time.Sleep(10 * time.Millisecond)
+	}
+	secondSrv.probe.record(channelCore, "global:deepseek-v4.1-flash", map[string]any{"ok": true})
+	cookie2, csrf2 := login(t, second)
+	w := adminRequest(second, "GET", "/admin/health", "", cookie2, csrf2)
+	if w.Code != 200 {
+		t.Fatalf("health status=%d %s", w.Code, w.Body)
+	}
+	var got healthResponse
+	if err := json.Unmarshal(w.Body.Bytes(), &got); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if len(got.History) == 0 {
+		t.Fatal("重启后健康接口 history 为空——落盘历史未回放（health present: False）")
+	}
+	// 回放的历史必须带 core 通道结论（证明是真实回放，不是空壳轮次）。
+	last := got.History[len(got.History)-1]
+	if _, present := last.Channels[channelCore]; !present {
+		t.Fatalf("回放轮次缺 core 通道结论：%+v", last.Channels)
 	}
 }
