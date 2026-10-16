@@ -5,6 +5,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"workbuddy2api-trae/trae/upstream"
 )
 
 // 构造一个合法回调 URL（query 已 percent-encode，复刻浏览器真实回调形态）。
@@ -156,7 +158,7 @@ func TestBuildLoginURL(t *testing.T) {
 	deviceID := "0123456789abcdef0123456789abcdef"
 	cb := "http://127.0.0.1:7864/authorize"
 
-	u := BuildLoginURL(machineID, deviceID, cb)
+	u := BuildLoginURL(machineID, deviceID, cb, upstream.EditionCN())
 	if !strings.HasPrefix(u, "https://www.trae.cn/authorization?") {
 		t.Fatalf("url prefix wrong: %s", u)
 	}

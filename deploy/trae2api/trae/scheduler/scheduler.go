@@ -97,6 +97,12 @@ func (s *Scheduler) RunCheckinNow() {
 	s.mu.Lock()
 	s.lastCheckin = time.Now()
 	s.mu.Unlock()
+	// 国际版没有签到/积分端点：整轮直接跳过。发出去只会拿到 404，
+	// 把一个不存在的功能渲染成每日告警。
+	if !s.cfg.Upstream.Edition().CheckinSupported {
+		log.Printf("checkin: 区域 %s 无签到体系，跳过本轮", s.cfg.Upstream.Edition().Key)
+		return
+	}
 	for _, st := range s.cfg.Pool.List() {
 		if st.Disabled {
 			continue

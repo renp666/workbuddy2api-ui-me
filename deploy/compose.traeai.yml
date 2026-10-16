@@ -1,0 +1,48 @@
+# Optional Trae International sidecar: docker compose -f docker-compose.yml -f deploy/compose.traeai.yml up -d
+# 与 deploy/compose.trae.yml 同一个镜像（workbuddy2api-trae），只换区域：TRAE_EDITION=intl 让
+# sidecar 打 trae.ai 一族上游（对话/目录 coresg-normal.trae.ai，鉴权与订阅态 ug-normal.trae.ai，
+# 授权页 www.trae.ai/authorization）。协议形状与国内版同构，因此不复码、不分叉镜像。
+#
+# 与国内版的三处行为差异（都是上游事实，不是本仓的选择）：
+#   1. 国际版没有签到/积分体系（/trae/api/v2/ug/checkin_credits/* 与 ide_user_ent_usage 实测 404），
+#      权益改读 /trae/api/v1/pay/ide_user_pay_status，页面显示订阅档位而不是积分余额；
+#   2. 国际版按区域分入口（SG coresg / US coreva / 中性 core-normal），需要换区时用
+#      TRAE_AGENT_HOST 单项覆盖，不必改代码重 build；
+#   3. 容器读不到宿主 %APPDATA%，所以凭据入口是页签里粘贴桌面客户端的 storage.json
+#      （sidecar 用 Go 标准库解 tc/AES-128-CBC 信封），或粘贴 OAuth 回调链接。
+#
+# 容器加入 console 的网络命名空间（network_mode: service:console），只绑 127.0.0.1:7869：
+# 公共口只经 console 发布，sidecar 不对 Compose 网络和宿主暴露。console 注入 Bearer 密钥，
+# 并把公共 /v1 里 model 以 "traeai-" 开头的请求分流过来；其余仍留在 core。
+# TRAE 授权回调落在 console 的公开 /authorize（上游 SSR 要求主机字面量 127.0.0.1 且路径
+# /authorize），由 console 按"哪个区域发起了登录"分发到对应 sidecar。
+services:
+  traeai-proxy:
+    build:
+      context: .
+      dockerfile: deploy/trae.Dockerfile
+    platform: linux/amd64
+    restart: unless-stopped
+    network_mode: service:console
+    environment:
+      TZ: Asia/Shanghai
+      TRAE_EDITION: intl
+      # 数据面密钥：console -> traeai2api:7869 的 Bearer。
+      # 注意变量名——sidecar 二进制读的是 TRAE_API_KEY，把 WB2A_TRAEAI_KEY 直接注进去
+      # 会得到一个"空 key = 不鉴权"的容器（国内版 overlay 就踩在这里）。
+      TRAE_API_KEY: ${WB2A_TRAEAI_KEY:-}
+      TRAE_LISTEN: 127.0.0.1:7869
+      # 回调由 console 公开 origin 代理，sidecar 自身不起独立回调端口。
+      TRAE_CALLBACK_LISTEN: "0"
+      # 默认 SG 入口；账号在别的区域时改这一行即可（coreva-normal / core-normal）。
+      TRAE_AGENT_HOST: ${WB2A_TRAEAI_AGENT_HOST:-https://coresg-normal.trae.ai}
+    volumes:
+      - ./runtime/traeai:/data
+
+  console:
+    environment:
+      WB2A_TRAEAI_URL: http://127.0.0.1:7869
+      WB2A_TRAEAI_KEY: ${WB2A_TRAEAI_KEY:-}
+    depends_on:
+      core:
+        condition: service_started

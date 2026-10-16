@@ -182,8 +182,8 @@ func (h *Handler) importFromCallback(req importRequest) (*auth.Auth, error) {
 		UID:          info.UID,
 		Nickname:     info.Nickname,
 		EnterpriseID: info.EnterpriseID,
-		Domain:       "trae.cn",
-		ApiHost:      "https://api.trae.com.cn",
+		Domain:       h.ed().HostDomain(),
+		ApiHost:      h.ed().OAuthHost,
 		MachineID:    req.MachineID,
 		DeviceID:     req.DeviceID,
 		ExpiresAt:    info.ExpiresAt,
@@ -214,9 +214,20 @@ func (h *Handler) importFromCallback(req importRequest) (*auth.Auth, error) {
 	return a, nil
 }
 
-// importFromJSON 解析嵌套/扁平 JSON → 构造 Auth（凭证已完整，不 ExchangeToken）。
+// importFromJSON 解析 JSON → 构造 Auth（凭证已完整，不 ExchangeToken）。
+//
+// 两种 JSON 形态按内容判别，不让调用方声明：
+//   - 桌面客户端 storage.json（含 iCubeAuthInfo://icube.cloudide + telemetry.machineId）
+//   - 凭据 JSON（嵌套形 {"auth":..,"account":..} 或扁平形 {"accessToken":..,"uid":..}）
 func (h *Handler) importFromJSON(req importRequest) (*auth.Auth, error) {
-	a, err := auth.Parse([]byte(req.JSON))
+	raw := []byte(req.JSON)
+	var a *auth.Auth
+	var err error
+	if auth.LooksLikeStorageJSON(raw) {
+		a, err = auth.ParseStorageJSON(raw)
+	} else {
+		a, err = auth.Parse(raw)
+	}
 	if err != nil {
 		return nil, err
 	}
@@ -227,12 +238,13 @@ func (h *Handler) importFromJSON(req importRequest) (*auth.Auth, error) {
 	if req.DeviceID != "" {
 		a.DeviceID = req.DeviceID
 	}
-	// 缺省 host/domain 补默认
+	// 缺省 host/domain 补本进程区域的值：storage.json 自带 host 时不会被覆盖，
+	// 这正是"国际版凭据不会被当成国内版去刷新"的根据。
 	if a.Domain == "" {
-		a.Domain = "trae.cn"
+		a.Domain = h.ed().HostDomain()
 	}
 	if a.ApiHost == "" {
-		a.ApiHost = "https://api.trae.com.cn"
+		a.ApiHost = h.ed().OAuthHost
 	}
 	return a, nil
 }

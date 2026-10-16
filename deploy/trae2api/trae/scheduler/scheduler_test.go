@@ -76,13 +76,11 @@ func jsonI64(v int64) string {
 }
 
 func newTestScheduler(f *fakeUpstream, p *pool.Pool, srv *httptest.Server) *Scheduler {
-	up := &upstream.Client{
-		HTTP:      srv.Client(),
-		AgentHost: srv.URL,
-		UgHost:    srv.URL,
-		OAuthHost: srv.URL,
-		ClientID:  upstream.ClientID,
-	}
+	// 这些用例走国内版签到链路，因此以 EditionCN() 为底再改 host：
+	// 零值 Edition 的 CheckinSupported 是 false，会被调度器按"国际版无签到"整轮跳过。
+	ed := upstream.EditionCN()
+	ed.AgentHost, ed.UgHost, ed.OAuthHost = srv.URL, srv.URL, srv.URL
+	up := &upstream.Client{HTTP: srv.Client(), Ed: ed}
 	return New(Config{
 		Pool:         p,
 		Upstream:     up,
@@ -179,7 +177,9 @@ func TestRunRefreshSessionDeadDisables(t *testing.T) {
 	p := pool.New("")
 	p.Add(&auth.Auth{UID: "u1", AccessToken: "old", RefreshToken: "rt", ExpiresAt: 1, ApiHost: srv.URL})
 
-	up := &upstream.Client{HTTP: srv.Client(), AgentHost: srv.URL, UgHost: srv.URL, OAuthHost: srv.URL, ClientID: upstream.ClientID}
+	ed := upstream.EditionCN()
+	ed.AgentHost, ed.UgHost, ed.OAuthHost = srv.URL, srv.URL, srv.URL
+	up := &upstream.Client{HTTP: srv.Client(), Ed: ed}
 	s := New(Config{Pool: p, Upstream: up})
 	s.RunRefreshNow()
 	st, _ := p.Status("u1")

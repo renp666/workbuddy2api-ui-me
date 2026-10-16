@@ -41,6 +41,7 @@ import (
 )
 
 func main() {
+	ed := upstream.FromEnv()
 	dataDir := envOr("TRAE_DATA_DIR", "/data")
 	authDir := envOr("TRAE_AUTH_DIR", filepath.Join(dataDir, "auths"))
 	stateFile := envOr("TRAE_STATE_FILE", filepath.Join(dataDir, "state.json"))
@@ -48,7 +49,10 @@ func main() {
 	listen := envOr("TRAE_LISTEN", "127.0.0.1:7866")
 	callbackListen := envOr("TRAE_CALLBACK_LISTEN", "127.0.0.1:18080")
 	apiKey := os.Getenv("TRAE_API_KEY")
-	defaultModel := envOr("TRAE_DEFAULT_MODEL", upstream.DefaultConfigName)
+	defaultModel := envOr("TRAE_DEFAULT_MODEL", ed.DefaultModelName)
+
+	log.Printf("trae 区域=%s（%s）agent=%s oauth=%s ug=%s 签到=%v 权益口径=%s",
+		ed.Key, ed.Label, ed.AgentHost, ed.OAuthHost, ed.UgHost, ed.CheckinSupported, ed.EntitlementMode)
 
 	if err := os.MkdirAll(authDir, 0o700); err != nil {
 		log.Fatalf("mkdir auths: %v", err)
@@ -63,7 +67,7 @@ func main() {
 	p := pool.New(stateFile)
 	p.SyncToDir(traeAuths)
 
-	up := upstream.New()
+	up := upstream.New(ed)
 	timeout := time.Duration(envInt("TRAE_TIMEOUT_SECONDS", 120)) * time.Second
 	up.HTTP.Timeout = timeout
 	if tr, ok := up.StreamHTTP.Transport.(*http.Transport); ok {

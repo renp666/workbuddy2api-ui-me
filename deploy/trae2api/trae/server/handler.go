@@ -82,7 +82,7 @@ func NewHandler(cfg Config) *Handler {
 		cfg.RefreshSkew = 24 * time.Hour
 	}
 	if cfg.DefaultModel == "" {
-		cfg.DefaultModel = upstream.DefaultConfigName
+		cfg.DefaultModel = handlerEdition(cfg.Upstream).DefaultModelName
 	}
 	h := &Handler{cfg: cfg, mux: http.NewServeMux(), logins: map[string]*pendingLogin{}}
 	h.usage = NewUsageStore(cfg.UsageFile)
@@ -118,6 +118,23 @@ func NewHandler(cfg Config) *Handler {
 	// 用量记录查询（面板「用量」页 Trae 区块数据源）
 	h.mux.HandleFunc("GET /admin/api/usage", h.adminUsage)
 	return h
+}
+
+// ed 返回本进程所属区域。区域只由注入的 upstream.Client 决定，Config 不再重复一份，
+// 避免出现"Client 打国际版、Handler 按国内版显示模型表"的两张皮。
+func (h *Handler) ed() upstream.Edition {
+	if h.cfg.Upstream == nil {
+		return upstream.EditionCN()
+	}
+	return h.cfg.Upstream.Edition()
+}
+
+// handlerEdition 是 NewHandler 阶段（h 尚未构造）取区域的版本。
+func handlerEdition(c *upstream.Client) upstream.Edition {
+	if c == nil {
+		return upstream.EditionCN()
+	}
+	return c.Edition()
 }
 
 // withAdminAuth 校验写操作的 Bearer API Key（常量时间比较，复用 withAuth 逻辑）。
@@ -174,8 +191,12 @@ func (h *Handler) healthz(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) status(w http.ResponseWriter, r *http.Request) {
+	ed := h.ed()
 	writeJSON(w, http.StatusOK, map[string]any{
-		"accounts": h.cfg.Pool.List(),
+		"edition":       ed.Key,
+		"edition_label": ed.Label,
+		"agent_host":    ed.AgentHost,
+		"accounts":      h.cfg.Pool.List(),
 	})
 }
 
@@ -269,6 +290,49 @@ var staticModels = []map[string]any{
 	{"id": "summary", "object": "model", "created": 1753600000, "owned_by": "trae-solo", "context_length": 131072},
 }
 
+// staticModelsIntl 国际版兜底表：动态拉取失败时使用。
+// 取值来自 2026-10-16 本机 SG Pro 账号对 coresg-normal.trae.ai 的目录实测
+// （solo_work_lite 8 个第一方 + solo_agent 40 个，剔除 custom_model_* BYOK 槽位与
+// fast_apply/title_generation 等内部工具模型后留下模型本体）。
+// 与 CN 表同理：不含本网关别名，列出去会形成回环。
+var staticModelsIntl = []map[string]any{
+	{"id": "gpt-6.1-sol", "object": "model", "created": 1761000000, "owned_by": "trae-solo", "context_length": 131072},
+	{"id": "gpt-6-sol", "object": "model", "created": 1761000000, "owned_by": "trae-solo", "context_length": 131072},
+	{"id": "gpt-6-luna", "object": "model", "created": 1761000000, "owned_by": "trae-solo", "context_length": 131072},
+	{"id": "gpt-6-astra", "object": "model", "created": 1761000000, "owned_by": "trae-solo", "context_length": 131072},
+	{"id": "gpt-5.6-sol", "object": "model", "created": 1761000000, "owned_by": "trae-solo", "context_length": 131072},
+	{"id": "gpt-5.6-terra", "object": "model", "created": 1761000000, "owned_by": "trae-solo", "context_length": 131072},
+	{"id": "gpt-5.6-luna", "object": "model", "created": 1761000000, "owned_by": "trae-solo", "context_length": 131072},
+	{"id": "gpt-5.5", "object": "model", "created": 1761000000, "owned_by": "trae-solo", "context_length": 131072},
+	{"id": "gpt-5.4", "object": "model", "created": 1761000000, "owned_by": "trae-solo", "context_length": 131072},
+	{"id": "gpt-5.2", "object": "model", "created": 1761000000, "owned_by": "trae-solo", "context_length": 131072},
+	{"id": "gpt-5.2-codex-paygo", "object": "model", "created": 1761000000, "owned_by": "trae-solo", "context_length": 131072},
+	{"id": "gpt-5.1-paygo", "object": "model", "created": 1761000000, "owned_by": "trae-solo", "context_length": 131072},
+	{"id": "gpt-5-paygo", "object": "model", "created": 1761000000, "owned_by": "trae-solo", "context_length": 131072},
+	{"id": "glm-5.2", "object": "model", "created": 1761000000, "owned_by": "trae-solo", "context_length": 131072},
+	{"id": "deepseek-v4.1-flash", "object": "model", "created": 1761000000, "owned_by": "trae-solo", "context_length": 131072},
+	{"id": "deepseek-v4-flash-0731", "object": "model", "created": 1761000000, "owned_by": "trae-solo", "context_length": 131072},
+	{"id": "deepseek-v4-pro-0813", "object": "model", "created": 1761000000, "owned_by": "trae-solo", "context_length": 131072},
+	{"id": "kimi-k3", "object": "model", "created": 1761000000, "owned_by": "trae-solo", "context_length": 131072},
+	{"id": "kimi-k2.7-code", "object": "model", "created": 1761000000, "owned_by": "trae-solo", "context_length": 131072},
+	{"id": "kimi-k2.5", "object": "model", "created": 1761000000, "owned_by": "trae-solo", "context_length": 131072},
+	{"id": "gemini-3.1-pro", "object": "model", "created": 1761000000, "owned_by": "trae-solo", "context_length": 131072},
+	{"id": "gemini-3.1-pro-paygo", "object": "model", "created": 1761000000, "owned_by": "trae-solo", "context_length": 131072},
+	{"id": "gemini-3-flash-solo", "object": "model", "created": 1761000000, "owned_by": "trae-solo", "context_length": 131072},
+	{"id": "minimax-m3", "object": "model", "created": 1761000000, "owned_by": "trae-solo", "context_length": 131072},
+	{"id": "minimax-m2.7", "object": "model", "created": 1761000000, "owned_by": "trae-solo", "context_length": 131072},
+	{"id": "Dola-Seed-2.0-Code", "object": "model", "created": 1761000000, "owned_by": "trae-solo", "context_length": 131072},
+}
+
+// staticModelsFor 按区域选兜底表。国际版绝不能落回 CN 表：那 32 个 config_name
+// 在国际版上游一律 4001，列出去等于承诺一批调不动的模型。
+func (h *Handler) staticModelsFor() []map[string]any {
+	if h.ed().Key == "intl" {
+		return staticModelsIntl
+	}
+	return staticModels
+}
+
 // dynamicModelsCache 动态模型缓存（成功 1h / 失败负缓存 5min）。
 var dynamicModelsCache struct {
 	sync.RWMutex
@@ -296,8 +360,9 @@ func (h *Handler) models(w http.ResponseWriter, r *http.Request) {
 // （fetchModelsScope 已按 config_source==3 过滤），也不在静态表里——列出去会让
 // trae-<别名> 指回本网关自身，形成回环。
 func (h *Handler) modelList() []map[string]any {
+	statics := h.staticModelsFor()
 	if infos := h.fetchDynamicModels(); len(infos) > 0 {
-		out := make([]map[string]any, 0, len(infos)+len(staticModels))
+		out := make([]map[string]any, 0, len(infos)+len(statics))
 		seen := make(map[string]bool, len(infos))
 		for _, mi := range infos {
 			entry := map[string]any{
@@ -322,14 +387,14 @@ func (h *Handler) modelList() []map[string]any {
 			seen[mi.ID] = true
 			out = append(out, entry)
 		}
-		for _, m := range staticModels {
+		for _, m := range statics {
 			if id, _ := m["id"].(string); id != "" && !seen[id] {
 				out = append(out, m)
 			}
 		}
 		return out
 	}
-	return staticModels
+	return statics
 }
 
 // fetchDynamicModels 从池中任一健康账号拉模型列表（get_detail_param），缓存 1h。
@@ -459,6 +524,15 @@ func (h *Handler) chatCompletions(w http.ResponseWriter, r *http.Request) {
 				h.cfg.Pool.Cooldown(acct.UID, pool.CoolSoft, h.cfg.SoftCooldown, "upstream 404")
 				lastErr = &upstream.Error{Kind: kind, Status: status, Msg: string(respBody)}
 				continue
+			case upstream.ErrClient:
+				// 4xx 里不属于限流/掉线/404 的，都是上游在说"你这个请求体不对"：
+				// 换账号重试不会改变结果，却会把同一账号的连续错误累计到冷却，
+				// 最后回给调用方一条误导性的「all accounts unavailable」。
+				// 这里不动池状态，把上游原话以 400 直接回给调用方。
+				// 不关 rc：ChatStream 在 status>=400 时已读完并关闭 body，返回的是 nil。
+				h.usage.record(acct.UID, peek.Model, 0, 0, true)
+				writeOpenAIError(w, http.StatusBadRequest, "bad_request", truncateBody(string(respBody)))
+				return
 			default:
 				h.cfg.Pool.NoteError(acct.UID, h.cfg.ErrThreshold, h.cfg.ErrCooldown)
 				lastErr = &upstream.Error{Kind: kind, Status: status, Msg: string(respBody)}
@@ -541,6 +615,16 @@ func writeJSON(w http.ResponseWriter, status int, v any) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
 	_, _ = w.Write(raw)
+}
+
+// truncateBody 截断上游错误体，避免把整页 HTML 回显给调用方（也限制日志体量）。
+func truncateBody(s string) string {
+	s = strings.TrimSpace(s)
+	const limit = 400
+	if len(s) <= limit {
+		return s
+	}
+	return s[:limit] + "…"
 }
 
 func writeOpenAIError(w http.ResponseWriter, status int, code, msg string) {

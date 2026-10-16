@@ -21,8 +21,16 @@ func (h *Handler) adminPage(w http.ResponseWriter, r *http.Request) {
 }
 
 // adminCredits 查询全部账号的实时额度 + 签到状态（并发拉取上游）。
+//
+// 权益表达随区域分叉：国内版是积分余额（ent_usage），国际版是订阅档位（pay_status）。
+// 国际版刻意不把订阅折算成一个积分数字——上游从没给过那个量，编一个数会污染
+// core 账本与管理页口径（见仓库 AGENTS.md「未知积分或奖励不能变成零」同源的道理）。
 func (h *Handler) adminCredits(w http.ResponseWriter, r *http.Request) {
-	type acct struct {
+	ed := h.ed()
+	// 两种权益口径是两套条目形状，不共用一个结构：共用就会在订阅模式下把
+	// remain/limit/used/packs 打成 0，而 0 在页面上长得像"已知且为零"——
+	// 上游从没给过这些量，补零等于编造（见仓库 AGENTS.md「未知积分或奖励不能变成零」）。
+	type creditAcct struct {
 		UID            string `json:"uid"`
 		Nickname       string `json:"nickname"`
 		Remain         int64  `json:"remain"`
@@ -36,9 +44,21 @@ func (h *Handler) adminCredits(w http.ResponseWriter, r *http.Request) {
 		Disabled       bool   `json:"disabled"`
 		Error          string `json:"error,omitempty"`
 	}
+	type subscriptionAcct struct {
+		UID                string `json:"uid"`
+		Nickname           string `json:"nickname"`
+		Subscription       string `json:"subscription,omitempty"` // 空 = 未知，不下发该键
+		IdentityID         int    `json:"identity_id"`
+		HasPackage         bool   `json:"has_package"`
+		FastRequestPer     int64  `json:"fast_request_per"`
+		DollarUsageBilling bool   `json:"dollar_usage_billing"`
+		Cooling            bool   `json:"cooling"`
+		Disabled           bool   `json:"disabled"`
+		Error              string `json:"error,omitempty"`
+	}
 
 	st := h.cfg.Pool.List()
-	out := make([]acct, len(st))
+	out := make([]any, len(st))
 	var wg sync.WaitGroup
 	for i, s := range st {
 		wg.Add(1)
@@ -46,14 +66,27 @@ func (h *Handler) adminCredits(w http.ResponseWriter, r *http.Request) {
 			defer wg.Done()
 			a := h.cfg.Pool.AuthByUID(s.UID)
 			if a == nil {
-				out[i] = acct{UID: s.UID, Nickname: s.Nickname, Error: "no auth found"}
+				out[i] = creditAcct{UID: s.UID, Nickname: s.Nickname, Error: "no auth found"}
 				return
 			}
-			var ac acct
-			ac.UID = s.UID
-			ac.Nickname = s.Nickname
-			ac.Cooling = s.Cooling
-			ac.Disabled = s.Disabled
+
+			if ed.EntitlementMode == "subscription" {
+				ac := subscriptionAcct{UID: s.UID, Nickname: s.Nickname, Cooling: s.Cooling, Disabled: s.Disabled}
+				sub, err := h.cfg.Upstream.FetchSubscription(a)
+				if err != nil {
+					ac.Error = "subscription: " + err.Error()
+				} else {
+					ac.Subscription = sub.Identity
+					ac.IdentityID = sub.IdentityID
+					ac.HasPackage = sub.HasPackage
+					ac.FastRequestPer = sub.FastRequest
+					ac.DollarUsageBilling = sub.DollarUsageBilling
+				}
+				out[i] = ac
+				return
+			}
+
+			ac := creditAcct{UID: s.UID, Nickname: s.Nickname, Cooling: s.Cooling, Disabled: s.Disabled}
 			remain, limit, used, packs, err := h.cfg.Upstream.EntUsage(a)
 			if err != nil {
 				ac.Error = "ent_usage: " + err.Error()
@@ -75,7 +108,10 @@ func (h *Handler) adminCredits(w http.ResponseWriter, r *http.Request) {
 	wg.Wait()
 
 	writeJSON(w, http.StatusOK, map[string]any{
-		"fetched_at": time.Now().Format("2006-01-02 15:04:05"),
-		"accounts":   out,
+		"fetched_at":        time.Now().Format("2006-01-02 15:04:05"),
+		"edition":           ed.Key,
+		"entitlement_mode":  ed.EntitlementMode,
+		"checkin_supported": ed.CheckinSupported,
+		"accounts":          out,
 	})
 }

@@ -22,6 +22,12 @@ const soloSSE = "event:metadata\ndata:{\"model\":\"\",\"session_id\":\"s1\"}\n\n
 // newFakeUpstream 返回 ChatStream 走 fake 的 upstream.Client。
 func newFakeUpstream(t *testing.T, behavior func(auth string) (status int, body string, isStream bool)) *upstream.Client {
 	t.Helper()
+	// 以国内版 Edition 为底改 host：零值 Edition 会被判成"无签到体系"的国际版，
+	// 让依赖 credits 的用例静默走另一条分支。
+	ed := upstream.EditionCN()
+	ed.AgentHost = "https://fake.example"
+	ed.UgHost = "https://fake.example"
+	ed.OAuthHost = "https://fake.example"
 	return &upstream.Client{
 		HTTP: &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
 			authz := r.Header.Get("Authorization")
@@ -36,10 +42,7 @@ func newFakeUpstream(t *testing.T, behavior func(auth string) (status int, body 
 				Body:       io.NopCloser(strings.NewReader(body)),
 			}, nil
 		})},
-		AgentHost: "https://fake.example",
-		UgHost:    "https://fake.example",
-		OAuthHost: "https://fake.example",
-		ClientID:  upstream.ClientID,
+		Ed: ed,
 	}
 }
 
@@ -201,7 +204,7 @@ func TestChatSessionDeadDisables(t *testing.T) {
 }
 
 func TestChatUnknownModel400(t *testing.T) {
-	h := NewHandler(Config{Pool: testPoolWith(&auth.Auth{UID: "u1", AccessToken: "at", ExpiresAt: 9999999999}), Upstream: upstream.New()})
+	h := NewHandler(Config{Pool: testPoolWith(&auth.Auth{UID: "u1", AccessToken: "at", ExpiresAt: 9999999999}), Upstream: upstream.New(upstream.EditionCN())})
 	req := httptest.NewRequest("POST", "/v1/chat/completions", strings.NewReader(`{"model":"does-not-exist-xyz","messages":[]}`))
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, req)
@@ -216,7 +219,7 @@ func TestChatUnknownModel400(t *testing.T) {
 }
 
 func TestModelsEndpoint(t *testing.T) {
-	h := NewHandler(Config{Pool: testPoolWith(&auth.Auth{UID: "u1", AccessToken: "at", ExpiresAt: 9999999999}), Upstream: upstream.New()})
+	h := NewHandler(Config{Pool: testPoolWith(&auth.Auth{UID: "u1", AccessToken: "at", ExpiresAt: 9999999999}), Upstream: upstream.New(upstream.EditionCN())})
 	req := httptest.NewRequest("GET", "/v1/models", nil)
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, req)
@@ -254,7 +257,7 @@ func TestModelsEndpoint(t *testing.T) {
 func TestAPIKeyAuth(t *testing.T) {
 	h := NewHandler(Config{
 		Pool:     testPoolWith(&auth.Auth{UID: "u1", AccessToken: "at", ExpiresAt: 9999999999}),
-		Upstream: upstream.New(),
+		Upstream: upstream.New(upstream.EditionCN()),
 		APIKey:   "test-key",
 	})
 	// 无 key → 401
@@ -283,7 +286,7 @@ func TestAPIKeyAuth(t *testing.T) {
 }
 
 func TestRequestBodyTooLarge(t *testing.T) {
-	h := NewHandler(Config{Pool: testPoolWith(&auth.Auth{UID: "u1", AccessToken: "at", ExpiresAt: 9999999999}), Upstream: upstream.New()})
+	h := NewHandler(Config{Pool: testPoolWith(&auth.Auth{UID: "u1", AccessToken: "at", ExpiresAt: 9999999999}), Upstream: upstream.New(upstream.EditionCN())})
 	big := strings.Repeat("a", maxBodyBytes+1)
 	req := httptest.NewRequest("POST", "/v1/chat/completions", strings.NewReader(big))
 	rec := httptest.NewRecorder()
@@ -301,7 +304,7 @@ func TestRequestBodyTooLarge(t *testing.T) {
 func TestAPIKeyAuthCaseInsensitivePrefix(t *testing.T) {
 	h := NewHandler(Config{
 		Pool:     testPoolWith(&auth.Auth{UID: "u1", AccessToken: "at", ExpiresAt: 9999999999}),
-		Upstream: upstream.New(),
+		Upstream: upstream.New(upstream.EditionCN()),
 		APIKey:   "test-key",
 	})
 	// 大小写不同的 Bearer 前缀也应接受（按规范，前缀大小写不敏感）。
@@ -325,7 +328,7 @@ func TestAPIKeyAuthCaseInsensitivePrefix(t *testing.T) {
 func TestStatusEndpoint(t *testing.T) {
 	p := testPoolWith(&auth.Auth{UID: "u1", Nickname: "nick", AccessToken: "at", ExpiresAt: 9999999999})
 	p.SetCredits("u1", 42)
-	h := NewHandler(Config{Pool: p, Upstream: upstream.New()})
+	h := NewHandler(Config{Pool: p, Upstream: upstream.New(upstream.EditionCN())})
 	req := httptest.NewRequest("GET", "/status", nil)
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, req)
@@ -342,7 +345,7 @@ func TestStatusEndpoint(t *testing.T) {
 }
 
 func TestHealthz(t *testing.T) {
-	h := NewHandler(Config{Pool: pool.New(""), Upstream: upstream.New()})
+	h := NewHandler(Config{Pool: pool.New(""), Upstream: upstream.New(upstream.EditionCN())})
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, httptest.NewRequest("GET", "/healthz", nil))
 	if rec.Code != 200 {

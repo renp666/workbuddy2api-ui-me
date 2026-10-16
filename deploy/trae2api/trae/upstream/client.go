@@ -5,6 +5,7 @@ package upstream
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log"
@@ -92,7 +93,8 @@ func Classify(status int, body string) ErrKind {
 	return ErrNone
 }
 
-// Client SOLO 上游 HTTP 客户端。Host 字段可覆盖便于测试。
+// Client SOLO 上游 HTTP 客户端。Ed 承载全部区域可变项（host/client_id/版本/端点路径），
+// 一只进程一个区域；测试里构造零值 Ed 即回落国内版预设。
 type Client struct {
 	// HTTP 用于短 JSON 请求（ExchangeToken/模型/签到/积分），有总超时兜底。
 	HTTP *http.Client
@@ -101,14 +103,11 @@ type Client struct {
 	// 与 HTTP 共享同一 Transport（连接池复用）。nil 时 ChatStream 回退 HTTP。
 	StreamHTTP *http.Client
 
-	AgentHost string // https://trae-api-cn.mchost.guru
-	UgHost    string // https://api.trae.cn
-	OAuthHost string // https://api.trae.com.cn
-	ClientID  string // en1oxy7wnw8j9n
+	Ed Edition
 }
 
-// New 生产默认值。配置连接池减少 TLS 握手。
-func New() *Client {
+// New 按给定 Edition 建客户端（连接池复用，减少 TLS 握手）。
+func New(ed Edition) *Client {
 	tr := &http.Transport{
 		MaxIdleConns:          100,
 		MaxIdleConnsPerHost:   20,
@@ -118,16 +117,19 @@ func New() *Client {
 	return &Client{
 		HTTP:       &http.Client{Timeout: 120 * time.Second, Transport: tr},
 		StreamHTTP: &http.Client{Transport: tr}, // 无总超时
-		AgentHost:  AgentHost,
-		UgHost:     UgHost,
-		OAuthHost:  OAuthHost,
-		ClientID:   ClientID,
+		Ed:         ed,
 	}
 }
 
-func (c *Client) agentBase() string { return c.AgentHost }
-func (c *Client) ugBase() string    { return c.UgHost }
-func (c *Client) oauthBase() string { return c.OAuthHost }
+// ed 返回补齐零值后的区域参数，避免调用方关心是否走过 New。
+func (c *Client) ed() Edition { return c.Ed.normalized() }
+
+// Edition 对外暴露本客户端所属区域，供 handler 选静态模型表/文案时使用。
+func (c *Client) Edition() Edition { return c.ed() }
+
+func (c *Client) agentBase() string { return c.ed().AgentHost }
+func (c *Client) ugBase() string    { return c.ed().UgHost }
+func (c *Client) oauthBase() string { return c.ed().OAuthHost }
 
 // doJSON 发请求并解 JSON；HTTP 非 2xx 时返回带 body 片段的 *Error。
 func (c *Client) doJSON(req *http.Request) (json.RawMessage, error) {
@@ -180,7 +182,7 @@ func (c *Client) refreshLocked(a *auth.Auth) error {
 		host = c.oauthBase()
 	}
 	body := map[string]any{
-		"ClientID":     c.ClientID,
+		"ClientID":     c.ed().ClientID,
 		"RefreshToken": a.RefreshToken, // 已持 a 写锁，直接读
 		"ClientSecret": "-",
 		"UserID":       "",
@@ -190,7 +192,7 @@ func (c *Client) refreshLocked(a *auth.Auth) error {
 	if err != nil {
 		return err
 	}
-	OAuthHeaders(req)
+	OAuthHeaders(req, c.Ed)
 	data, err := c.doJSON(req)
 	if err != nil {
 		return err
@@ -241,7 +243,7 @@ func (c *Client) ChatStream(a *auth.Auth, body []byte) (rc io.ReadCloser, status
 	if err != nil {
 		return nil, 0, nil, err
 	}
-	SOLOHeaders(req, a, true)
+	SOLOHeaders(req, a, true, c.Ed)
 	// 用专用流客户端（无总超时），避免长 SSE 流被 HTTP.Timeout 截断。
 	hc := c.HTTP
 	if c.StreamHTTP != nil {
@@ -312,7 +314,7 @@ func creditsFromContact(raw string) string {
 func (c *Client) FetchModels(a *auth.Auth) ([]ModelInfo, error) {
 	seen := map[string]bool{}
 	out := make([]ModelInfo, 0, 64)
-	for _, fn := range []string{Function, FunctionAgent} {
+	for _, fn := range []string{c.ed().Function, c.ed().FunctionAgent} {
 		infos, err := c.fetchModelsScope(a, fn)
 		if err != nil {
 			if len(out) > 0 {
@@ -351,7 +353,7 @@ func (c *Client) fetchModelsScope(a *auth.Auth, function string) ([]ModelInfo, e
 	if err != nil {
 		return nil, err
 	}
-	SOLOHeaders(req, a, false)
+	SOLOHeaders(req, a, false, c.Ed)
 	data, err := c.doJSON(req)
 	if err != nil {
 		return nil, err
@@ -378,10 +380,12 @@ func (c *Client) fetchModelsScope(a *auth.Auth, function string) ([]ModelInfo, e
 		if cfg.ConfigName == "" {
 			continue
 		}
-		// config_source==3（= display_config.is_custom_model）是用户在本机 IDE 里人工添加的
-		// 「本地配置模型」。本网关自己的别名（no1/no22/gateway-auto/cn:*/global:*）正是这样被
-		// 加回上游目录的：再原样列出去，trae-<别名> 会指回本网关自身，形成回环（俄罗斯套娃）。
-		if cfg.ConfigSource == customConfigSource || cfg.DisplayConfig.IsCustomModel {
+		// config_source==3（= display_config.is_custom_model）在本通道里等价于
+		// "本网关自己的别名被人工加进 IDE 后回流"（no1/no22/gateway-auto/cn:*/global:*）。
+		// 再原样列出去，trae-<别名> 会指回本网关自身，形成回环（俄罗斯套娃）。
+		// 国际版没有这个生态（本机客户端未装国际版 IDE，别名无从注入），且它的
+		// custom_model_* 是 BYOK 槽位而非别名，故按区域开关。
+		if !c.ed().KeepCustomModels && (cfg.ConfigSource == customConfigSource || cfg.DisplayConfig.IsCustomModel) {
 			continue
 		}
 		out = append(out, ModelInfo{
@@ -396,13 +400,20 @@ func (c *Client) fetchModelsScope(a *auth.Auth, function string) ([]ModelInfo, e
 	return out, nil
 }
 
+// ErrCheckinUnsupported 该区域没有签到/积分体系（国际版）。
+// 调用方据此跳过，而不是发一个注定 404 的请求再把告警刷满调度日志。
+var ErrCheckinUnsupported = errors.New("checkin/credits not supported in this edition")
+
 // CheckinStatus 查询签到状态。
 func (c *Client) CheckinStatus(a *auth.Auth) (checkedIn bool, credits int64, enable bool, err error) {
-	req, err := http.NewRequest(http.MethodPost, c.ugBase()+EpCheckinStatus, bytes.NewReader([]byte("{}")))
+	if !c.ed().CheckinSupported {
+		return false, 0, false, ErrCheckinUnsupported
+	}
+	req, err := http.NewRequest(http.MethodPost, c.ugBase()+c.ed().EpCheckinStatus, bytes.NewReader([]byte("{}")))
 	if err != nil {
 		return false, 0, false, err
 	}
-	UgHeaders(req, a)
+	UgHeaders(req, a, c.Ed)
 	data, err := c.doJSON(req)
 	if err != nil {
 		return false, 0, false, err
@@ -420,13 +431,70 @@ func (c *Client) CheckinStatus(a *auth.Auth) (checkedIn bool, credits int64, ena
 
 // CheckinClaim 执行签到。
 func (c *Client) CheckinClaim(a *auth.Auth) error {
-	req, err := http.NewRequest(http.MethodPost, c.ugBase()+EpCheckinClaim, bytes.NewReader([]byte("{}")))
+	if !c.ed().CheckinSupported {
+		return ErrCheckinUnsupported
+	}
+	req, err := http.NewRequest(http.MethodPost, c.ugBase()+c.ed().EpCheckinClaim, bytes.NewReader([]byte("{}")))
 	if err != nil {
 		return err
 	}
-	UgHeaders(req, a)
+	UgHeaders(req, a, c.Ed)
 	_, err = c.doJSON(req)
 	return err
+}
+
+// Subscription 查国际版订阅档位（ide_user_pay_status v1，实测端点）。
+//
+// 国际版没有"积分余额"这个量，档位（Pro/Free）才是它的权益表达；返回值刻意不折算成
+// 积分数，避免 core 账本与页面出现一个上游从没给过的数字。
+//
+// 字段名以**真 API 的 snake_case** 为准。另有一份形状相近的 camelCase 数据在客户端本地
+// 缓存 `iCubeEntitlementInfo://icube.cloudide` 里（identityStr/hasPackage/enableEntitlement），
+// 那不是接口响应；照它解析会全员解成空值（2026-10-16 实测踩过，故在此钉住）。
+type Subscription struct {
+	Identity    string `json:"identity"`     // user_pay_identity_str，如 "Pro"
+	IdentityID  int    `json:"identity_id"`  // user_pay_identity，档位编号
+	HasPackage  bool   `json:"has_package"`  // has_package
+	FastRequest int64  `json:"fast_request"` // detail.fast_request_per
+	// DollarUsageBilling：该账号按美元用量计费（与国内版积分不同轨，页面据此避免误标）。
+	DollarUsageBilling bool `json:"dollar_usage_billing"`
+}
+
+// FetchSubscription 拉订阅态；上游字段随版本演进，这里只取判得动的几项。
+func (c *Client) FetchSubscription(a *auth.Auth) (*Subscription, error) {
+	path := c.ed().EpSubscription
+	if path == "" {
+		return nil, ErrCheckinUnsupported
+	}
+	req, err := http.NewRequest(http.MethodPost, c.ugBase()+path, bytes.NewReader([]byte("{}")))
+	if err != nil {
+		return nil, err
+	}
+	UgHeaders(req, a, c.Ed)
+	data, err := c.doJSON(req)
+	if err != nil {
+		return nil, err
+	}
+	var resp struct {
+		UserPayIdentityStr   string `json:"user_pay_identity_str"`
+		UserPayIdentity      int    `json:"user_pay_identity"`
+		HasPackage           bool   `json:"has_package"`
+		IsDollarUsageBilling bool   `json:"is_dollar_usage_billing"`
+		Detail               struct {
+			FastRequestPer int64 `json:"fast_request_per"`
+		} `json:"detail"`
+	}
+	if err := json.Unmarshal(data, &resp); err != nil {
+		return nil, fmt.Errorf("subscription parse: %w", err)
+	}
+	// 档位名为空时不编一个（比如回落成 "Free"）：解不出就是未知，由上层显示「未知」。
+	return &Subscription{
+		Identity:           resp.UserPayIdentityStr,
+		IdentityID:         resp.UserPayIdentity,
+		HasPackage:         resp.HasPackage,
+		FastRequest:        resp.Detail.FastRequestPer,
+		DollarUsageBilling: resp.IsDollarUsageBilling,
+	}, nil
 }
 
 // UserEntUsage 聚合积分（ide_user_ent_usage 的 credits_limit 求和）。
@@ -438,11 +506,14 @@ func (c *Client) UserEntUsage(a *auth.Auth) (remain int64, err error) {
 // EntUsage 查询账号额度明细（积分总量/已用/剩余/权益包数）。
 // remain = limit - used，usage.credits_amount 是已用积分（实测）。
 func (c *Client) EntUsage(a *auth.Auth) (remain, limit, used int64, packs int, err error) {
-	req, err := http.NewRequest(http.MethodPost, c.ugBase()+EpEntUsage, bytes.NewReader([]byte("{}")))
+	if !c.ed().CheckinSupported {
+		return 0, 0, 0, 0, ErrCheckinUnsupported
+	}
+	req, err := http.NewRequest(http.MethodPost, c.ugBase()+c.ed().EpEntUsage, bytes.NewReader([]byte("{}")))
 	if err != nil {
 		return 0, 0, 0, 0, err
 	}
-	UgHeaders(req, a)
+	UgHeaders(req, a, c.Ed)
 	data, err := c.doJSON(req)
 	if err != nil {
 		return 0, 0, 0, 0, err
@@ -482,13 +553,13 @@ func (c *Client) GetUserInfo(a *auth.Auth) (uid, nickname, enterpriseID string, 
 	if host == "" {
 		host = c.oauthBase()
 	}
-	body := map[string]any{"ReqSource": "IDE", "IDEVersion": IdeVersion}
+	body := map[string]any{"ReqSource": "IDE", "IDEVersion": c.ed().IdeVersion}
 	raw, _ := json.Marshal(body)
 	req, err := http.NewRequest(http.MethodPost, host+EpUserInfo, bytes.NewReader(raw))
 	if err != nil {
 		return "", "", "", err
 	}
-	OAuthHeaders(req)
+	OAuthHeaders(req, c.Ed)
 	req.Header.Set("X-Cloudide-Token", a.JWT()) // 读锁快照
 	data, err := c.doJSON(req)
 	if err != nil {

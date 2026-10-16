@@ -74,7 +74,7 @@ func (h *Handler) adminLoginStart(w http.ResponseWriter, r *http.Request) {
 		writeOpenAIError(w, http.StatusInternalServerError, "rand_failed", err.Error())
 		return
 	}
-	loginURL := BuildLoginURL(machineID, deviceID, callbackURL)
+	loginURL := BuildLoginURL(machineID, deviceID, callbackURL, h.ed())
 
 	pendingID, err := randomHex(8) // hex16
 	if err != nil {
@@ -175,8 +175,8 @@ func (h *Handler) authorizeCallback(w http.ResponseWriter, r *http.Request) {
 		UID:          info.UID,
 		Nickname:     info.Nickname,
 		EnterpriseID: info.EnterpriseID,
-		Domain:       "trae.cn",
-		ApiHost:      "https://api.trae.com.cn",
+		Domain:       h.ed().HostDomain(),
+		ApiHost:      h.ed().OAuthHost,
 		MachineID:    machineID,
 		DeviceID:     deviceID,
 		ExpiresAt:    info.ExpiresAt,

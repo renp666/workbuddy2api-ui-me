@@ -48,12 +48,14 @@ func jsonResp(status int, body string) *http.Response {
 }
 
 func testClient(fn rtFunc) *Client {
+	// 底 Edition 用国内版：这些用例覆盖签到/积分链路，零值 Edition 会把它们判成国际版跳过。
+	ed := EditionCN()
+	ed.AgentHost = "https://agent.example"
+	ed.UgHost = "https://ug.example"
+	ed.OAuthHost = "https://oauth.example"
 	return &Client{
-		HTTP:      &http.Client{Transport: fn},
-		AgentHost: "https://agent.example",
-		UgHost:    "https://ug.example",
-		OAuthHost: "https://oauth.example",
-		ClientID:  ClientID,
+		HTTP: &http.Client{Transport: fn},
+		Ed:   ed,
 	}
 }
 
