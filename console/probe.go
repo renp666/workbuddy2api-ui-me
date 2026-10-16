@@ -129,9 +129,9 @@ func (p *probeRunner) snapshot() map[string]any {
 		}
 	}
 	return map[string]any{
-		"running": p.running,
-		"done":    p.done,
-		"total":   p.total,
+		"running":  p.running,
+		"done":     p.done,
+		"total":    p.total,
 		"channels": channels,
 	}
 }
@@ -241,11 +241,11 @@ func (h *server) probeOne(c routeChannel, public string) map[string]any {
 		native = strings.TrimPrefix(public, prefix)
 	}
 	body, err := json.Marshal(map[string]any{
-		"model":            native,
-		"messages":         []map[string]string{{"role": "user", "content": "ping"}},
-		"max_tokens":       probeMaxTokens,
-		"stream":           true,
-		"stream_options":   map[string]any{"include_usage": true},
+		"model":          native,
+		"messages":       []map[string]string{{"role": "user", "content": "ping"}},
+		"max_tokens":     probeMaxTokens,
+		"stream":         true,
+		"stream_options": map[string]any{"include_usage": true},
 	})
 	if err != nil {
 		return probeFailResult("error", "探测请求构造失败", 0)
@@ -290,7 +290,7 @@ func (h *server) probeOne(c routeChannel, public string) map[string]any {
 	defer response.Body.Close()
 	if response.StatusCode != http.StatusOK {
 		detail := readProbeError(response.Body)
-		return probeFailResult(probeFailureCategory(response.StatusCode), detail, int(time.Since(start).Milliseconds()))
+		return probeFailResult(failureCategory(response.StatusCode, detail), detail, int(time.Since(start).Milliseconds()))
 	}
 	ttftMs := -1
 	finish := ""
@@ -373,8 +373,21 @@ func round1(v float64) float64 {
 	return float64(int64(v*10+0.5)) / 10
 }
 
-// probeFailureCategory 把 HTTP 状态码归类到前端 modelFailureLabels 认识的键。
-func probeFailureCategory(status int) string {
+// failureCategory 是错误归类的唯一真源（健康检查 M1 · F2）：手工探测与公共出口
+// 调用侧共用这一份口径，禁止两张皮。归类顺序：
+//
+//   - 错误体含 pinned_account_unavailable → pin。core 的严格 pin 账号被锁时回 503，
+//     若不先拎出来会被 upstream_error 吞掉——这个错误极具误导性（域内其余账号再
+//     健康也用不上），必须单独成类让人看见。
+//   - 401/403 → auth；404 → model_error；429 → rate_limit；408/504 → timeout；
+//     其余 5xx → upstream_error；其余 → error。
+//
+// form_error（串味/agent 冒充）是保留值，M1 不自动打。前端 modelFailureLabels 已
+// 认识的键（auth/model_error/rate_limit/error）语义保持不变，新键走前端兜底展示。
+func failureCategory(status int, body string) string {
+	if strings.Contains(strings.ToLower(body), "pinned_account_unavailable") {
+		return "pin"
+	}
 	switch {
 	case status == http.StatusUnauthorized || status == http.StatusForbidden:
 		return "auth"
@@ -382,6 +395,10 @@ func probeFailureCategory(status int) string {
 		return "model_error"
 	case status == http.StatusTooManyRequests:
 		return "rate_limit"
+	case status == http.StatusRequestTimeout || status == http.StatusGatewayTimeout:
+		return "timeout"
+	case status >= 500 && status <= 599:
+		return "upstream_error"
 	default:
 		return "error"
 	}

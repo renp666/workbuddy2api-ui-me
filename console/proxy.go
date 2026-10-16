@@ -8,7 +8,10 @@ import (
 	"log"
 	"net/http"
 	"net/http/httputil"
+	"regexp"
+	"strconv"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -162,4 +165,242 @@ func (h *server) sessionActive(r *http.Request) bool {
 	defer h.mu.Unlock()
 	s := h.sessions[sessionID(r)]
 	return s != nil && time.Now().Before(s.expires) && s.owner == sessionFrom(r).owner
+}
+
+// —— 公共出口观测（健康检查 M1 · F1 采集点）———————————————————————
+//
+// 采集点放在这里而不是各通道的 handler：/v1/* 的出口只有两处注册（publicRouter 或
+// 裸 core 代理），在 mux 层包一层就能覆盖「上游非 2xx、超时、上游连接失败、网关侧
+// 拒绝（模型停用/别名停用）」的全部失败分支，不必逐通道改 handler，也不会漏掉将来
+// 新增的通道。观测本身只读已产生的响应与请求，不产生任何上游调用。
+//
+// 纪律（红线 1）：观测是同步的轻量记账（计时 + 有界缓冲），落账在 errors.go 的独立
+// 协程里跑；观测绝不改变状态码、响应头与响应体。
+
+// exitPeekLimit 是提取「请求模型名 / stream 标志」时保留的请求体前缀上限。JSON 请求
+// 的 model 字段总在开头，256 KiB 足以覆盖任何真实对话体；超出即放弃提取，退化为
+// 「按 X-Prism-* 响应头 + 响应 Content-Type 判定」，绝不整份缓存请求体。
+const exitPeekLimit = 256 << 10
+
+// exitObservation 是一次公共出口调用的观测结果，交给 errors.go 归档。
+type exitObservation struct {
+	status       int
+	body         string
+	api          string
+	mode         string
+	model        string
+	prismChannel string
+	routedModel  string
+	client       string
+	durationMs   int64
+	retryCount   int
+}
+
+// observedExitPath 判定该请求是否属于要观测的对话出口。只看三个对话端点：
+// /v1/models、/status 这类读取端点不是「调用」，不进错误账本。
+func observedExitPath(r *http.Request) bool {
+	if r.Method != http.MethodPost {
+		return false
+	}
+	switch r.URL.Path {
+	case "/v1/chat/completions", "/v1/messages", "/v1/responses":
+		return true
+	}
+	return false
+}
+
+// apiForPath 把出口路径映射成 api 字段（chat/messages/responses）。
+func apiForPath(path string) string {
+	switch path {
+	case "/v1/chat/completions":
+		return "chat"
+	case "/v1/messages":
+		return "messages"
+	case "/v1/responses":
+		return "responses"
+	}
+	return ""
+}
+
+// observePublicExits 包装 /v1/* 出口：记录响应状态、失败响应体摘要、请求模型名与
+// 耗时，请求结束后交给 finishExitObserve 归档。非对话端点原样透传，零额外开销。
+func (h *server) observePublicExits(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if h.outcomes == nil || !observedExitPath(r) {
+			next.ServeHTTP(w, r)
+			return
+		}
+		peek := newRequestPeek(exitPeekLimit)
+		if r.Body != nil {
+			r.Body = &peekReader{src: r.Body, peek: peek}
+		}
+		observer := &exitObserver{ResponseWriter: w, start: time.Now()}
+		next.ServeHTTP(observer, r)
+		prefix := peek.snapshot()
+		stream, hasStream := streamFromRequestPrefix(prefix)
+		mode := ""
+		switch {
+		case hasStream && stream:
+			mode = "stream"
+		case hasStream:
+			mode = "sync"
+		case strings.Contains(strings.ToLower(observer.Header().Get("Content-Type")), "text/event-stream"):
+			mode = "stream"
+		default:
+			mode = "sync"
+		}
+		h.finishExitObserve(exitObservation{
+			status:       observer.status,
+			body:         observer.snippet(),
+			api:          apiForPath(r.URL.Path),
+			mode:         mode,
+			model:        modelFromRequestPrefix(prefix),
+			prismChannel: observer.Header().Get("X-Prism-Channel"),
+			routedModel:  observer.Header().Get("X-Prism-Routed-Model"),
+			client:       strings.TrimSpace(h.clientAddress(r) + " " + r.Header.Get("User-Agent")),
+			durationMs:   time.Since(observer.start).Milliseconds(),
+			retryCount:   retryCountFromHeader(observer.Header()),
+		})
+	})
+}
+
+// exitObserver 记录响应状态码，并只在失败（>=400）时保留响应体摘要，成功响应
+// （含 SSE 流）零缓冲。Flush/Unwrap 与 prismHeaderWriter、usageCaptureWriter 同源，
+// 保证流式响应不被本包装截断。
+type exitObserver struct {
+	http.ResponseWriter
+	status  int
+	capture bool
+	buf     []byte
+	start   time.Time
+}
+
+func (o *exitObserver) WriteHeader(code int) {
+	if o.status == 0 {
+		o.status = code
+	}
+	if code >= 400 {
+		o.capture = true
+	}
+	o.ResponseWriter.WriteHeader(code)
+}
+
+func (o *exitObserver) Write(p []byte) (int, error) {
+	if o.status == 0 {
+		o.status = http.StatusOK
+	}
+	if o.capture {
+		if room := errorSnippetScanLimit - len(o.buf); room > 0 {
+			if len(p) < room {
+				room = len(p)
+			}
+			o.buf = append(o.buf, p[:room]...)
+		}
+	}
+	return o.ResponseWriter.Write(p)
+}
+
+func (o *exitObserver) Flush() {
+	_ = http.NewResponseController(o.ResponseWriter).Flush()
+}
+
+func (o *exitObserver) Unwrap() http.ResponseWriter { return o.ResponseWriter }
+
+func (o *exitObserver) snippet() string { return string(o.buf) }
+
+// requestPeek 保存请求体的一段前缀。请求体的读取可能发生在传输层协程里，与
+// ServeHTTP 返回后取快照的时刻并发，因此读写都要加锁。
+type requestPeek struct {
+	mu    sync.Mutex
+	buf   []byte
+	limit int
+}
+
+func newRequestPeek(limit int) *requestPeek { return &requestPeek{limit: limit} }
+
+func (p *requestPeek) capture(b []byte) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if room := p.limit - len(p.buf); room > 0 {
+		if len(b) < room {
+			room = len(b)
+		}
+		p.buf = append(p.buf, b[:room]...)
+	}
+}
+
+func (p *requestPeek) snapshot() []byte {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return append([]byte(nil), p.buf...)
+}
+
+// peekReader 边透传请求体边留存前缀，不额外整份拷贝：前缀上限之外的内容原样流过。
+type peekReader struct {
+	src  io.Reader
+	peek *requestPeek
+}
+
+func (r *peekReader) Read(b []byte) (int, error) {
+	n, err := r.src.Read(b)
+	if n > 0 {
+		r.peek.capture(b[:n])
+	}
+	return n, err
+}
+
+// Close 透传底层请求体的关闭，保证包装后仍满足 io.ReadCloser（r.Body 的契约）。
+func (r *peekReader) Close() error {
+	if c, ok := r.src.(io.Closer); ok {
+		return c.Close()
+	}
+	return nil
+}
+
+// modelFieldPattern 是截断前缀里的 model 字段兜底提取（前缀被截断时 JSON 整体
+// 反序列化会失败）。
+var modelFieldPattern = regexp.MustCompile(`"model"\s*:\s*"([^"]*)"`)
+
+var streamFieldPattern = regexp.MustCompile(`"stream"\s*:\s*(true|false)`)
+
+// modelFromRequestPrefix 从请求体前缀取 model 字段；取不到返回空串（按未知处理，
+// 绝不猜）。
+func modelFromRequestPrefix(prefix []byte) string {
+	if len(prefix) == 0 {
+		return ""
+	}
+	var envelope struct {
+		Model string `json:"model"`
+	}
+	if json.Unmarshal(prefix, &envelope) == nil && envelope.Model != "" {
+		return envelope.Model
+	}
+	if m := modelFieldPattern.FindSubmatch(prefix); m != nil {
+		return string(m[1])
+	}
+	return ""
+}
+
+// streamFromRequestPrefix 从请求体前缀取 stream 标志。第二个返回值为「是否找到」，
+// 用来区分「显式 false」与「前缀里没有这个字段」。
+func streamFromRequestPrefix(prefix []byte) (bool, bool) {
+	m := streamFieldPattern.FindSubmatch(prefix)
+	if m == nil {
+		return false, false
+	}
+	return string(m[1]) == "true", true
+}
+
+// retryCountFromHeader 取上游回报的重试跳数。console 不掌握 core 内部的重试计数，
+// 只有旁路上游（如 FreeLLMAPI 的 X-Fallback-Attempts）会回报，取不到就留 0。
+func retryCountFromHeader(header http.Header) int {
+	raw := strings.TrimSpace(header.Get("X-Fallback-Attempts"))
+	if raw == "" {
+		return 0
+	}
+	n, err := strconv.Atoi(raw)
+	if err != nil || n < 0 || n > 100 {
+		return 0
+	}
+	return n
 }

@@ -35,6 +35,7 @@ backups/
 .vscode/
 .agents/
 .trae/
+trajectories/
 LOOP.md
 PLAN.md
 SPEC.md
@@ -64,3 +65,4 @@ SPEC.md
 
 # Host-only task handoff (this machine's Trae CN model config; contains local paths/IDs)
 /trae-cn-16models-handoff.md
+/trae-cn-prism-models-prompt.md

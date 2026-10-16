@@ -82,6 +82,8 @@ type Config struct {
 	// HealthProbe 决定 console 是否启动后台常态探活协程（聚合端点 GET /admin/health
 	// 始终可用）。探活只读端口/服务存活，不消耗上游额度。生产由 configFromEnv 置真；
 	// 测试构造的 Config 保持零值，避免后台请求干扰以 mock 上游断言调用次数的用例。
+	// 健康检查模块 M1 起，它同时是「错误账本 + 出口观测」的总开关：关闭时错误事件
+	// 不落盘、出口观测整体停用（见 NewServer），保证既有测试不被异步写文件干扰。
 	HealthProbe bool
 }
 type adminSession struct {
@@ -128,6 +130,13 @@ type server struct {
 	catalog *catalogCache
 	// health 保留后台常态探活的历史轮次（内存态，重启清空）。
 	health *healthCache
+	// outcomes 是公共出口调用的滚动结果窗口（成功+失败），/admin/errors 聚合的
+	// 数据源；内存态、重启从零累计。为 nil 时出口观测整体停用，公共出口行为与
+	// 没有本功能时完全一致。
+	outcomes *outcomeWindow
+	// ledger 是错误事件账本（errors-YYYYMMDD.jsonl，append-only、按天轮转）。
+	// 为 nil 时失败调用不落盘，只进内存窗口。
+	ledger *errorLedger
 	// zcodeQuota 缓存 zcode 账号在 Z.AI 侧的真实模型权益（sidecar GET /quota 的
 	// balances[].showName），GLM 目录按它过滤，不再靠档位名推断。
 	zcodeQuota *zcodeQuotaCache
@@ -254,6 +263,16 @@ func NewServer(cfg Config) (http.Handler, error) {
 	h.credits = &creditCache{}
 	h.catalog = &catalogCache{}
 	h.health = &healthCache{}
+	// 错误账本与滚动窗口（健康检查 M1 · F1）：与后台探活共用 HealthProbe 这道模块
+	// 总开关（生产由 configFromEnv 置真）。之所以不能只看 RouteFile 是否存在：账本
+	// 由独立协程异步落盘，若测试里只配了 RouteFile（t.TempDir）就写文件，协程会活到
+	// 测试结束之后、和 t.TempDir 的清理赛跑（Windows 上表现为「目录非空」偶发红）。
+	// 关掉时 outcomes 与 ledger 均为 nil，出口行为与没有本功能时完全一致（不建文件）。
+	if dir := consoleDataDir(cfg.RouteFile); cfg.HealthProbe && dir != "" {
+		h.outcomes = newOutcomeWindow()
+		h.ledger = newErrorLedger(dir)
+		h.ledger.cleanup(time.Now())
+	}
 	h.zcodeQuota = &zcodeQuotaCache{}
 	assets, err := fs.Sub(webFiles, "web")
 	if err != nil {
@@ -274,9 +293,9 @@ func NewServer(cfg Config) (http.Handler, error) {
 	// 否则别名改写与 /v1/models 的 auto 条目会静默失效。
 	if cfg.ZCodeURL != nil || cfg.QoderURL != nil || cfg.OpenCodeURL != nil || cfg.AutoClawURL != nil || cfg.TraeURL != nil || cfg.RaccoonURL != nil || cfg.FreellmURL != nil || cfg.RouteFile != "" {
 		routed := h.publicRouter(public)
-		h.mux.Handle("/v1/", routed)
+		h.mux.Handle("/v1/", h.observePublicExits(routed))
 	} else {
-		h.mux.Handle("/v1/", public)
+		h.mux.Handle("/v1/", h.observePublicExits(public))
 	}
 	h.mux.Handle("GET /status", public)
 	h.mux.Handle("GET /healthz", public)
@@ -379,6 +398,9 @@ func NewServer(cfg Config) (http.Handler, error) {
 	h.mux.HandleFunc("GET /admin/probe", h.withAdmin(h.adminProbeState))
 	// 常态健康检查：GET 即时跑一轮「网关 + 七通道」总览并附后台探活历史（只读）。
 	h.mux.HandleFunc("GET /admin/health", h.withAdmin(h.adminHealth))
+	// 错误统计：GET 聚合窗口内的成功/失败样本（健康检查 M1 · F1），供健康页
+	// 「错误统计」区块消费；数据源是内存滚动窗口，不读失败账本（避免错误率虚高）。
+	h.mux.HandleFunc("GET /admin/errors", h.withAdmin(h.adminErrors))
 	h.mux.HandleFunc("POST /admin/access", h.withAdmin(func(w http.ResponseWriter, r *http.Request) {
 		if _, err := h.coreInfo(r.Context()); err != nil {
 			adminError(w, 503, err.Error())
@@ -544,6 +566,7 @@ func (h *server) withAdmin(next http.HandlerFunc) http.HandlerFunc {
 		next(w, r.WithContext(context.WithValue(r.Context(), sessionContextKey{}, session)))
 	}
 }
+
 // clientAddress resolves the true peer of a request: the direct connection, or
 // the rightmost X-Forwarded-For entry when that connection came from a trusted
 // proxy. It backs the login rate-limit bucket and the source attribution that
