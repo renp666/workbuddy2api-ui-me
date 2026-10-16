@@ -869,23 +869,27 @@ func appendProbeEntries(out map[routeChannel][]probeCandidate, channel routeChan
 // sortCandidates 按「可用 → 仅对话 → 不可用」分档，档内按探测耗时升序，
 // 耗时缺失排档尾，模型名兜底保证顺序稳定。
 func sortCandidates(list []probeCandidate) {
-	sort.SliceStable(list, func(i, j int) bool {
-		a, b := list[i], list[j]
-		if a.Band != b.Band {
-			return a.Band < b.Band
-		}
-		ad, bd := a.DurationMs, b.DurationMs
-		if ad <= 0 {
-			ad = int(^uint(0) >> 1)
-		}
-		if bd <= 0 {
-			bd = int(^uint(0) >> 1)
-		}
-		if ad != bd {
-			return ad < bd
-		}
-		return a.Model < b.Model
-	})
+	sort.SliceStable(list, func(i, j int) bool { return candidateLess(list[i], list[j]) })
+}
+
+// candidateLess 是候选链路的稳定排序口径：先比探测档位，再比探测耗时（缺失排档尾），
+// 最后用模型名兜底。auto 的选路在档位相同时还要先比错误率，因此把这一份比较单独
+// 抽出来复用，避免两处各写一套、日后漂移。
+func candidateLess(a, b probeCandidate) bool {
+	if a.Band != b.Band {
+		return a.Band < b.Band
+	}
+	ad, bd := a.DurationMs, b.DurationMs
+	if ad <= 0 {
+		ad = int(^uint(0) >> 1)
+	}
+	if bd <= 0 {
+		bd = int(^uint(0) >> 1)
+	}
+	if ad != bd {
+		return ad < bd
+	}
+	return a.Model < b.Model
 }
 
 // routeDecision 是一次别名解析的结果。Reason 是给人和给排障看的短说明，
@@ -940,7 +944,7 @@ func (h *server) resolveEntry(ctx context.Context, entry routeEntry) routeDecisi
 			TargetIndex: 0,
 		}
 	}
-	index, band, found := h.pickChainTarget(ctx, chain)
+	pick, found := h.pickChainTarget(ctx, chain)
 	if !found {
 		return routeDecision{
 			RoutedModel: primary.publicModel(),
@@ -950,9 +954,18 @@ func (h *server) resolveEntry(ctx context.Context, entry routeEntry) routeDecisi
 			TargetIndex: 0,
 		}
 	}
+	index, band := pick.index, pick.band
 	reason := fmt.Sprintf("别名选中第 %d 跳（%s）", index+1, probeBandLabel(band))
-	if index > 0 {
+	switch {
+	case pick.factorDriven && index > 0:
+		// 结论被错误率因子改变（不是探测判死的），措辞不能沿用「不可用」。
+		reason = fmt.Sprintf("别名按错误率因子，切第 %d 跳（%s）", index+1, probeBandLabel(band))
+	case index > 0:
 		reason = fmt.Sprintf("别名主目标不可用，切第 %d 跳备用（%s）", index+1, probeBandLabel(band))
+	}
+	// F6 错误率反哺：因子影响选路时把依据写进 Reason（如「错误率 67%（n=9），降档」）。
+	if pick.note != "" {
+		reason = fmt.Sprintf("%s · %s", reason, pick.note)
 	}
 	return routeDecision{
 		RoutedModel: chain[index].publicModel(),
@@ -963,31 +976,198 @@ func (h *server) resolveEntry(ctx context.Context, entry routeEntry) routeDecisi
 	}
 }
 
+// —— F6 错误率反哺选路（PRD §2-F6）————————————————
+//
+// 数据源是 F1 错误账本的 15min 滚动窗口（errors.go 的 outcomeWindow），按
+// (channel, 原生模型名) 聚合。这里只读取窗口，不重复实现聚合口径。
+//
+// 防呆铁律：
+//   - 窗口调用样本 <5 不参与选路因子（样本不足不降权，避免单次失败摘链）。
+//   - 无错误数据 = 无因子，行为与现状完全一致。
+//   - 样本 ≥5 且错误率 >50% 的链路：band 视为 +1 参与比较（可用→仅对话降档；
+//     band>1 本就排除）。
+//   - band 相同时错误率低者优先（仅在两跳都有有效因子时才比较）。
+//
+// 纪律不变：3-strong 组未经用户同意不得自动启用（本文件不触碰梯队纪律）；
+// priority 策略恒取链首，不看因子。
+const (
+	// routeErrorWindow 是选路因子看的滚动窗口时长，与 /admin/errors?window=15m 同口径。
+	routeErrorWindow = 15 * time.Minute
+	// routeErrorMinSamples 是参与选路的最小样本数（防呆铁律）。
+	routeErrorMinSamples = 5
+	// routeErrorDemoteRate 是触发降档的错误率阈值，严格大于才降档。
+	routeErrorDemoteRate = 0.5
+)
+
+// errorFactor 是一跳的错误率因子。samples 不足时 valid=false，表示「样本不足，
+// 不参与选路因子」，与没有错误数据完全等价。
+type errorFactor struct {
+	rate    float64
+	samples int
+	valid   bool
+}
+
+// demote 返回该因子是否要求降档：样本足够且错误率超过阈值。
+func (f errorFactor) demote() bool {
+	return f.valid && f.rate > routeErrorDemoteRate
+}
+
+// note 返回给 Reason 用的短说明，如「错误率 67%（n=9）」。无有效因子时为空串。
+func (f errorFactor) note() string {
+	if !f.valid {
+		return ""
+	}
+	return fmt.Sprintf("错误率 %.0f%%（n=%d）", f.rate*100, f.samples)
+}
+
+// factorLess 在档位（含降档后的有效档）相同时比较两个因子：两跳都有有效因子时
+// 错误率低者优先；任一跳样本不足则不可比，返回 comparable=false，由调用方按
+// 链序/候选顺序兜底（保持「样本不足不参与因子」的铁律）。
+func factorLess(a, b errorFactor) (less bool, comparable bool) {
+	if !a.valid || !b.valid {
+		return false, false
+	}
+	if a.rate != b.rate {
+		return a.rate < b.rate, true
+	}
+	return false, false
+}
+
+// routeErrorFactors 取 15min 滚动窗口里按 (channel, 原生模型名) 聚合的错误率因子。
+// outcomes 未启用（nil）时返回 nil，调用方一律拿到「无因子」，行为与现状一致。
+// 返回的键是通道原生模型名，与窗口样本的 model 字段（errors.go 的 nativeModelName）
+// 及探测候选的形态一致，比对不会因公共前缀对不上。
+func (h *server) routeErrorFactors() map[routeChannel]map[string]errorFactor {
+	if h.outcomes == nil {
+		return nil
+	}
+	agg := h.outcomes.collect(routeErrorWindow)
+	if len(agg.models) == 0 {
+		return nil
+	}
+	out := make(map[routeChannel]map[string]errorFactor, len(agg.models))
+	for channel, byModel := range agg.models {
+		row := make(map[string]errorFactor, len(byModel))
+		for model, stat := range byModel {
+			samples := stat.ok + stat.fail
+			row[model] = errorFactor{rate: stat.rate(), samples: samples, valid: samples >= routeErrorMinSamples}
+		}
+		out[channel] = row
+	}
+	return out
+}
+
+// errorFactorFor 查一跳的错误率因子；查不到返回零值因子，即「无因子」。
+func errorFactorFor(factors map[routeChannel]map[string]errorFactor, channel routeChannel, native string) errorFactor {
+	byModel, ok := factors[channel]
+	if !ok {
+		return errorFactor{}
+	}
+	return byModel[native]
+}
+
+// effectiveBand 把探测档位按错误率因子降档：需要降档时 +1，否则原样返回。
+// 降档后的档位可能超过 1，调用方据此把该跳排除出候选（band>1 本就不选）。
+func effectiveBand(band int, factor errorFactor) int {
+	if factor.demote() {
+		return band + 1
+	}
+	return band
+}
+
+// chainPick 是 pickChainTarget 的选路结论。
+type chainPick struct {
+	index int
+	band  int
+	// note 是错误率影响选路的说明（如「错误率 67%（n=9），降档」）；无影响时为空。
+	note string
+	// factorDriven 表示错误率因子改变了「不看因子」时的链序结论（降档或同档优先）。
+	factorDriven bool
+}
+
 // pickChainTarget 在候选链里挑一跳：优先 band 最小的（可用 → 仅对话），band 相同时
 // 取链序靠前的，因此「主目标可用就用主目标」是天然结果，只有它确实不可用才轮到备用。
 //
 // band=3（探测失败）不作为候选——把已知不可用的链路放进竞争等于制造随机故障。
 // 链上没有任何一跳有探测结论时返回 found=false，由调用方按链序回退，与 resolveAuto
 // 的克制口径一致。
-func (h *server) pickChainTarget(ctx context.Context, chain []routeTarget) (int, int, bool) {
+//
+// F6 错误率反哺：样本 ≥5 且错误率 >50% 的跳 band 视为 +1（可用→仅对话降档），
+// 降档后 band>1 的跳被排除；档位相同时错误率低者优先（仅在两跳都有有效因子时）。
+// 样本不足或无错误数据时因子不生效，结论与现状完全一致。
+func (h *server) pickChainTarget(ctx context.Context, chain []routeTarget) (chainPick, bool) {
 	candidates, haveData := h.probes.get(ctx, h)
 	if !haveData {
-		return 0, 0, false
+		return chainPick{}, false
 	}
-	bestIndex, bestBand := -1, 0
+	factors := h.routeErrorFactors()
+	// 每个候选一跳：探测档位 + 错误率因子 + 降档后的有效档。
+	type chainCandidate struct {
+		index  int
+		band   int
+		eff    int
+		factor errorFactor
+	}
+	var eligible []chainCandidate
+	baselineIndex, baselineBand := -1, 0
+	var baselineFactor errorFactor
 	for i, target := range chain {
 		band, ok := probeBandFor(candidates, target)
 		if !ok || band > 1 {
 			continue
 		}
-		if bestIndex < 0 || band < bestBand {
-			bestIndex, bestBand = i, band
+		factor := errorFactorFor(factors, target.Channel, target.nativeModel())
+		if baselineIndex < 0 || band < baselineBand {
+			baselineIndex, baselineBand = i, band
+			baselineFactor = factor
+		}
+		eff := effectiveBand(band, factor)
+		if eff > 1 {
+			// 降档后越过「仅对话」档：本就不该进候选。
+			continue
+		}
+		eligible = append(eligible, chainCandidate{index: i, band: band, eff: eff, factor: factor})
+	}
+	if len(eligible) == 0 {
+		return chainPick{}, false
+	}
+	best := eligible[0]
+	for _, cand := range eligible[1:] {
+		if cand.eff != best.eff {
+			if cand.eff < best.eff {
+				best = cand
+			}
+			continue
+		}
+		// 档位相同：错误率低者优先（仅两跳都有有效因子时可比），否则保持链序。
+		if less, comparable := factorLess(cand.factor, best.factor); comparable && less {
+			best = cand
 		}
 	}
-	if bestIndex < 0 {
-		return 0, 0, false
+	return chainPick{
+		index:        best.index,
+		band:         best.band,
+		note:         errorRateNote(best.index != baselineIndex, baselineFactor, best.factor),
+		factorDriven: best.index != baselineIndex,
+	}, true
+}
+
+// errorRateNote 生成「错误率影响了选路」的说明。changed 表示因子把结论从「不看因子」
+// 的基线改成了另一跳；baseline / final 分别是基线与最终跳的错误率因子。只有结论被
+// 因子改变、或最终跳自身被降档时才有说明，其余情况返回空串（Reason 与现状一字不变）。
+func errorRateNote(changed bool, baseline, final errorFactor) string {
+	if changed {
+		if baseline.demote() {
+			return baseline.note() + "，降档"
+		}
+		if final.valid {
+			return final.note() + "，同档优先"
+		}
 	}
-	return bestIndex, bestBand, true
+	if final.demote() {
+		return final.note() + "，降档"
+	}
+	return ""
 }
 
 // probeBandFor 在探测结论里查一跳的档位。比对用通道原生名，与 appendProbeEntries
@@ -1007,17 +1187,27 @@ func (h *server) resolveAuto(ctx context.Context) routeDecision {
 	candidates, haveData := h.probes.get(ctx, h)
 	// 只收「可用」和「仅对话」两档：把探测失败的模型放进回退链等于把 auto
 	// 变成随机故障源；未探测的模型也不收——没有任何证据说它能跑。
-	var pool []probeCandidate
+	//
+	// F6 错误率反哺：样本 ≥5 且错误率 >50% 的候选 band 视为 +1（可用→仅对话降档），
+	// 降档后越过「仅对话」档的候选被排除；档位相同时错误率低者优先。
+	var eligible []autoCandidate // band 0/1 的全部候选（含后续被降档排除的），用于算基线
 	if haveData {
+		factors := h.routeErrorFactors()
 		for _, list := range candidates {
 			for _, candidate := range list {
-				if candidate.Band == 0 || candidate.Band == 1 {
-					pool = append(pool, candidate)
+				if candidate.Band != 0 && candidate.Band != 1 {
+					continue
 				}
+				factor := errorFactorFor(factors, candidate.Channel, candidate.Model)
+				eligible = append(eligible, autoCandidate{
+					candidate: candidate,
+					eff:       effectiveBand(candidate.Band, factor),
+					factor:    factor,
+				})
 			}
 		}
 	}
-	if len(pool) == 0 {
+	if len(eligible) == 0 {
 		reason := "auto 无探测结论，回退核心通道"
 		if haveData {
 			reason = "auto 无可用探测结论，回退核心通道"
@@ -1031,15 +1221,76 @@ func (h *server) resolveAuto(ctx context.Context) routeDecision {
 			TargetIndex: -1,
 		}
 	}
-	sortCandidates(pool)
+	// 不看因子时的现状口径结论（档位 → 耗时 → 模型名），作为「因子是否改变结论」的基线。
+	baseline := eligible[0]
+	for _, cand := range eligible[1:] {
+		if candidateLess(cand.candidate, baseline.candidate) {
+			baseline = cand
+		}
+	}
+	// 降档后越过「仅对话」档的候选不进池。
+	pool := make([]autoCandidate, 0, len(eligible))
+	for _, cand := range eligible {
+		if cand.eff > 1 {
+			continue
+		}
+		pool = append(pool, cand)
+	}
+	if len(pool) == 0 {
+		// 有探测结论但全部因错误率降档越过「仅对话」档：Reason 必须注明降权依据。
+		return routeDecision{
+			RoutedModel: fallback,
+			Channel:     channelCore,
+			Alias:       autoModelName,
+			Reason:      "auto 候选均因错误率降档，回退核心通道",
+			Fallback:    true,
+			TargetIndex: -1,
+		}
+	}
+	// 先按现状口径（档位 → 耗时 → 模型名）排序，让结论与池的遍历顺序无关；再线性扫描，
+	// 只让「可比且更优」的候选顶替当前最优。未参与因子的候选（样本不足/无数据）因此
+	// 不会被因子拉下马（防呆铁律），与 pickChainTarget 同构。
+	sort.SliceStable(pool, func(i, j int) bool { return candidateLess(pool[i].candidate, pool[j].candidate) })
 	best := pool[0]
+	for _, cand := range pool[1:] {
+		if autoBeats(cand, best) {
+			best = cand
+		}
+	}
+	reason := fmt.Sprintf("auto 选中 %s（%s）", best.candidate.Model, probeBandLabel(best.candidate.Band))
+	if note := errorRateNote(!sameCandidate(best, baseline), baseline.factor, best.factor); note != "" {
+		reason = fmt.Sprintf("%s · %s", reason, note)
+	}
 	return routeDecision{
-		RoutedModel: best.Channel.publicModel(best.Model),
-		Channel:     best.Channel,
+		RoutedModel: best.candidate.Channel.publicModel(best.candidate.Model),
+		Channel:     best.candidate.Channel,
 		Alias:       autoModelName,
-		Reason:      fmt.Sprintf("auto 选中 %s（%s）", best.Model, probeBandLabel(best.Band)),
+		Reason:      reason,
 		TargetIndex: -1,
 	}
+}
+
+// sameCandidate 判断两条 auto 候选是不是同一条链路（通道 + 原生模型名）。
+func sameCandidate(a, b autoCandidate) bool {
+	return a.candidate.Channel == b.candidate.Channel && a.candidate.Model == b.candidate.Model
+}
+
+// autoCandidate 是 auto 池里的一条候选：探测结论 + 错误率因子 + 降档后的有效档。
+type autoCandidate struct {
+	candidate probeCandidate
+	eff       int
+	factor    errorFactor
+}
+
+// autoBeats 判断 a 是否严格优于 b：先比有效档位（降档后），档位相同再比错误率，
+// 且只在两跳都有有效因子时才可比（样本不足不参与因子）。不可比时返回 false，
+// 由调用方的现状口径兜底。
+func autoBeats(a, b autoCandidate) bool {
+	if a.eff != b.eff {
+		return a.eff < b.eff
+	}
+	less, comparable := factorLess(a.factor, b.factor)
+	return comparable && less
 }
 
 func probeBandLabel(band int) string {

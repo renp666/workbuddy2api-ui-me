@@ -12,6 +12,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 )
 
 // newRouteStoreAt 在临时目录里建一份路由配置，用于隔离每个用例的落盘状态。
@@ -381,9 +382,9 @@ func TestAutoPrefersProbedAvailableModel(t *testing.T) {
 		if r.URL.Path == "/health" {
 			// 两个候选：一个仅对话且更快，一个确认可用但更慢；auto 必须先取可用档。
 			fmt.Fprint(w, `{"phase":"ready","modelResults":{
-				"OC · Fast":{"ok":true,"chatOnly":true,"durationMs":10},
-				"OC · Good":{"ok":true,"category":"available","durationMs":900}
-			}}`)
+                                "OC · Fast":{"ok":true,"chatOnly":true,"durationMs":10},
+                                "OC · Good":{"ok":true,"category":"available","durationMs":900}
+                        }}`)
 			return
 		}
 		if r.URL.Path == "/v1/chat/completions" {
@@ -633,9 +634,9 @@ func creditConsole(t *testing.T, coreModels string) http.Handler {
 // 未显式启用的直名一律不上 /v1/models。
 func TestModelSwitchDefaultsFromCredits(t *testing.T) {
 	coreModels := `{"object":"list","data":[
-		{"id":"cn:free","credits":"x0.00"},
-		{"id":"cn:paid","credits":"x0.79"},
-		{"id":"cn:unknown"}]}`
+                {"id":"cn:free","credits":"x0.00"},
+                {"id":"cn:paid","credits":"x0.79"},
+                {"id":"cn:unknown"}]}`
 	h := creditConsole(t, coreModels)
 	// 对话出口：未配置一律放行——免费、付费、未知倍率一视同仁。
 	for _, model := range []string{"cn:free", "cn:paid", "cn:unknown"} {
@@ -930,9 +931,9 @@ func TestAliasPriorityStrategyUsesPrimary(t *testing.T) {
 	h, _ := routeConsole(t, func(w http.ResponseWriter, r *http.Request) {
 		fmt.Fprint(w, `{"core":true}`)
 	}, ocHealthHandler(t, `{"phase":"ready","modelResults":{
-		"OC · Bad":{"ok":false,"error":"boom"},
-		"OC · Good":{"ok":true,"category":"available","durationMs":100}
-	}}`, &seen, &mu))
+                "OC · Bad":{"ok":false,"error":"boom"},
+                "OC · Good":{"ok":true,"category":"available","durationMs":100}
+        }}`, &seen, &mu))
 	entry := routeEntry{
 		Alias:     "daily",
 		Channel:   channelOpenCode,
@@ -962,9 +963,9 @@ func TestAliasHealthStrategyPicksAvailableFallback(t *testing.T) {
 	h, _ := routeConsole(t, func(w http.ResponseWriter, r *http.Request) {
 		fmt.Fprint(w, `{"core":true}`)
 	}, ocHealthHandler(t, `{"phase":"ready","modelResults":{
-		"OC · Bad":{"ok":false,"error":"boom"},
-		"OC · Good":{"ok":true,"category":"available","durationMs":100}
-	}}`, &seen, &mu))
+                "OC · Bad":{"ok":false,"error":"boom"},
+                "OC · Good":{"ok":true,"category":"available","durationMs":100}
+        }}`, &seen, &mu))
 	entry := routeEntry{
 		Alias:     "daily",
 		Channel:   channelOpenCode,
@@ -1035,10 +1036,10 @@ func TestAliasFallbackChainOrderPreserved(t *testing.T) {
 	h, _ := routeConsole(t, func(w http.ResponseWriter, r *http.Request) {
 		fmt.Fprint(w, `{"core":true}`)
 	}, ocHealthHandler(t, `{"phase":"ready","modelResults":{
-		"OC · Bad":{"ok":false,"error":"boom"},
-		"OC · First":{"ok":true,"category":"available","durationMs":900},
-		"OC · Second":{"ok":true,"category":"available","durationMs":10}
-	}}`, &seen, &mu))
+                "OC · Bad":{"ok":false,"error":"boom"},
+                "OC · First":{"ok":true,"category":"available","durationMs":900},
+                "OC · Second":{"ok":true,"category":"available","durationMs":10}
+        }}`, &seen, &mu))
 	entry := routeEntry{
 		Alias:   "daily",
 		Channel: channelOpenCode,
@@ -1251,8 +1252,8 @@ func TestAliasWithoutFallbacksKeepsLegacyBehavior(t *testing.T) {
 	h, _ := routeConsole(t, func(w http.ResponseWriter, r *http.Request) {
 		fmt.Fprint(w, `{"core":true}`)
 	}, ocHealthHandler(t, `{"phase":"ready","modelResults":{
-		"OC · Only":{"ok":true,"category":"available","durationMs":50}
-	}}`, &seen, &mu))
+                "OC · Only":{"ok":true,"category":"available","durationMs":50}
+        }}`, &seen, &mu))
 	entry := routeEntry{Alias: "legacy", Channel: channelOpenCode, Model: "OC · Only", Enabled: true}
 	if got := saveRoutes(t, h, []routeEntry{entry}, ""); got.Code != 200 {
 		t.Fatalf("save: %d %s", got.Code, got.Body)
@@ -1467,5 +1468,374 @@ func TestRouteTestRunsMinimalChat(t *testing.T) {
 	aliases := readRouteAliases(t, h)
 	if len(aliases) != 1 || aliases[0]["probe"] == nil {
 		t.Fatalf("测试结论没有回写探测缓存: %v", aliases)
+	}
+}
+
+// —— F6 错误率反哺选路（PRD §2-F6 / §5 判据 4）————————————————————
+//
+// 以下用例验证「错误率反哺自动选路」：数据源是 F1 错误账本的 15min 滚动窗口，
+// 按 (channel, 原生模型名) 聚合。用例不发真实上游请求，直接把成败样本喂进
+// 滚动窗口（fixture），再经公共出口触发一次选路，断言转发目标与 Reason。
+//
+// 防呆铁律：窗口调用样本 <5 不参与选路因子；无错误数据 = 无因子，行为与现状
+// 完全一致。
+
+// routeConsoleWithOutcomes 建一个带路由配置、并手工挂上调用结果滚动窗口的 console。
+// 生产由 HealthProbe 打开窗口；测试里显式挂上以隔离后台探活协程的干扰。
+func routeConsoleWithOutcomes(t *testing.T, opencode http.HandlerFunc) (http.Handler, *server) {
+	t.Helper()
+	h, _ := routeConsole(t, func(w http.ResponseWriter, r *http.Request) {
+		fmt.Fprint(w, `{"core":true}`)
+	}, opencode)
+	srv := h.(*server)
+	srv.outcomes = newOutcomeWindow()
+	return h, srv
+}
+
+// seedOutcomes 向滚动窗口喂 (channel, 原生模型名) 的成败样本。
+func seedOutcomes(t *testing.T, srv *server, channel routeChannel, native string, ok, fail int) {
+	t.Helper()
+	now := time.Now().UnixMilli()
+	for i := 0; i < ok; i++ {
+		srv.outcomes.add(errorEvent{Ts: now, Channel: string(channel), ModelResolved: native}, true)
+	}
+	for i := 0; i < fail; i++ {
+		srv.outcomes.add(errorEvent{Ts: now, Channel: string(channel), ModelResolved: native}, false)
+	}
+}
+
+// TestRouteErrorFactorsDisabledWithoutOutcomeWindow 锁定「无错误数据 = 无因子」：
+// 窗口未启用（nil）时取不到任何因子，选路行为与现状完全一致。
+func TestRouteErrorFactorsDisabledWithoutOutcomeWindow(t *testing.T) {
+	h, _ := routeConsole(t, func(w http.ResponseWriter, r *http.Request) {
+		fmt.Fprint(w, `{"core":true}`)
+	}, nil)
+	srv := h.(*server)
+	if srv.outcomes != nil {
+		t.Fatal("测试前提：routeConsole 默认不挂滚动窗口")
+	}
+	if factors := srv.routeErrorFactors(); factors != nil {
+		t.Fatalf("无窗口时不应有因子，实际 %v", factors)
+	}
+}
+
+// TestAliasHealthIgnoresErrorRateUnderMinSamples 是防呆铁律用例：主目标样本 <5
+// 时即便错误率 100% 也不降权，选路结果与现状一致，Reason 不含降权说明。
+func TestAliasHealthIgnoresErrorRateUnderMinSamples(t *testing.T) {
+	var mu sync.Mutex
+	var seen string
+	h, srv := routeConsoleWithOutcomes(t, ocHealthHandler(t, `{"phase":"ready","modelResults":{
+		"OC · Primary":{"ok":true,"category":"available","durationMs":100},
+		"OC · Backup":{"ok":true,"category":"available","durationMs":200}
+	}}`, &seen, &mu))
+	// 主目标 4 次样本全失败（错误率 100%），但样本 <5 不参与因子。
+	seedOutcomes(t, srv, channelOpenCode, "OC · Primary", 0, 4)
+	entry := routeEntry{
+		Alias:     "daily",
+		Channel:   channelOpenCode,
+		Model:     "OC · Primary",
+		Fallbacks: []routeTarget{{Channel: channelOpenCode, Model: "OC · Backup"}},
+		Strategy:  strategyHealth,
+		Enabled:   true,
+	}
+	if got := saveRoutes(t, h, []routeEntry{entry}, ""); got.Code != 200 {
+		t.Fatalf("save: %d %s", got.Code, got.Body)
+	}
+	rec := chatViaAlias(t, h, "daily", &seen, &mu)
+	mu.Lock()
+	defer mu.Unlock()
+	if seen != "OC · Primary" {
+		t.Fatalf("样本 <5 不应降权，实际转发 %q", seen)
+	}
+	if reason := rec.Header().Get("X-Prism-Reason"); strings.Contains(reason, "错误率") {
+		t.Fatalf("样本不足不该有降权说明：%q", reason)
+	}
+}
+
+// TestAliasHealthDemotesHighErrorRateTarget 是反哺主用例：两条同档（可用）链路，
+// 主目标错误率 67%（n=9，样本充足）→ band 视为 +1 降档，被同 band 低错误率的备用
+// 压过；Reason 必须注明降权依据。
+func TestAliasHealthDemotesHighErrorRateTarget(t *testing.T) {
+	var mu sync.Mutex
+	var seen string
+	h, srv := routeConsoleWithOutcomes(t, ocHealthHandler(t, `{"phase":"ready","modelResults":{
+		"OC · Primary":{"ok":true,"category":"available","durationMs":100},
+		"OC · Backup":{"ok":true,"category":"available","durationMs":200}
+	}}`, &seen, &mu))
+	seedOutcomes(t, srv, channelOpenCode, "OC · Primary", 3, 6) // 67%（n=9）
+	seedOutcomes(t, srv, channelOpenCode, "OC · Backup", 9, 0)  // 0%（n=9）
+	entry := routeEntry{
+		Alias:     "daily",
+		Channel:   channelOpenCode,
+		Model:     "OC · Primary",
+		Fallbacks: []routeTarget{{Channel: channelOpenCode, Model: "OC · Backup"}},
+		Strategy:  strategyHealth,
+		Enabled:   true,
+	}
+	if got := saveRoutes(t, h, []routeEntry{entry}, ""); got.Code != 200 {
+		t.Fatalf("save: %d %s", got.Code, got.Body)
+	}
+	rec := chatViaAlias(t, h, "daily", &seen, &mu)
+	mu.Lock()
+	defer mu.Unlock()
+	if seen != "OC · Backup" {
+		t.Fatalf("主目标错误率超阈值应降档让位，实际转发 %q", seen)
+	}
+	if got := rec.Header().Get("X-Prism-Target-Index"); got != "1" {
+		t.Fatalf("target index=%q, want 1", got)
+	}
+	reason := rec.Header().Get("X-Prism-Reason")
+	if !strings.Contains(reason, "错误率") || !strings.Contains(reason, "降档") {
+		t.Fatalf("Reason 必须注明降权依据：%q", reason)
+	}
+	if !strings.Contains(reason, "n=9") {
+		t.Fatalf("Reason 应带样本数：%q", reason)
+	}
+}
+
+// TestAliasHealthPrefersLowerErrorRateOnSameBand 验证「band 相同时错误率低者优先」：
+// 两跳都未越过阈值（40% / 10%），都有效因子，低错误率者胜出，Reason 说明「同档优先」。
+func TestAliasHealthPrefersLowerErrorRateOnSameBand(t *testing.T) {
+	var mu sync.Mutex
+	var seen string
+	h, srv := routeConsoleWithOutcomes(t, ocHealthHandler(t, `{"phase":"ready","modelResults":{
+		"OC · Primary":{"ok":true,"category":"available","durationMs":100},
+		"OC · Backup":{"ok":true,"category":"available","durationMs":200}
+	}}`, &seen, &mu))
+	seedOutcomes(t, srv, channelOpenCode, "OC · Primary", 6, 4) // 40%（n=10）
+	seedOutcomes(t, srv, channelOpenCode, "OC · Backup", 9, 1)  // 10%（n=10）
+	entry := routeEntry{
+		Alias:     "daily",
+		Channel:   channelOpenCode,
+		Model:     "OC · Primary",
+		Fallbacks: []routeTarget{{Channel: channelOpenCode, Model: "OC · Backup"}},
+		Strategy:  strategyHealth,
+		Enabled:   true,
+	}
+	if got := saveRoutes(t, h, []routeEntry{entry}, ""); got.Code != 200 {
+		t.Fatalf("save: %d %s", got.Code, got.Body)
+	}
+	rec := chatViaAlias(t, h, "daily", &seen, &mu)
+	mu.Lock()
+	defer mu.Unlock()
+	if seen != "OC · Backup" {
+		t.Fatalf("同档应取错误率低者，实际转发 %q", seen)
+	}
+	if reason := rec.Header().Get("X-Prism-Reason"); !strings.Contains(reason, "同档优先") {
+		t.Fatalf("Reason 应说明同档优先：%q", reason)
+	}
+}
+
+// TestAliasHealthKeepsChainOrderWhenPrimaryHasNoFactor 锁定「样本不足不参与因子」：
+// 主目标样本不足（无因子）、备用有有效因子时两者不可比，保持链序取主目标。
+func TestAliasHealthKeepsChainOrderWhenPrimaryHasNoFactor(t *testing.T) {
+	var mu sync.Mutex
+	var seen string
+	h, srv := routeConsoleWithOutcomes(t, ocHealthHandler(t, `{"phase":"ready","modelResults":{
+		"OC · Primary":{"ok":true,"category":"available","durationMs":100},
+		"OC · Backup":{"ok":true,"category":"available","durationMs":200}
+	}}`, &seen, &mu))
+	seedOutcomes(t, srv, channelOpenCode, "OC · Backup", 10, 0) // 备用有因子，主目标无
+	entry := routeEntry{
+		Alias:     "daily",
+		Channel:   channelOpenCode,
+		Model:     "OC · Primary",
+		Fallbacks: []routeTarget{{Channel: channelOpenCode, Model: "OC · Backup"}},
+		Strategy:  strategyHealth,
+		Enabled:   true,
+	}
+	if got := saveRoutes(t, h, []routeEntry{entry}, ""); got.Code != 200 {
+		t.Fatalf("save: %d %s", got.Code, got.Body)
+	}
+	chatViaAlias(t, h, "daily", &seen, &mu)
+	mu.Lock()
+	defer mu.Unlock()
+	if seen != "OC · Primary" {
+		t.Fatalf("主目标无因子时不可比，应保持链序，实际转发 %q", seen)
+	}
+}
+
+// TestAliasPriorityIgnoresErrorRate 锁定纪律：priority 策略恒取链首，不看因子。
+func TestAliasPriorityIgnoresErrorRate(t *testing.T) {
+	var mu sync.Mutex
+	var seen string
+	h, srv := routeConsoleWithOutcomes(t, ocHealthHandler(t, `{"phase":"ready","modelResults":{
+		"OC · Primary":{"ok":true,"category":"available","durationMs":100},
+		"OC · Backup":{"ok":true,"category":"available","durationMs":200}
+	}}`, &seen, &mu))
+	seedOutcomes(t, srv, channelOpenCode, "OC · Primary", 0, 9) // 100%（n=9）
+	entry := routeEntry{
+		Alias:     "daily",
+		Channel:   channelOpenCode,
+		Model:     "OC · Primary",
+		Fallbacks: []routeTarget{{Channel: channelOpenCode, Model: "OC · Backup"}},
+		// Strategy 缺省 = priority。
+		Enabled: true,
+	}
+	if got := saveRoutes(t, h, []routeEntry{entry}, ""); got.Code != 200 {
+		t.Fatalf("save: %d %s", got.Code, got.Body)
+	}
+	chatViaAlias(t, h, "daily", &seen, &mu)
+	mu.Lock()
+	defer mu.Unlock()
+	if seen != "OC · Primary" {
+		t.Fatalf("priority 必须恒取链首，实际转发 %q", seen)
+	}
+}
+
+// autoViaPublic 经公共出口发一次 gateway-auto 请求，返回响应与 opencode 实际收到的模型名。
+func autoViaPublic(t *testing.T, h http.Handler, seen *string, mu *sync.Mutex) *httptest.ResponseRecorder {
+	t.Helper()
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, httptest.NewRequest("POST", "/v1/chat/completions", strings.NewReader(chatBody(autoModelName))))
+	if rec.Code != 200 {
+		t.Fatalf("status=%d body=%s", rec.Code, rec.Body)
+	}
+	return rec
+}
+
+// TestAutoDemotesHighErrorRateCandidate 是 resolveAuto 池的反哺用例：两条都可用
+// （band 0），错误率高者更快（无因子时会被选中），样本 ≥5 且错误率 >50% 时降档，
+// 让位给同档低错误率者；Reason 注明降权依据。
+func TestAutoDemotesHighErrorRateCandidate(t *testing.T) {
+	var mu sync.Mutex
+	var seen string
+	h, srv := routeConsoleWithOutcomes(t, ocHealthHandler(t, `{"phase":"ready","modelResults":{
+		"OC · Flaky":{"ok":true,"category":"available","durationMs":10},
+		"OC · Steady":{"ok":true,"category":"available","durationMs":900}
+	}}`, &seen, &mu))
+	seedOutcomes(t, srv, channelOpenCode, "OC · Flaky", 3, 6)  // 67%（n=9）
+	seedOutcomes(t, srv, channelOpenCode, "OC · Steady", 9, 0) // 0%（n=9）
+	if got := saveRoutes(t, h, nil, ""); got.Code != 200 {
+		t.Fatalf("save: %d %s", got.Code, got.Body)
+	}
+	rec := autoViaPublic(t, h, &seen, &mu)
+	mu.Lock()
+	defer mu.Unlock()
+	if seen != "OC · Steady" {
+		t.Fatalf("auto 应把高错误率候选降档，实际选中 %q", seen)
+	}
+	reason := rec.Header().Get("X-Prism-Reason")
+	if !strings.Contains(reason, "错误率") || !strings.Contains(reason, "降档") {
+		t.Fatalf("Reason 必须注明降权依据：%q", reason)
+	}
+}
+
+// TestAutoIgnoresErrorRateUnderMinSamples 锁定防呆铁律：样本 <5 时 auto 选路与现状
+// 一致（同档取更快者），Reason 不含降权说明。
+func TestAutoIgnoresErrorRateUnderMinSamples(t *testing.T) {
+	var mu sync.Mutex
+	var seen string
+	h, srv := routeConsoleWithOutcomes(t, ocHealthHandler(t, `{"phase":"ready","modelResults":{
+		"OC · Flaky":{"ok":true,"category":"available","durationMs":10},
+		"OC · Steady":{"ok":true,"category":"available","durationMs":900}
+	}}`, &seen, &mu))
+	seedOutcomes(t, srv, channelOpenCode, "OC · Flaky", 0, 4) // 样本 <5
+	if got := saveRoutes(t, h, nil, ""); got.Code != 200 {
+		t.Fatalf("save: %d %s", got.Code, got.Body)
+	}
+	rec := autoViaPublic(t, h, &seen, &mu)
+	mu.Lock()
+	defer mu.Unlock()
+	if seen != "OC · Flaky" {
+		t.Fatalf("样本 <5 不应影响 auto 选路，实际选中 %q", seen)
+	}
+	if reason := rec.Header().Get("X-Prism-Reason"); strings.Contains(reason, "错误率") {
+		t.Fatalf("样本不足不该有降权说明：%q", reason)
+	}
+}
+
+// TestAutoExcludesCandidateDemotedPastChatOnly 验证降档越过「仅对话」档的候选被
+// 排除出 auto 池：仅对话 + 高错误率 → 视为不可用，让位给另一条仅对话候选。
+func TestAutoExcludesCandidateDemotedPastChatOnly(t *testing.T) {
+	var mu sync.Mutex
+	var seen string
+	h, srv := routeConsoleWithOutcomes(t, ocHealthHandler(t, `{"phase":"ready","modelResults":{
+		"OC · ChatA":{"ok":true,"chatOnly":true,"durationMs":10},
+		"OC · ChatB":{"ok":true,"chatOnly":true,"durationMs":900}
+	}}`, &seen, &mu))
+	seedOutcomes(t, srv, channelOpenCode, "OC · ChatA", 0, 9) // 100%（n=9）→ band 1 降为 2
+	if got := saveRoutes(t, h, nil, ""); got.Code != 200 {
+		t.Fatalf("save: %d %s", got.Code, got.Body)
+	}
+	rec := autoViaPublic(t, h, &seen, &mu)
+	mu.Lock()
+	defer mu.Unlock()
+	if seen != "OC · ChatB" {
+		t.Fatalf("降档越过仅对话档的候选应被排除，实际选中 %q", seen)
+	}
+	if reason := rec.Header().Get("X-Prism-Reason"); !strings.Contains(reason, "降档") {
+		t.Fatalf("Reason 应注明降权依据：%q", reason)
+	}
+}
+
+// TestAutoKeepsLegacyPickWhenNoErrorData 锁定「无错误数据 = 无因子」：窗口为空时
+// auto 选路结果与现状完全一致。
+func TestAutoKeepsLegacyPickWhenNoErrorData(t *testing.T) {
+	var mu sync.Mutex
+	var seen string
+	h, _ := routeConsoleWithOutcomes(t, ocHealthHandler(t, `{"phase":"ready","modelResults":{
+		"OC · Fast":{"ok":true,"chatOnly":true,"durationMs":10},
+		"OC · Good":{"ok":true,"category":"available","durationMs":900}
+	}}`, &seen, &mu))
+	if got := saveRoutes(t, h, nil, ""); got.Code != 200 {
+		t.Fatalf("save: %d %s", got.Code, got.Body)
+	}
+	rec := autoViaPublic(t, h, &seen, &mu)
+	mu.Lock()
+	defer mu.Unlock()
+	if seen != "OC · Good" {
+		t.Fatalf("无错误数据时 auto 应仍取可用档，实际选中 %q", seen)
+	}
+	if reason := rec.Header().Get("X-Prism-Reason"); strings.Contains(reason, "错误率") {
+		t.Fatalf("无错误数据不该有降权说明：%q", reason)
+	}
+}
+
+// TestAutoPrefersLowerErrorRateOnSameBand 验证 auto 池「band 相同时错误率低者优先」：
+// 两条都可用（band 0）且都未越过降档阈值，低错误率者胜出（虽更慢），Reason 说明同档优先。
+func TestAutoPrefersLowerErrorRateOnSameBand(t *testing.T) {
+	var mu sync.Mutex
+	var seen string
+	h, srv := routeConsoleWithOutcomes(t, ocHealthHandler(t, `{"phase":"ready","modelResults":{
+		"OC · Fast":{"ok":true,"category":"available","durationMs":10},
+		"OC · Steady":{"ok":true,"category":"available","durationMs":900}
+	}}`, &seen, &mu))
+	seedOutcomes(t, srv, channelOpenCode, "OC · Fast", 6, 4)   // 40%（n=10）
+	seedOutcomes(t, srv, channelOpenCode, "OC · Steady", 9, 1) // 10%（n=10）
+	if got := saveRoutes(t, h, nil, ""); got.Code != 200 {
+		t.Fatalf("save: %d %s", got.Code, got.Body)
+	}
+	rec := autoViaPublic(t, h, &seen, &mu)
+	mu.Lock()
+	defer mu.Unlock()
+	if seen != "OC · Steady" {
+		t.Fatalf("auto 同档应取错误率低者，实际选中 %q", seen)
+	}
+	if reason := rec.Header().Get("X-Prism-Reason"); !strings.Contains(reason, "同档优先") {
+		t.Fatalf("Reason 应说明同档优先：%q", reason)
+	}
+}
+
+// TestAutoFallsBackWhenAllCandidatesDemoted 验证全部候选都因错误率降档越过「仅对话」
+// 档时，auto 回退核心通道，且 Reason 注明降权依据（不是「无探测结论」）。
+func TestAutoFallsBackWhenAllCandidatesDemoted(t *testing.T) {
+	var mu sync.Mutex
+	var seen string
+	h, srv := routeConsoleWithOutcomes(t, ocHealthHandler(t, `{"phase":"ready","modelResults":{
+		"OC · ChatA":{"ok":true,"chatOnly":true,"durationMs":10},
+		"OC · ChatB":{"ok":true,"chatOnly":true,"durationMs":20}
+	}}`, &seen, &mu))
+	seedOutcomes(t, srv, channelOpenCode, "OC · ChatA", 0, 9) // 100%（n=9）
+	seedOutcomes(t, srv, channelOpenCode, "OC · ChatB", 0, 9) // 100%（n=9）
+	if got := saveRoutes(t, h, nil, "global:auto"); got.Code != 200 {
+		t.Fatalf("save: %d %s", got.Code, got.Body)
+	}
+	rec := autoViaPublic(t, h, &seen, &mu)
+	if rec.Header().Get("X-Prism-Fallback") != "core" {
+		t.Fatalf("全部降档应回退核心通道，fallback=%q", rec.Header().Get("X-Prism-Fallback"))
+	}
+	if reason := rec.Header().Get("X-Prism-Reason"); !strings.Contains(reason, "降档") {
+		t.Fatalf("Reason 应注明降权依据：%q", reason)
 	}
 }
