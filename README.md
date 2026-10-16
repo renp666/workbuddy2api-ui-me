@@ -186,7 +186,7 @@ AutoClaw 页签是带控制链路的完整页签：「通道状态」展示容�
 
 ## 可选：接入 Trae 免费模型
 
-本部署还可以并列挂一个 trae2api sidecar 容器（`deploy/trae2api/`，本仓自带源码），把 Trae SOLO 的免费模型变成第六个模型来源。与前几条旁路相同，启用后仍是同一个 `:7863` 出口：控制台 `/v1/models` 会合并显示 Trae 模型（统一加 `trae-` 前缀并标注 `realm: trae`），客户端请求 `model` 以 `trae-` 开头时由 console 自动剥前缀转发给容器，其余模型仍走 WorkBuddy 账号池。
+本部署还可以并列挂一个 trae2api sidecar 容器（`deploy/trae2api/`，本仓自带源码），把 Trae SOLO 的免费模型变成一个可选模型来源。与前几条旁路相同，启用后仍是同一个 `:7863` 出口：控制台 `/v1/models` 会合并显示 Trae 模型（统一加 `trae-` 前缀并标注 `realm: trae`），客户端请求 `model` 以 `trae-` 开头时由 console 自动剥前缀转发给容器，其余模型仍走 WorkBuddy 账号池。
 
 与前几条旁路不同，Trae 通道的**账号要自己登录**：在 Trae 页签「账号登录」点「开始登录」，容器返回一个授权地址，控制台自动新开页面，授权完成后本页自动等待结果并切到「账号管理」；如果回调 URL 不在手边，也可以把浏览器回调地址或导出的凭据 JSON 粘贴进同一子页导入（容器里已有更新的凭据时返回 409，不会覆盖旧凭据）。账号、积分与运行数据持久化在宿主 `runtime/trae/` 下。
 
@@ -198,9 +198,29 @@ docker compose -f docker-compose.yml -f deploy/compose.trae.yml up -d
 
 Trae 页签是带控制链路的完整页签：「通道状态」展示容器可达性、模型数与账号数，「账号登录」完成 OAuth 登录与凭据导入，「账号管理」查看积分与凭据有效期、启停/删除/刷新单个账号、刷新全部积分与一键签到，「排程」展示容器的签到时刻、凭据刷新时段与上下次执行时间，并可立即触发签到或凭据刷新，「Trae 模型」与「对话测试」同其他旁路页签，「用量」展示容器侧按天的请求与 token 记录。未叠加该 overlay 时页签置灰并提示未启用。旁路调用会异步记入控制台「调用统计」，账号列显示「Trae 通道」。Trae 免费模型的可用性、限额和模型行为由 Trae 上游决定，本仓未对其做真实上游验收。
 
+## 可选：接入 Trae 国际版模型
+
+本部署还可以再并列挂一只 **Trae 国际版** sidecar（`deploy/compose.traeai.yml`），它与上面的 Trae 通道是**同一个镜像**，只靠 `TRAE_EDITION=intl` 换到 trae.ai 一族上游。模型统一加 `traeai-` 前缀并标注 `realm: traeai`，请求 `model` 以 `traeai-` 开头时由 console 剥前缀转发给这只容器，其余模型仍走原路径。两条 Trae 通道各自独立：各一套账号池、各自 `runtime/trae`、`runtime/traeai` 目录、各自的上游区域。
+
+```bash
+docker compose -f docker-compose.yml -f deploy/compose.traeai.yml up -d
+```
+
+**为什么前缀不是 `trae-intl-`**：分流按前缀判，而 `trae-intl-gpt-5.4` 正好以 `trae-` 开头，会被国内版分支先剥成 `intl-gpt-5.4` 再打给国内上游。两条通道的前缀必须互不包含，所以国际版另起 `traeai-`。
+
+**与国际版的差异（都是上游事实）**：国际版**没有每日签到，也没有积分余额**——`checkin_credits` 与 `ide_user_ent_usage` 这一类接口在国际区上游一律不存在。页签因此不设签到按钮，「权益」列显示的是**订阅档位**（如 Pro），读自国际版自己的权益接口；档位没刷出来时显示「未知」，不会把积分余额的 0 拿来冒充已知值。
+
+**账号怎么进来**：国际版推荐**粘贴桌面客户端的 `storage.json` 全文**——Windows 上是 `%APPDATA%\Trae\User\globalStorage\storage.json`（TRAE SOLO 国际版在 `%APPDATA%\TRAE SOLO\...`），用文本编辑器打开整体复制即可；容器解不开宿主路径，所以由你粘进来，容器用内置实现本地解密。也可以粘贴 OAuth 回调链接或导出的凭据 JSON。凭据自带的服务地址会被保留，因此**国际版凭据即使误传到国内版通道，也不会被改写成国内地址去刷新**（那种情况下刷新会静默失败，账号看着还在池里）。
+
+**换区域**：国际版上游按区域分入口（默认新加坡）。若你的账号在别的区域，改 overlay 里 `TRAE_AGENT_HOST` 一行即可，不必改代码重新构建镜像。
+
+**网络**：国际版上游经 CDN 分发，国内出口一般可直接访问；实测本机（移动宽带）不挂代理即可连通对话与模型目录接口。反向要注意：如果你把这套部署搬到境外服务器，被按区域封锁的会是**国内版**的登录页（`www.trae.cn`），而它的接口主机不受影响——症状是"只有登录页打不开"，很容易被误判成网络故障。
+
+Trae 国际版模型的可用性、额度与行为由 Trae 上游决定；本仓不对"订阅档位是否允许某个模型"做保证。旁路调用同样异步记入控制台「调用统计」，账号列显示「Trae 国际版通道」。
+
 ## 可选：接入小浣熊免费模型
 
-本部署还可以并列挂一个 raccoon2api sidecar 容器（`deploy/raccoon2api/`，本仓参考 aimod-cc/agent2api 自建的纯 Go 源码），把小浣熊（xiaohuanxiong.com）的免费模型变成第七个模型来源。与前几条旁路相同，启用后仍是同一个 `:7863` 出口：控制台 `/v1/models` 会合并显示小浣熊模型（统一加 `raccoon-` 前缀并标注 `realm: raccoon`），客户端请求 `model` 以 `raccoon-` 开头时由 console 自动剥前缀转发给容器，其余模型仍走 WorkBuddy 账号池。
+本部署还可以并列挂一个 raccoon2api sidecar 容器（`deploy/raccoon2api/`，本仓参考 aimod-cc/agent2api 自建的纯 Go 源码），把小浣熊（xiaohuanxiong.com）的免费模型变成一个可选模型来源。与前几条旁路相同，启用后仍是同一个 `:7863` 出口：控制台 `/v1/models` 会合并显示小浣熊模型（统一加 `raccoon-` 前缀并标注 `realm: raccoon`），客户端请求 `model` 以 `raccoon-` 开头时由 console 自动剥前缀转发给容器，其余模型仍走 WorkBuddy 账号池。
 
 小浣熊通道没有网页登录：桌面客户端的登录态依赖本机 DPAPI，容器内读不到，所以登录环节等价于**凭证导入**——在「凭证导入」子页粘贴桌面端登录态文件的完整 JSON 内容。该文件为 `~/.box-agent/config/auth.json`（Windows 为 `%USERPROFILE%\.box-agent\config\auth.json`，即 `C:\Users\<用户名>\.box-agent\config\auth.json`；路径随客户端版本可能略有差异），用文本编辑器打开复制即可。容器里已有更新的凭据时返回 409，不会覆盖。账号、积分与运行数据持久化在宿主 `runtime/raccoon/` 下；每日积分以账单核对为权威结果（失败降级为待核），通道无原生签到。
 
@@ -211,6 +231,25 @@ docker compose -f docker-compose.yml -f deploy/compose.raccoon.yml up -d
 接口与密钥：控制台只为小浣熊模型生成 OpenAI 协议的调用示例，小浣熊模型不支持 Anthropic 协议的 `/v1/messages`。console 到容器的内部调用使用 `WB2A_RACCOON_KEY` 作为 Bearer 密钥（overlay 启动时由宿主环境变量传入）；留空则不校验——容器只监听 console 网络命名空间内的回环地址 `127.0.0.1:7867`，外部无法直连。
 
 小浣熊页签是带控制链路的完整页签：「通道状态」展示容器可达性、模型数与账号统计，「凭证导入」完成桌面端凭证 JSON 导入并支持账号启停/删除/刷新与积分查看，「模型」与「对话测试」同其他旁路页签。未叠加该 overlay 时页签置灰并提示未启用。旁路调用会异步记入控制台「调用统计」，账号列显示「Raccoon 通道」。小浣熊免费模型的可用性、限额和模型行为由上游决定，本仓未对其做真实上游验收。
+
+## 可选：接入 FreeLLMAPI 免费池
+
+本部署还可以并列挂一个 [FreeLLMAPI](https://github.com/tashfeenahmed/FreeLLMAPI) sidecar 容器（上游官方镜像，不由本仓构建），把它聚合的免费模型池变成一个可选模型来源。启用后仍是同一个 `:7863` 出口：控制台 `/v1/models` 会合并显示其模型（统一加 `freellm-` 前缀并标注 `realm: freellm`），客户端请求 `model` 以 `freellm-` 开头时由 console 剥前缀转发给容器。
+
+```bash
+docker compose -f docker-compose.yml -f deploy/compose.freellm.yml up -d
+```
+
+与其它旁路的分工不同：这条通道上**供应商 key 池、池内路由与降级、限流熔断、key 轮换、粘性会话与响应缓存全部由 sidecar 自管**，控制台只负责对外出口、别名与用量记账。因此它的页签是只读型（通道状态 + 模型表 + 对话测试），没有账号、登录、签到那一套控制链路。
+
+**两个必须先做的一次性配置**（缺任一条通道就不通，且都不会报错）：
+
+1. `ENCRYPTION_KEY`：镜像以 production 运行，该变量必填（64 位十六进制，一次生成长期复用；换 key 会让 sidecar 已存的供应商 key 全部解不开）。没有"改成开发模式绕过"的捷径——非 production 下它转而要求手动执行数据库迁移。生成：`node -e "console.log(require('crypto').randomBytes(32).toString('hex'))"`。
+2. 统一 API key：由 sidecar 首启写进自己的 SQLite，没有声明式入口。首启后从 `runtime/freellm/freeapi.db` 的 `settings.unified_api_key` 读出，回填到宿主 `.env` 的 `WB2A_FREELLMAPI_KEY`，再重新 `up -d`。控制台只持有这把统一 key，**不持有任何供应商 key**。
+
+**判断这条通道到底能不能用，别看模型列表**：模型目录由 sidecar 自己周期性从上游目录服务同步，与你有几家供应商配了 key 无关，所以 `/v1/models` 里有几百个模型也可能一个都调不动——没有供应商 key 时对话会返回 503 `no_providers_configured`。要确认能用，就在 FreeLLMAPI 页面对某个 `freellm-` 模型真发一条对话。
+
+供应商 key 在 FreeLLMAPI 自己的面板里添加（或通过 `FREEAPI_CONFIG_JSON` 声明式注入，该变量写在宿主 `.env`，本仓不提交任何带密钥的配置文件）。协议面：上游自行实现了 Chat / Messages / Responses 三种入口，因此本通道不限于 OpenAI 协议——与 AutoClaw、Trae 那几条只支持 OpenAI 的旁路不同。旁路调用异步记入控制台「调用统计」，账号列显示「FreeLLMAPI 通道」。
 
 ## 配套 Web 控制台
 
@@ -228,7 +267,7 @@ docker compose -f docker-compose.yml -f deploy/compose.raccoon.yml up -d
 
 ### 调用统计
 
-“调用统计”汇总七个通道（WorkBuddy 核心账号池与 GLM、Qoder、OpenCode、AutoClaw、Trae、小浣熊旁路）的成功调用，可按通道和时间范围筛选。明细每行给出模型、协议入口（Chat / Messages / Responses）、token 与积分实测值，以及**来源网段**和**客户端自报标识**（User-Agent），用来回答“谁在用、用在哪”。上游或客户端没有给出的项保持空白（显示“—”），不会被补成 0 或某个默认值。
+“调用统计”汇总各通道（WorkBuddy 核心账号池与各条已启用的旁路，完整名单以页面上的通道筛选下拉为准）的成功调用，可按通道和时间范围筛选。明细每行给出模型、协议入口（Chat / Messages / Responses）、token 与积分实测值，以及**来源网段**和**客户端自报标识**（User-Agent），用来回答“谁在用、用在哪”。上游或客户端没有给出的项保持空白（显示“—”），不会被补成 0 或某个默认值。
 
 指标卡下方另有一条鉴权失败提示：API Key 不对的请求不计入调用次数，只按来源网段汇总出现次数（形如“鉴权失败 3 次（本范围），来源：203.0.113.0/24 ×2、未知来源 ×1”），用于发现有人在猜密钥。来源地址只保留网段（IPv4 /24、IPv6 /64），完整地址不写盘；客户端标识由调用方自报，只作参考，不能当作身份凭据。
 

@@ -96,7 +96,7 @@ func TestProbeTimeoutPerChannel(t *testing.T) {
 	if got := probeTimeoutFor(channelQoder); got <= probeRequestTimeout {
 		t.Fatalf("qoder probe timeout = %s, want > %s", got, probeRequestTimeout)
 	}
-	for _, c := range []routeChannel{channelCore, channelGLM, channelOpenCode, channelAutoClaw, channelTrae, channelRaccoon} {
+	for _, c := range []routeChannel{channelCore, channelGLM, channelOpenCode, channelAutoClaw, channelTrae, channelRaccoon, channelFreellm} {
 		if got := probeTimeoutFor(c); got != probeRequestTimeout {
 			t.Fatalf("%s probe timeout = %s, want default %s", c, got, probeRequestTimeout)
 		}
@@ -111,7 +111,7 @@ func TestProbeConcurrencyPerChannel(t *testing.T) {
 	if got := probeConcurrencyFor(channelCore); got != 1 {
 		t.Fatalf("core probe concurrency = %d, want 1（严格 pin 账号只能串行）", got)
 	}
-	for _, c := range []routeChannel{channelGLM, channelQoder, channelOpenCode, channelAutoClaw, channelTrae, channelRaccoon} {
+	for _, c := range []routeChannel{channelGLM, channelQoder, channelOpenCode, channelAutoClaw, channelTrae, channelRaccoon, channelFreellm} {
 		if got := probeConcurrencyFor(c); got != probeConcurrency {
 			t.Fatalf("%s probe concurrency = %d, want default %d", c, got, probeConcurrency)
 		}
@@ -130,8 +130,10 @@ func TestProbeAdminAuthAndValidation(t *testing.T) {
 		t.Fatalf("missing csrf: %d", rec.Code)
 	}
 	rec := adminRequest(h, "POST", "/admin/probe", `{"channels":["opencode"]}`, cookie, csrf)
-	if rec.Code != 400 || !strings.Contains(rec.Body.String(), "只能是 core、glm、qoder、autoclaw、trae 或 raccoon") {
-		t.Fatalf("bad channel: %d %s", rec.Code, rec.Body)
+	// 期望文案与 probeableChannels 同源比对，不写死通道名单：
+	// 写死的版本每加一条通道都要手工改一次，漏改就是一条假绿。
+	if rec.Code != 400 || !strings.Contains(rec.Body.String(), probeableChannelNames()) {
+		t.Fatalf("bad channel: %d %s（期望列出 %s）", rec.Code, rec.Body, probeableChannelNames())
 	}
 }
 

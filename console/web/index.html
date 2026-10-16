@@ -14,17 +14,17 @@
 </main>
 <div id="console-view" class="shell" hidden>
  <aside class="sidebar"><div class="brand"><span class="brand-icon"><svg viewBox="0 0 64 64" aria-hidden="true"><path d="M32 15 L47 45 L17 45 Z" fill="none" stroke="#fff" stroke-width="4" stroke-linejoin="round"/><path d="M8 26 L27 30" stroke="#fff" stroke-width="3" stroke-linecap="round"/><path d="M37 33 L56 24" stroke="#a5f3fc" stroke-width="3" stroke-linecap="round"/><path d="M37 36 L57 34" stroke="#c4b5fd" stroke-width="3" stroke-linecap="round"/><path d="M37 39 L56 44" stroke="#fbcfe8" stroke-width="3" stroke-linecap="round"/></svg></span> 棱镜网关</div>
-  <nav aria-label="主要导航"><button data-view="overview" class="nav active"><span aria-hidden="true">◫</span> <span>运行概览</span></button><button data-view="workbuddy" class="nav"><span aria-hidden="true">◉</span> <span>WorkBuddy 通道</span></button><button data-view="zcode" class="nav" id="nav-zcode"><span aria-hidden="true">◈</span> <span>Zcode</span></button><button data-view="qoder" class="nav" id="nav-qoder"><span aria-hidden="true">⬡</span> <span>Qoder</span></button><button data-view="opencode" class="nav" id="nav-opencode"><span aria-hidden="true">▣</span> <span>OpenCode</span></button><button data-view="ccr" class="nav" id="nav-ccr"><span aria-hidden="true">⇪</span> <span>CCR 网关</span></button><button data-view="autoclaw" class="nav" id="nav-autoclaw"><span aria-hidden="true">◍</span> <span>AutoClaw</span></button><button data-view="trae" class="nav" id="nav-trae"><span aria-hidden="true">◐</span> <span>Trae</span></button><button data-view="raccoon" class="nav" id="nav-raccoon"><span aria-hidden="true">◑</span> <span>小浣熊</span></button><button data-view="usage" class="nav"><span aria-hidden="true">≣</span> <span>调用统计</span></button><button data-view="routes" class="nav"><span aria-hidden="true">⇄</span> <span>Agent 接入</span></button><button data-view="access" class="nav"><span aria-hidden="true">⌘</span> <span>API 接入</span></button></nav>
+  <nav aria-label="主要导航"><button data-view="overview" class="nav active"><span aria-hidden="true">◫</span> <span>运行概览</span></button><button data-view="workbuddy" class="nav"><span aria-hidden="true">◉</span> <span>WorkBuddy 通道</span></button><button data-view="zcode" class="nav" id="nav-zcode"><span aria-hidden="true">◈</span> <span>Zcode</span></button><button data-view="qoder" class="nav" id="nav-qoder"><span aria-hidden="true">⬡</span> <span>Qoder</span></button><button data-view="opencode" class="nav" id="nav-opencode"><span aria-hidden="true">▣</span> <span>OpenCode</span></button><button data-view="freellm" class="nav" id="nav-freellm"><span aria-hidden="true">▤</span> <span>FreeLLMAPI</span></button><button data-view="ccr" class="nav" id="nav-ccr"><span aria-hidden="true">⇪</span> <span>CCR 网关</span></button><button data-view="autoclaw" class="nav" id="nav-autoclaw"><span aria-hidden="true">◍</span> <span>AutoClaw</span></button><button data-view="trae" class="nav" id="nav-trae"><span aria-hidden="true">◐</span> <span>Trae</span></button><button data-view="traeai" class="nav" id="nav-traeai"><span aria-hidden="true">◓</span> <span>Trae 国际版</span></button><button data-view="raccoon" class="nav" id="nav-raccoon"><span aria-hidden="true">◑</span> <span>小浣熊</span></button><button data-view="usage" class="nav"><span aria-hidden="true">≣</span> <span>调用统计</span></button><button data-view="routes" class="nav"><span aria-hidden="true">⇄</span> <span>Agent 接入</span></button><button data-view="access" class="nav"><span aria-hidden="true">⌘</span> <span>API 接入</span></button></nav>
   <div class="sidebar-bottom"><span class="status-dot"></span> 自托管网关<button id="logout" class="quiet">退出登录</button></div>
  </aside>
- <main class="workspace"><header class="topbar"><span class="breadcrumb">控制台 <span>/</span> <span id="breadcrumb-name">运行概览</span></span><div class="topbar-actions"><button id="refresh" class="rail-btn" data-refresh-for="overview">↻ 刷新状态</button><button id="zcode-refresh" class="rail-btn" data-refresh-for="zcode" hidden>↻ 刷新状态</button><button id="qoder-refresh" class="rail-btn" data-refresh-for="qoder" hidden>↻ 刷新状态</button><button id="opencode-refresh" class="rail-btn" data-refresh-for="opencode" hidden>↻ 刷新状态</button><button id="ccr-refresh" class="rail-btn" data-refresh-for="ccr" hidden>↻ 刷新状态</button><button id="autoclaw-refresh" class="rail-btn" data-refresh-for="autoclaw" hidden>↻ 刷新状态</button><button id="trae-refresh" class="rail-btn" data-refresh-for="trae" hidden>↻ 刷新状态</button><button id="raccoon-refresh" class="rail-btn" data-refresh-for="raccoon" hidden>↻ 刷新状态</button><button id="usage-refresh" class="rail-btn" data-refresh-for="usage" hidden>↻ 刷新统计</button><button id="routes-refresh" class="rail-btn" data-refresh-for="routes" hidden>↻ 刷新别名</button><span class="muted small" id="refresh-stamp" hidden></span><span class="badge rail-state idle" id="service-state">正在连接</span></div></header>
+ <main class="workspace"><header class="topbar"><span class="breadcrumb">控制台 <span>/</span> <span id="breadcrumb-name">运行概览</span></span><div class="topbar-actions"><button id="refresh" class="rail-btn" data-refresh-for="overview">↻ 刷新状态</button><button id="zcode-refresh" class="rail-btn" data-refresh-for="zcode" hidden>↻ 刷新状态</button><button id="qoder-refresh" class="rail-btn" data-refresh-for="qoder" hidden>↻ 刷新状态</button><button id="opencode-refresh" class="rail-btn" data-refresh-for="opencode" hidden>↻ 刷新状态</button><button id="freellm-refresh" class="rail-btn" data-refresh-for="freellm" hidden>↻ 刷新状态</button><button id="ccr-refresh" class="rail-btn" data-refresh-for="ccr" hidden>↻ 刷新状态</button><button id="autoclaw-refresh" class="rail-btn" data-refresh-for="autoclaw" hidden>↻ 刷新状态</button><button id="trae-refresh" class="rail-btn" data-refresh-for="trae" hidden>↻ 刷新状态</button><button id="traeai-refresh" class="rail-btn" data-refresh-for="traeai" hidden>↻ 刷新状态</button><button id="raccoon-refresh" class="rail-btn" data-refresh-for="raccoon" hidden>↻ 刷新状态</button><button id="usage-refresh" class="rail-btn" data-refresh-for="usage" hidden>↻ 刷新统计</button><button id="routes-refresh" class="rail-btn" data-refresh-for="routes" hidden>↻ 刷新别名</button><span class="muted small" id="refresh-stamp" hidden></span><span class="badge rail-state idle" id="service-state">正在连接</span></div></header>
   <div id="notice" class="notice" hidden></div>
   <p id="announce" class="sr-only" role="status" aria-live="polite"></p>
-  <section class="page" data-page="overview"><div class="page-heading"><div><h1>运行概览</h1><p class="muted">七个通道的可达性、所选范围的用量与按天趋势。</p></div></div>
+  <section class="page" data-page="overview"><div class="page-heading"><div><h1>运行概览</h1><p class="muted">各通道的可达性、所选范围的用量与按天趋势。</p></div></div>
    <div class="channel-cards" id="overview-cards"></div>
    <div class="section-title"><h2>通道总览</h2><span class="muted small" id="overview-health-stamp">每个通道一行；状态由网关自探，等待首次结论</span></div>
    <div class="panel table-wrap"><table><thead><tr><th>通道</th><th>状态</th><th class="num">模型数</th><th class="num">调用次数</th><th class="num">输入 tokens</th><th class="num">输出 tokens</th><th class="num">积分</th></tr></thead><tbody id="overview-channels-body"></tbody></table></div>
-   <div class="section-title"><h2>用量统计</h2><span class="muted small"><label for="overview-usage-channel">通道</label>&nbsp;<select id="overview-usage-channel"><option value="all" selected>全部通道</option><option value="workbuddy">WorkBuddy（核心账号池）</option><option value="zcode">GLM（Zcode 通道）</option><option value="qoder">Qoder 通道</option><option value="opencode">OpenCode 通道</option><option value="autoclaw">AutoClaw 通道</option><option value="trae">Trae 通道</option><option value="raccoon">小浣熊通道</option></select>&nbsp;<label for="overview-usage-range">时间范围</label>&nbsp;<select id="overview-usage-range"><option value="today" selected>今天</option><option value="yesterday">前一天</option><option value="week">本周</option><option value="month">本月</option></select></span></div>
+   <div class="section-title"><h2>用量统计</h2><span class="muted small"><label for="overview-usage-channel">通道</label>&nbsp;<select id="overview-usage-channel"><option value="all" selected>全部通道</option><option value="workbuddy">WorkBuddy（核心账号池）</option><option value="zcode">GLM（Zcode 通道）</option><option value="qoder">Qoder 通道</option><option value="opencode">OpenCode 通道</option><option value="autoclaw">AutoClaw 通道</option><option value="trae">Trae 通道</option><option value="traeai">Trae 国际版通道</option><option value="raccoon">小浣熊通道</option><option value="freellm">FreeLLMAPI 通道</option></select>&nbsp;<label for="overview-usage-range">时间范围</label>&nbsp;<select id="overview-usage-range"><option value="today" selected>今天</option><option value="yesterday">前一天</option><option value="week">本周</option><option value="month">本月</option></select></span></div>
    <div class="metrics"><article><span>调用次数</span><strong id="overview-usage-calls">—</strong><small>所选范围与通道</small></article><article><span>Tokens</span><strong id="overview-usage-tokens">—</strong><small>输入 + 输出（已观测）</small></article><article><span>积分扣费</span><strong id="overview-usage-credit">—</strong><small>上游明确回报的扣费</small></article></div>
    <p id="overview-usage-note" class="muted small" hidden></p>
    <div class="section-title"><h2>每日趋势</h2><span class="muted small">所选范围与通道内的按天用量；缺失观测不计入，范围不足两天时以数值提示代替折线</span></div>
@@ -138,6 +138,27 @@
     </div>
    </div>
   </section>
+  <section class="page" data-page="freellm" hidden><div class="page-heading"><div><h1>FreeLLMAPI 免费池通道</h1><p class="muted">可选的免费 LLM 池旁路（FreeLLMAPI sidecar）：供应商 key 池、脏化缓存、熔断与粘性会话全部由 sidecar 自管；棱镜只负责别名、积分、排序与记账。</p></div></div>
+   <p id="freellm-disabled" class="empty" hidden>FreeLLMAPI 通道未启用。在部署目录用 <code>deploy/compose.freellm.yml</code> overlay 启动 sidecar，并给 console 配置 <code>WB2A_FREELLMAPI_URL</code> / <code>WB2A_FREELLMAPI_KEY</code>（统一 key，由 sidecar 首启生成），这里会显示通道状态、模型目录与对话测试。</p>
+   <div id="freellm-content" hidden>
+    <div class="opencode-tabs" role="tablist" aria-label="FreeLLMAPI 子页"><button id="freellm-view-status" class="opencode-tab active" role="tab" type="button">◫ 通道状态</button><button id="freellm-view-models" class="opencode-tab" role="tab" type="button" hidden>☰ FreeLLMAPI 模型</button><button id="freellm-view-chat" class="opencode-tab" role="tab" type="button" hidden>↗ 对话测试</button></div>
+    <div id="freellm-pane-status">
+    <article class="panel"><div class="section-title"><h2>通道状态</h2><span class="badge" id="freellm-status-badge">未知</span></div><p id="freellm-status-text" class="muted small" role="status" aria-live="polite">正在读取通道状态…</p>
+     <div class="panel table-wrap" id="freellm-health-wrap" hidden><table><thead><tr><th>字段</th><th>值</th></tr></thead><tbody id="freellm-health-body"></tbody></table></div></article>
+   </div>
+    <div id="freellm-pane-models" hidden>
+    <div class="panel table-wrap"><table><thead><tr><th>模型 ID</th><th>能力</th><th>状态</th><th class="num">耗时</th><th class="num">速度</th><th>说明</th><th>热度</th><th>全球热度</th></tr></thead><tbody id="freellm-models-body"></tbody></table><p id="freellm-models-empty" class="empty">暂无模型。</p></div>
+    <p id="freellm-models-note" class="muted small">免费通道：不采集积分倍率（缺失不等于 0）；清单已按 sidecar 的 execution_status 裁剪，只列此刻真能调用的条目（缺供应商 key 或正在冷却的不在此列，全集条数见「通道状态」）；模型默认启用，可用操作列开关停用；池内路由、熔断、key 轮换、缓存与提示压缩全部下放 sidecar，棱镜不重复策略。</p>
+    <div class="section-title"><h2>FreeLLMAPI 模型</h2><span class="muted small">来自 FreeLLMAPI 的 <code>/v1/models</code>；探测结论需点「测速探测」手工触发</span><button id="probe-freellm" class="secondary">⚡ 测速探测</button></div>
+    <p id="probe-freellm-progress" class="muted small" role="status" aria-live="polite" hidden></p>
+   </div>
+    <div id="freellm-pane-chat" hidden>
+    <div class="section-title"><h2>对话测试</h2><span class="muted small">不流式，单次最小请求转发给 sidecar（会占用一次免费额度）</span></div>
+    <div class="panel chat-panel" id="freellm-chat-panel"><div class="chat-settings"><label for="freellm-model">模型</label><select id="freellm-model"></select></div>
+     <div id="freellm-messages" class="messages" aria-live="polite"><div class="chat-empty">选择一个 FreeLLMAPI 模型，在下方输入问题。<small>对话只保留在当前页面，刷新即清空。</small></div></div>
+     <form id="freellm-form"><label class="sr-only" for="freellm-prompt">你的问题</label><textarea id="freellm-prompt" rows="2" placeholder="输入一个问题…（回车发送，Shift+回车换行）" required></textarea><div class="composer-footer"><span id="freellm-usage" class="muted small" role="status" aria-live="polite">用量将在上游返回后显示</span><button id="freellm-stop" class="secondary" type="button" hidden>停止生成</button><button id="freellm-send" class="primary" type="submit">发送 ↑</button></div></form></div>
+   </div>
+  </section>
   <section class="page" data-page="ccr" hidden><div class="page-heading"><div><h1>CCR 网关</h1><p class="muted">可选的 claude-code-router 旁路：把棱镜接给 Claude Code 这类 Anthropic 客户端。本控制台只驱动 CCR 自己的模型网关。</p></div></div>
    <p id="ccr-disabled" class="empty" hidden>CCR 通道未启用。给 console 配置 <code>WB2A_CCR_URL</code> 并把 CCR 的 service.json 只读挂载进去（<code>WB2A_CCR_TOKEN_FILE</code>）后，这里会显示网关状态与启停按钮。</p>
    <div id="ccr-content" hidden>
@@ -201,7 +222,7 @@
      <p id="trae-auth-row" hidden><a id="trae-auth-link" target="_blank" rel="noopener noreferrer">打开授权页面 ↗</a></p>
      <p id="trae-login-hint" class="muted small" role="status" aria-live="polite"></p></article>
     <article class="panel"><div class="section-title"><h2>手动导入回调</h2></div>
-     <form id="trae-import-form" class="inline-form"><label for="trae-import-url">回调地址或凭据 JSON</label><input id="trae-import-url" autocomplete="off" placeholder="粘贴浏览器回调 URL"><button id="trae-import" class="primary" type="submit">导入</button></form>
+     <form id="trae-import-form" class="inline-form"><label for="trae-import-url">回调链接 / 凭据 JSON / storage.json</label><textarea id="trae-import-url" rows="3" autocomplete="off" placeholder="粘贴浏览器回调 URL、凭据 JSON，或桌面客户端 storage.json 全文"></textarea><button id="trae-import" class="primary" type="submit">导入</button></form>
      <p class="muted small">若浏览器跳转的回调页面无法自动回传，把地址栏里的完整回调 URL 粘贴到这里导入；也可粘贴凭据 JSON。</p>
      <p id="trae-import-hint" class="muted small" role="status" aria-live="polite"></p></article>
     </div>
@@ -232,6 +253,55 @@
     <div id="trae-pane-usage" hidden>
     <div class="section-title"><h2>通道用量</h2><span class="muted small">来自容器 <code>/admin/api/usage</code>，保留最近 30 天</span><button id="trae-usage-refresh" class="secondary">↻ 刷新用量</button></div>
     <div class="panel table-wrap"><table><thead><tr><th>日期</th><th class="num">请求</th><th class="num">错误</th><th class="num">输入 tokens</th><th class="num">输出 tokens</th><th class="num">合计 tokens</th></tr></thead><tbody id="trae-usage-body"></tbody></table><p id="trae-usage-empty" class="empty">暂无用量记录。</p></div>
+    </div>
+   </div>
+  </section>
+  <section class="page" data-page="traeai" hidden><div class="page-heading"><div><h1>Trae 国际版通道</h1><p class="muted">Trae 国际版旁路（trae2api 容器的 intl 实例，trae.ai 账号体系）。OAuth 登录、账号权益与对话消费由容器自持，本控制台只负责查看、登录与控制。权益是订阅档位，上游没有每日签到与积分。</p></div></div>
+   <p id="traeai-disabled" class="empty" hidden>Trae 国际版通道未启用。在部署目录用 <code>deploy/compose.traeai.yml</code> overlay 启动后，这里会显示通道状态、账号登录与导入、账号管理、排程、模型列表、对话测试与用量。</p>
+   <div id="traeai-content" hidden>
+    <div class="trae-tabs" role="tablist" aria-label="Trae 国际版子页"><button id="traeai-view-status" class="trae-tab active" role="tab" type="button">◫ 通道状态</button><button id="traeai-view-login" class="trae-tab" role="tab" type="button">⇆ 登录与导入</button><button id="traeai-view-accounts" class="trae-tab" role="tab" type="button">◎ 账号管理</button><button id="traeai-view-schedule" class="trae-tab" role="tab" type="button">◷ 排程</button><button id="traeai-view-models" class="trae-tab" role="tab" type="button">☰ 国际版模型</button><button id="traeai-view-chat" class="trae-tab" role="tab" type="button">↗ 对话测试</button><button id="traeai-view-usage" class="trae-tab" role="tab" type="button">≣ 用量</button></div>
+    <div id="traeai-pane-status">
+    <article class="panel"><div class="section-title"><h2>通道状态</h2><span class="badge" id="traeai-status-badge">未知</span></div><p id="traeai-status-text" class="muted small" role="status" aria-live="polite">正在读取通道状态…</p>
+     <p id="traeai-edition-note" class="muted small" role="note" hidden></p>
+     <div class="panel table-wrap" id="traeai-health-wrap" hidden><table><thead><tr><th>字段</th><th>值</th></tr></thead><tbody id="traeai-health-body"></tbody></table></div></article>
+    </div>
+    <div id="traeai-pane-login" hidden>
+    <article class="panel"><div class="section-title"><h2>OAuth 登录</h2><span class="badge warn" id="traeai-login-badge">未登录</span></div>
+     <form id="traeai-login-form" class="inline-form"><button id="traeai-login-start" class="primary" type="submit">开始登录</button></form>
+     <p id="traeai-auth-row" hidden><a id="traeai-auth-link" target="_blank" rel="noopener noreferrer">打开授权页面 ↗</a></p>
+     <p id="traeai-login-hint" class="muted small" role="status" aria-live="polite"></p></article>
+    <article class="panel"><div class="section-title"><h2>手动导入</h2></div>
+     <form id="traeai-import-form" class="inline-form"><label for="traeai-import-url">回调链接 / 凭据 JSON / storage.json</label><textarea id="traeai-import-url" rows="3" autocomplete="off" placeholder="粘贴浏览器回调 URL、凭据 JSON，或桌面客户端 storage.json 全文"></textarea><button id="traeai-import" class="primary" type="submit">导入</button></form>
+     <p class="muted small">容器读不到宿主 <code>%APPDATA%</code>，国际版的主要入口是粘贴桌面客户端的 <code>storage.json</code> 全文；也可以粘贴浏览器跳转的完整回调 URL，或导出的凭据 JSON。三种内容容器按内容自动判别，页面原样送出。</p>
+     <p id="traeai-import-hint" class="muted small" role="status" aria-live="polite"></p></article>
+    </div>
+    <div id="traeai-pane-accounts" hidden>
+    <div class="section-title"><h2>账号管理</h2><span class="muted small">状态来自容器 <code>/status</code>；权益档位需手工刷新</span><button id="traeai-credits-refresh" class="secondary">↻ 刷新权益</button></div>
+    <div class="metrics"><article><span>账号总数</span><strong id="traeai-stat-total">—</strong><small>全部已导入账号</small></article><article><span>可用</span><strong id="traeai-stat-usable">—</strong><small>未停用且未冷却</small></article><article><span>冷却中</span><strong id="traeai-stat-cooling">—</strong><small>上游限流中</small></article><article><span>已停用</span><strong id="traeai-stat-disabled">—</strong><small>手动关闭</small></article></div>
+    <div class="panel table-wrap"><table><thead><tr><th>账号</th><th>状态</th><th>权益档位</th><th class="num">成功 / 错误</th><th>有效期</th><th>说明</th><th>操作</th></tr></thead><tbody id="traeai-accounts-body"></tbody></table><p id="traeai-accounts-empty" class="empty">还没有账号。到「登录与导入」子页添加。</p></div>
+    <p id="traeai-accounts-note" class="muted small">多账号池，但这里没有「独锁」：旁路通道由容器自行选号，账号锁定只作用于 WorkBuddy 核心账号池。国际版权益是订阅档位，上游没有积分余额这个量，所以这一列显示档位文本；没刷到就写「未知」，不折算成积分数字、也不补零。</p>
+    </div>
+    <div id="traeai-pane-schedule" hidden>
+    <div class="section-title"><h2>排程</h2><span class="muted small">凭据刷新时间来自容器调度器；国际版没有签到体系</span><button id="traeai-schedule-refresh" class="secondary">↻ 刷新排程</button></div>
+    <div class="panel table-wrap"><table><thead><tr><th>字段</th><th>值</th></tr></thead><tbody id="traeai-schedule-body"></tbody></table><p id="traeai-schedule-empty" class="empty">暂无排程信息。</p></div>
+    <div class="inline-form"><button id="traeai-refresh-now" class="secondary" type="button">立即刷新凭据</button></div>
+    <p id="traeai-schedule-hint" class="muted small" role="status" aria-live="polite"></p>
+    </div>
+    <div id="traeai-pane-models" hidden>
+    <div class="section-title"><h2>Trae 国际版模型</h2><span class="muted small">来自 trae2api intl 实例的 <code>/v1/models</code>；探测结论需点「测速探测」手工触发</span><button id="probe-traeai" class="secondary">⚡ 测速探测</button></div>
+    <p id="probe-traeai-progress" class="muted small" role="status" aria-live="polite" hidden></p>
+    <div class="panel table-wrap"><table><thead><tr><th>模型 ID</th><th>能力</th><th>状态</th><th class="num">耗时</th><th class="num">速度</th><th>说明</th><th>热度</th><th>全球热度</th><th class="num">积分消耗</th><th>操作</th></tr></thead><tbody id="traeai-models-body"></tbody></table><p id="traeai-models-empty" class="empty">暂无模型。</p></div>
+    <p id="traeai-models-note" class="muted small">倍率来自上游 <code>consumption_rate</code>，语义是「订阅额度的消耗率」，不是单次扣费：只用于展示与排序，模型默认启用，只有显式停用才停用。国际版保留上游目录里的自定义与 BYOK 槽位条目（国内版会剔除网关别名回流），列出的即上游实际可路由的名字。</p>
+    </div>
+    <div id="traeai-pane-chat" hidden>
+    <div class="section-title"><h2>对话测试</h2><span class="muted small">OpenAI 流式协议，真实请求转发给 trae2api intl 容器</span></div>
+    <div class="panel chat-panel" id="traeai-chat-panel"><div class="chat-settings"><label for="traeai-model">模型</label><select id="traeai-model"></select></div>
+     <div id="traeai-messages" class="messages" aria-live="polite"><div class="chat-empty">选择一个 Trae 国际版模型，在下方输入问题。<small>对话只保留在当前页面，刷新即清空。</small></div></div>
+     <form id="traeai-form"><label class="sr-only" for="traeai-prompt">你的问题</label><textarea id="traeai-prompt" rows="2" placeholder="输入一个问题…（回车发送，Shift+回车换行）" required></textarea><div class="composer-footer"><span id="traeai-usage" class="muted small" role="status" aria-live="polite">用量将在上游返回后显示</span><button id="traeai-stop" class="secondary" type="button" hidden>停止生成</button><button id="traeai-send" class="primary" type="submit">发送 ↑</button></div></form></div>
+    </div>
+    <div id="traeai-pane-usage" hidden>
+    <div class="section-title"><h2>通道用量</h2><span class="muted small">来自容器 <code>/admin/api/usage</code>，保留最近 30 天</span><button id="traeai-usage-refresh" class="secondary">↻ 刷新用量</button></div>
+    <div class="panel table-wrap"><table><thead><tr><th>日期</th><th class="num">请求</th><th class="num">错误</th><th class="num">输入 tokens</th><th class="num">输出 tokens</th><th class="num">合计 tokens</th></tr></thead><tbody id="traeai-usage-body"></tbody></table><p id="traeai-usage-empty" class="empty">暂无用量记录。</p></div>
     </div>
    </div>
   </section>
@@ -269,7 +339,7 @@
     </div>
    </div>
   </section>
-  <section class="page" data-page="usage" hidden><div class="page-heading"><div><h1>调用统计</h1><p class="muted">七个通道的成功调用汇入同一账本：WorkBuddy 核心账号池与 GLM（Zcode）、Qoder、OpenCode、AutoClaw、Trae、小浣熊旁路通道。上方指标与图表读按天汇总（永久保留，与窗口无关的「全历史」口径），下方明细表读逐次记录并可按通道筛选。积分只累计上游明确回报的扣费，未观测不记为零；逐次明细保留最近 90 天，更早的日子只剩日度汇总。</p></div></div>
+  <section class="page" data-page="usage" hidden><div class="page-heading"><div><h1>调用统计</h1><p class="muted">各通道的成功调用汇入同一账本：WorkBuddy 核心账号池与各旁路通道。上方指标与图表读按天汇总（永久保留，与窗口无关的「全历史」口径），下方明细表读逐次记录并可按通道筛选。积分只累计上游明确回报的扣费，未观测不记为零；逐次明细保留最近 90 天，更早的日子只剩日度汇总。</p></div></div>
    <div class="section-title"><h2>全历史指标</h2><span class="muted small" id="usage-life-line">正在读取日度汇总…</span></div>
    <div class="metrics"><article><span>累计 Token</span><strong id="usage-life-tokens">—</strong><small>全部历史输入 + 输出（只累计已观测）</small></article><article><span>单日峰值 Token</span><strong id="usage-life-peak">—</strong><small id="usage-life-peak-note">Token 最多的那一天</small></article><article><span>当前连续天数</span><strong id="usage-life-streak">—</strong><small>今天或昨天有调用即视为延续</small></article><article><span>最长连续天数</span><strong id="usage-life-longest">—</strong><small>历史最长的一段在用天数</small></article></div>
    <div class="section-title"><h2>Token 活动热力图</h2><span class="muted small">一格一个自然日（Asia/Shanghai），颜色越深表示当天 Token 越多；分档刻度按近一年实际分布计算，斜纹格代表那天有调用但上游没有回报 Token</span></div>
@@ -278,7 +348,7 @@
    <div class="panel"><div id="usage-daily-trend" class="chart"></div><p id="usage-daily-note" class="muted small" hidden></p></div>
    <div class="section-title"><h2>模型用量占比</h2><span class="muted small">按统计窗口内的 Token 合计分配环形与排名，前五名之外并入「其他模型」；没有 Token 观测的模型单列在下方，不参与占比</span></div>
    <div class="panel usage-share"><div id="usage-model-donut" class="donut"></div><div id="usage-model-legend" class="donut-legend"></div></div>
-   <div class="section-title"><h2>明细筛选</h2><span class="muted small"><label for="usage-channel">通道</label>&nbsp;<select id="usage-channel"><option value="all" selected>全部通道</option><option value="workbuddy">WorkBuddy（核心账号池）</option><option value="zcode">GLM（Zcode 通道）</option><option value="qoder">Qoder 通道</option><option value="opencode">OpenCode 通道</option><option value="autoclaw">AutoClaw 通道</option><option value="trae">Trae 通道</option><option value="raccoon">小浣熊通道</option></select>&nbsp;<label for="usage-range">时间范围</label>&nbsp;<select id="usage-range"><option value="today" selected>今天</option><option value="yesterday">前一天</option><option value="week">本周</option><option value="month">本月</option></select>&nbsp;只作用于下方两张表</span></div>
+   <div class="section-title"><h2>明细筛选</h2><span class="muted small"><label for="usage-channel">通道</label>&nbsp;<select id="usage-channel"><option value="all" selected>全部通道</option><option value="workbuddy">WorkBuddy（核心账号池）</option><option value="zcode">GLM（Zcode 通道）</option><option value="qoder">Qoder 通道</option><option value="opencode">OpenCode 通道</option><option value="autoclaw">AutoClaw 通道</option><option value="trae">Trae 通道</option><option value="traeai">Trae 国际版通道</option><option value="raccoon">小浣熊通道</option><option value="freellm">FreeLLMAPI 通道</option></select>&nbsp;<label for="usage-range">时间范围</label>&nbsp;<select id="usage-range"><option value="today" selected>今天</option><option value="yesterday">前一天</option><option value="week">本周</option><option value="month">本月</option></select>&nbsp;只作用于下方两张表</span></div>
    <div class="metrics"><article><span>调用次数</span><strong id="usage-calls">—</strong><small>所选范围内成功调用</small></article><article><span>Tokens</span><strong id="usage-tokens">—</strong><small>输入 + 输出（已观测）</small></article><article><span>积分扣费</span><strong id="usage-credit">—</strong><small>usage.credit 实测值合计</small></article></div>
    <p id="usage-denied" class="muted small" hidden></p>
    <div class="section-title"><h2>通道分布</h2><span class="muted small">按通道聚合所选范围；旁路通道用量由 console 观测后上报 core 账本</span></div>
@@ -294,7 +364,7 @@
     <article class="panel"><div class="section-title"><h2>让网关自己挑一个（gateway-auto）</h2><span class="badge" id="routes-auto-badge">未知</span></div><p id="routes-auto-text" class="muted small" role="status" aria-live="polite">正在读取路由状态…</p>
      <form id="routes-fallback-form" class="inline-form"><label for="routes-auto-fallback">都挑不出来时，兜底用哪个模型</label><input id="routes-auto-fallback" placeholder="cn:auto" autocomplete="off"><button id="routes-fallback-save" class="secondary" type="submit">保存兜底</button><span class="muted small">留空则用默认的 <code id="routes-default-fallback">cn:auto</code></span></form>
      <p class="muted small">模型名填 <code>gateway-auto</code> 时，网关会自动挑一个当前最好用的（优先挑能正常干活的，其次只支持对话的；同档里挑响应最快的）。如果一个都挑不出来，就走上面那个兜底模型。想拿到最新结论，去各通道模型页点「测速探测」。</p></article>
-    <div class="section-title"><h2>我的别名表</h2><span class="muted small">名字只能用字母、数字和 <code>._:-</code>；另外 <code>glm-</code> / <code>qoder-</code> / <code>opencode-</code> / <code>autoclaw-</code> / <code>trae-</code> / <code>raccoon-</code> / <code>cn:</code> / <code>global:</code> 开头以及 <code>gateway-auto</code> 已被系统占用，不能重名。用 ↑↓ 调整顺序；「测试」会真发一条最小对话，失败原因直接显示在提示里；「一键测试」把当前启用的别名逐个跑一遍（多个别名指向同一个模型时只测一次，已停用的跳过），跑完状态列会一起刷新</span><button id="routes-alias-test-all" class="secondary">⚡ 一键测试</button></div>
+    <div class="section-title"><h2>我的别名表</h2><span class="muted small">名字只能用字母、数字和 <code>._:-</code>；另外 <code>glm-</code> / <code>qoder-</code> / <code>opencode-</code> / <code>autoclaw-</code> / <code>trae-</code> / <code>traeai-</code> / <code>raccoon-</code> / <code>freellm-</code> / <code>cn:</code> / <code>global:</code> 开头以及 <code>gateway-auto</code> 已被系统占用，不能重名。用 ↑↓ 调整顺序；「测试」会真发一条最小对话，失败原因直接显示在提示里；「一键测试」把当前启用的别名逐个跑一遍（多个别名指向同一个模型时只测一次，已停用的跳过），跑完状态列会一起刷新</span><button id="routes-alias-test-all" class="secondary">⚡ 一键测试</button></div>
     <p id="routes-alias-test-progress" class="muted small" role="status" aria-live="polite" hidden></p>
     <div class="panel table-wrap"><table><thead><tr><th>别名</th><th>通道</th><th>真实模型</th><th>状态</th><th class="num">速度</th><th>说明</th><th>操作</th></tr></thead><tbody id="routes-alias-body"></tbody></table><p id="routes-alias-empty" class="empty">还没有别名。用下面的表单添加第一个吧。</p></div>
     <article class="panel" id="routes-alias-panel"><div class="section-title"><h2>添加 / 修改别名</h2><span class="badge warn" id="routes-alias-editing" hidden></span></div>

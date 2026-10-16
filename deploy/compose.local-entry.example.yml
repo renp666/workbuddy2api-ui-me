@@ -1,14 +1,14 @@
 # HOST-ONLY entry pin. Not shipped: production stays a bare `docker compose up -d` on
 # docker-compose.yml alone. This file exists so that on this machine a bare up -d always
-# recreates the SAME seven services from the SAME newest local build, instead of silently
+# recreates the SAME set of services from the SAME newest local build, instead of silently
 # falling back to the published image pair pinned in docker-compose.yml.
 #
 # Why each piece is here:
 #   - pull_policy: never + :local tags: a bare up -d must never be able to resurrect an older
 #     published tag. If :local is missing the command must fail loudly, not pull.
-#   - include: the five channel overlays are merged wholesale (their console env blocks too),
+#   - include: every channel overlay is merged wholesale (their console env blocks too),
 #     so deploy/compose.*.yml stays the single source of truth for sidecar definitions.
-#   - all seven services keep restart: unless-stopped, so Docker Desktop autostarts them; the
+#   - every service keeps restart: unless-stopped, so Docker Desktop autostarts them; the
 #     sidecars join console's network namespace by container id, which is why a console
 #     recreation has to carry them in the same command (a bare up -d with this file does that).
 #
@@ -28,7 +28,11 @@ include:
     project_directory: data
   - path: deploy/compose.trae.yml
     project_directory: data
+  - path: deploy/compose.traeai.yml
+    project_directory: data
   - path: deploy/compose.raccoon.yml
+    project_directory: data
+  - path: deploy/compose.freellm.yml
     project_directory: data
 
 services:

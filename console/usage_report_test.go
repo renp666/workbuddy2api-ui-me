@@ -70,7 +70,7 @@ func (s *usageReportSink) waitFor(t *testing.T, n int) []map[string]any {
 }
 
 // usagePair 起一个带 core（含上报接收器）与旁路上游的 console；
-// channel 为 "zcode"、"qoder"、"opencode"、"autoclaw" 或 "trae"，决定上游挂到哪个分流配置。
+// channel 为 "zcode"、"qoder"、"opencode"、"autoclaw"、"trae" 或 "freellm"，决定上游挂到哪个分流配置。
 func usagePair(t *testing.T, sink *usageReportSink, channel string, upstream http.HandlerFunc) http.Handler {
 	t.Helper()
 	core := httptest.NewServer(http.HandlerFunc(sink.handle))
@@ -94,6 +94,9 @@ func usagePair(t *testing.T, sink *usageReportSink, channel string, upstream htt
 	case "raccoon":
 		cfg.RaccoonURL = mustParseURL(t, proxy.URL)
 		cfg.RaccoonKey = strings.Repeat("r", 32)
+	case "freellm":
+		cfg.FreellmURL = mustParseURL(t, proxy.URL)
+		cfg.FreellmKey = strings.Repeat("f", 32)
 	default:
 		cfg.ZCodeURL = mustParseURL(t, proxy.URL)
 		cfg.ZCodeKey = strings.Repeat("z", 32)

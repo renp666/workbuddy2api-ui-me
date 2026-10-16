@@ -10,16 +10,21 @@ let usagePage = 1, usagePageSize = 50, usageDetailRows = [];
 let zcodeModels = [], zcodeHistory = [], zcodeStatus = null, zcodePollTimer, zcodeBusy = false, zcodeAuthURL = '', zcodeLogoutArmed = false, zcodeProviderTouched = false, zcodePlanTouched = false, zcodeView = 'status', zcodeViewTouched = false, zcodeEnabled = false;
 let qoderModels = [], qoderHistory = [], qoderStatus = null, qoderPollTimer, qoderBusy = false, qoderAuthURL = '', qoderLogoutArmed = false, qoderControl = false, qoderLoggedIn = false, qoderLoginTimer = null, qoderView = 'status', qoderViewTouched = false, qoderEnabled = false;
 let opencodeModels = [], opencodeHistory = [], opencodeStatus = null, opencodeBusy = false, opencodeView = 'status', opencodeEnabled = false;
+let freellmModels = [], freellmHistory = [], freellmStatus = null, freellmBusy = false, freellmEnabled = false, freellmView = 'status', freellmViewTouched = false;
 let ccrStatus = null, ccrEnabled = false, ccrBusy = false;
 let autoclawModels = [], autoclawHistory = [], autoclawStatus = null, autoclawBusy = false, autoclawView = 'status', autoclawEnabled = false, autoclawAccounts = [], autoclawLoginBusy = false, autoclawCodeTimer = null;
 let traeModels = [], traeHistory = [], traeStatus = null, traeBusy = false, traeView = 'status', traeEnabled = false, traeAccounts = [], traeLoginBusy = false, traePollTimer = null, traeAuthURL = '';
+// traeai 是 trae 同镜像的国际版实例（WB2A_TRAEAI_URL，traeai- 前缀）。
+// traeaiEntitlements：uid → {subscription,error,fast_request_per}，只在点「刷新权益」
+// 之后才有内容；权益（档位）不在 /status 里，容器只在 /admin/traeai/credits 回报。
+let traeaiModels = [], traeaiHistory = [], traeaiStatus = null, traeaiBusy = false, traeaiView = 'status', traeaiEnabled = false, traeaiAccounts = [], traeaiLoginBusy = false, traeaiPollTimer = null, traeaiAuthURL = '', traeaiEntitlements = new Map();
 let raccoonModels = [], raccoonHistory = [], raccoonStatus = null, raccoonBusy = false, raccoonView = 'status', raccoonEnabled = false, raccoonAccounts = [];
 let routesState = null, routesBusy = false, routesEditing = null, routeTestBusy = false;
 let probeSnapshot = {running:false,done:0,total:0,channels:{}}, probeTarget = '', probeTimer, probeBusy = false;
 // modelsGroupByAccount：core 模型表是否按可用账号分层展示（默认开）。
 let modelsGroupByAccount = true;
 let overviewUsageRange = 'today', overviewUsageChannel = 'all', overviewUsageItems = [], overviewGeneration = 0;
-// healthState 是 GET /admin/health 的最近一轮结论（console 自己探的「网关 + 七通道」）。
+// healthState 是 GET /admin/health 的最近一轮结论（console 自己探的网关与全部已登记通道）。
 let healthState = null, healthGeneration = 0, healthPollTimer;
 let selectedTaskRun, historyGeneration = 0, historyLoading = false, taskHistoryKey;
 const taskIntents = new Map(), taskReads = new Set();
@@ -59,9 +64,11 @@ function signedOut() {
  protocol='openai';$('prompt').value='';$('max-tokens').value='1024';$('usage').textContent='用量将在上游返回后显示';usageGeneration++;workbuddyView='accounts';renderAccess();
  zcodeModels=[];zcodeHistory=[];zcodeStatus=null;zcodeAuthURL='';zcodeLogoutArmed=false;zcodeBusy=false;zcodeProviderTouched=false;zcodePlanTouched=false;zcodeView='status';zcodeViewTouched=false;zcodeEnabled=false;clearTimeout(zcodePollTimer);zcodePollTimer=undefined;$('zcode-model').replaceChildren();clearMessages($('zcode-messages'));$('zcode-prompt').value='';$('zcode-usage').textContent='用量将在上游返回后显示';$('zcode-disabled').hidden=true;$('zcode-content').hidden=true;$('nav-zcode').classList.remove('nav-muted');
  qoderModels=[];qoderHistory=[];qoderStatus=null;qoderEnabled=false;qoderControl=false;qoderLoggedIn=false;qoderAuthURL='';qoderBusy=false;qoderLogoutArmed=false;qoderView='status';qoderViewTouched=false;clearTimeout(qoderPollTimer);qoderPollTimer=undefined;clearTimeout(qoderLoginTimer);qoderLoginTimer=null;$('qoder-model').replaceChildren();clearMessages($('qoder-messages'));$('qoder-prompt').value='';$('qoder-usage').textContent='用量将在上游返回后显示';$('qoder-disabled').hidden=true;$('qoder-content').hidden=true;$('nav-qoder').classList.remove('nav-muted');$('qoder-auth-row').hidden=true;$('qoder-pane-login').hidden=true;$('qoder-login-hint').textContent='';
- opencodeModels=[];opencodeHistory=[];opencodeStatus=null;opencodeEnabled=false;opencodeBusy=false;opencodeView='status';$('opencode-model').replaceChildren();clearMessages($('opencode-messages'));$('opencode-prompt').value='';$('opencode-usage').textContent='用量将在上游返回后显示';$('opencode-disabled').hidden=true;$('opencode-content').hidden=true;$('nav-opencode').classList.remove('nav-muted');$('opencode-health-wrap').hidden=true;$('opencode-health-body').replaceChildren();ccrStatus=null;ccrEnabled=false;ccrBusy=false;$('ccr-disabled').hidden=true;$('ccr-content').hidden=true;$('nav-ccr').classList.remove('nav-muted');
+ opencodeModels=[];opencodeHistory=[];opencodeStatus=null;opencodeEnabled=false;opencodeBusy=false;opencodeView='status';$('opencode-model').replaceChildren();clearMessages($('opencode-messages'));$('opencode-prompt').value='';$('opencode-usage').textContent='用量将在上游返回后显示';$('opencode-disabled').hidden=true;$('opencode-content').hidden=true;$('nav-opencode').classList.remove('nav-muted');$('opencode-health-wrap').hidden=true;$('opencode-health-body').replaceChildren();
+ freellmModels=[];freellmHistory=[];freellmStatus=null;freellmEnabled=false;freellmBusy=false;freellmView='status';freellmViewTouched=false;$('freellm-model').replaceChildren();clearMessages($('freellm-messages'));$('freellm-prompt').value='';$('freellm-usage').textContent='用量将在上游返回后显示';$('freellm-disabled').hidden=true;$('freellm-content').hidden=true;$('nav-freellm').classList.remove('nav-muted');ccrStatus=null;ccrEnabled=false;ccrBusy=false;$('ccr-disabled').hidden=true;$('ccr-content').hidden=true;$('nav-ccr').classList.remove('nav-muted');
  autoclawModels=[];autoclawHistory=[];autoclawStatus=null;autoclawEnabled=false;autoclawBusy=false;autoclawLoginBusy=false;autoclawView='status';autoclawAccounts=[];clearTimeout(autoclawCodeTimer);autoclawCodeTimer=null;$('autoclaw-model').replaceChildren();clearMessages($('autoclaw-messages'));$('autoclaw-prompt').value='';$('autoclaw-usage').textContent='用量将在上游返回后显示';$('autoclaw-disabled').hidden=true;$('autoclaw-content').hidden=true;$('nav-autoclaw').classList.remove('nav-muted');$('autoclaw-health-wrap').hidden=true;$('autoclaw-health-body').replaceChildren();$('autoclaw-accounts-body').replaceChildren();$('autoclaw-phone').value='';$('autoclaw-code').value='';$('autoclaw-oauth-url').value='';$('autoclaw-login-hint').textContent='';$('autoclaw-global-hint').textContent='';const sc=$('autoclaw-sendcode');sc.disabled=false;sc.textContent='发送验证码';
  traeModels=[];traeHistory=[];traeStatus=null;traeEnabled=false;traeBusy=false;traeLoginBusy=false;traeView='status';traeAccounts=[];traeAuthURL='';clearTimeout(traePollTimer);traePollTimer=null;$('trae-model').replaceChildren();clearMessages($('trae-messages'));$('trae-prompt').value='';$('trae-usage').textContent='用量将在上游返回后显示';$('trae-disabled').hidden=true;$('trae-content').hidden=true;$('nav-trae').classList.remove('nav-muted');$('trae-health-wrap').hidden=true;$('trae-health-body').replaceChildren();$('trae-accounts-body').replaceChildren();$('trae-auth-row').hidden=true;$('trae-login-hint').textContent='';$('trae-import-url').value='';$('trae-import-hint').textContent='';$('trae-schedule-body').replaceChildren();$('trae-schedule-hint').textContent='';$('trae-usage-body').replaceChildren();
+ traeaiModels=[];traeaiHistory=[];traeaiStatus=null;traeaiEnabled=false;traeaiBusy=false;traeaiLoginBusy=false;traeaiView='status';traeaiAccounts=[];traeaiAuthURL='';traeaiEntitlements=new Map();clearTimeout(traeaiPollTimer);traeaiPollTimer=null;$('traeai-model').replaceChildren();clearMessages($('traeai-messages'));$('traeai-prompt').value='';$('traeai-usage').textContent='用量将在上游返回后显示';$('traeai-disabled').hidden=true;$('traeai-content').hidden=true;$('nav-traeai').classList.remove('nav-muted');$('traeai-health-wrap').hidden=true;$('traeai-health-body').replaceChildren();$('traeai-accounts-body').replaceChildren();$('traeai-auth-row').hidden=true;$('traeai-login-hint').textContent='';$('traeai-import-url').value='';$('traeai-import-hint').textContent='';$('traeai-schedule-body').replaceChildren();$('traeai-schedule-hint').textContent='';$('traeai-usage-body').replaceChildren();$('traeai-edition-note').textContent='';$('traeai-edition-note').hidden=true;
  raccoonModels=[];raccoonHistory=[];raccoonStatus=null;raccoonEnabled=false;raccoonBusy=false;raccoonView='status';raccoonAccounts=[];$('raccoon-model').replaceChildren();clearMessages($('raccoon-messages'));$('raccoon-prompt').value='';$('raccoon-usage').textContent='用量将在上游返回后显示';$('raccoon-disabled').hidden=true;$('raccoon-content').hidden=true;$('nav-raccoon').classList.remove('nav-muted');$('raccoon-health-wrap').hidden=true;$('raccoon-health-body').replaceChildren();$('raccoon-accounts-body').replaceChildren();$('raccoon-import-json').value='';$('raccoon-import-hint').textContent='';
  routesState=null;routesBusy=false;routesEditing=null;routeTestBusy=false;modelSwitchOverrides=new Map();capState=null;capByKeys=new Map();capDim='coding';capCategory='';capFilter='';$('routes-alias-test-progress').hidden=true;$('routes-alias-test-progress').textContent='';$('routes-disabled').hidden=true;$('routes-content').hidden=true;$('routes-alias-body').replaceChildren();$('routes-channels').replaceChildren();$('routes-alias-model').replaceChildren();$('routes-alias-model-custom').value='';$('routes-alias-model-custom').hidden=true;$('routes-alias-editing').hidden=true;$('routes-alias-editing').textContent='';$('routes-example').textContent='';$('routes-alias-name').value='';$('routes-alias-model').value='';$('routes-alias-note').value='';$('routes-auto-fallback').value='';$('cap-filter').value='';
  probeSnapshot={running:false,done:0,total:0,channels:{}};probeTarget='';probeBusy=false;clearTimeout(probeTimer);probeTimer=undefined;for(const n of Object.keys(probeChannelNames)){$('probe-'+n+'-progress').hidden=true;$('probe-'+n+'-progress').textContent='';}
@@ -79,6 +86,7 @@ async function signedIn(session) {
  qoderControl = !!session.qoder_control;
  $('nav-opencode').classList.toggle('nav-muted', !session.opencode_enabled);
  opencodeEnabled = !!session.opencode_enabled;
+ freellmEnabled = !!session.freellm_enabled; $('nav-freellm').classList.toggle('nav-muted', !freellmEnabled);
  ccrEnabled = !!session.ccr_enabled; $('nav-ccr').classList.toggle('nav-muted', !ccrEnabled);
  autoclawEnabled = !!session.autoclaw_enabled; $('nav-autoclaw').classList.toggle('nav-muted', !autoclawEnabled);
  traeEnabled = !!session.trae_enabled; $('nav-trae').classList.toggle('nav-muted', !traeEnabled);
@@ -86,7 +94,7 @@ async function signedIn(session) {
  await refreshStatus(); await refreshModels(); await loadPins();
  void loadModelHeat(); void loadModelSwitch(); void loadGlobalHeat(); void loadOverview(true); void restoreProbe(); void loadHealth(true);
 }
-const pageNames = {overview:'运行概览',workbuddy:'WorkBuddy 通道',zcode:'Zcode 通道',qoder:'Qoder 通道',opencode:'OpenCode 通道',ccr:'CCR 网关',autoclaw:'AutoClaw 通道',trae:'Trae 通道',raccoon:'小浣熊通道',usage:'调用统计',routes:'Agent 接入',access:'API 接入'};
+const pageNames = {overview:'运行概览',workbuddy:'WorkBuddy 通道',zcode:'Zcode 通道',qoder:'Qoder 通道',opencode:'OpenCode 通道',freellm:'FreeLLMAPI 通道',ccr:'CCR 网关',autoclaw:'AutoClaw 通道',trae:'Trae 通道',traeai:'Trae 国际版通道',raccoon:'小浣熊通道',usage:'调用统计',routes:'Agent 接入',access:'API 接入'};
 const workbuddyNames = {accounts:'账号管理',tasks:'自动任务',models:'模型列表',chat:'对话测试'};
 function setWorkBuddyView(view) {
  workbuddyView = view;
@@ -122,9 +130,11 @@ function showPage(value) {
  if (page === 'zcode') loadZcode();
  if (page === 'qoder') loadQoder();
  if (page === 'opencode') loadOpenCode();
+ if (page === 'freellm') loadFreellm();
  if (page === 'ccr') loadCCR();
  if (page === 'autoclaw') loadAutoClaw();
  if (page === 'trae') loadTrae();
+ if (page === 'traeai') loadTraeai();
  if (page === 'raccoon') loadRaccoon();
  if (page === 'routes') loadRoutes();
  // The access tab lists GLM and Qoder channel models too; fetch statuses once lazily
@@ -179,7 +189,7 @@ function parseCreditRule(raw){
 // channelHasCredits 报告这条通道是否采集积分倍率。opencode/autoclaw/raccoon 是
 // 免费通道，上游不下发倍率——它们照常参与模型停用开关，只是没有「积分消耗」列
 // （缺失的倍率不能拿「未知」冒充，更不能伪造 0），排序也沿用探测状态口径。
-function channelHasCredits(channel){return channel!=='opencode'&&channel!=='autoclaw'&&channel!=='raccoon';}
+function channelHasCredits(channel){return channel!=='opencode'&&channel!=='autoclaw'&&channel!=='raccoon'&&channel!=='freellm';}
 // modelSwitchEffective 报告行的当前生效状态：人工覆盖优先；不在覆盖表里的模型
 // 一律视为启用——调用是「统一对外开放」的，未配置的直名默认放行，只有显式停用
 // （写入禁用表）才拒绝。倍率不参与默认态判定（trae 的倍率是套餐额度消耗率，
@@ -191,8 +201,10 @@ function modelSwitchEffective(row){
 const modelChannels={zcode:{body:'zcode-models-body',empty:'zcode-models-empty',namePrefix:'GLM · '},
  qoder:{body:'qoder-models-body',empty:'qoder-models-empty',namePrefix:'Qoder · '},
  opencode:{body:'opencode-models-body',empty:'opencode-models-empty',namePrefix:'opencode-OC · '},
+ freellm:{body:'freellm-models-body',empty:'freellm-models-empty',namePrefix:'freellm-'},
  autoclaw:{body:'autoclaw-models-body',empty:'autoclaw-models-empty',namePrefix:'AutoClaw · '},
  trae:{body:'trae-models-body',empty:'trae-models-empty',namePrefix:'Trae · '},
+ traeai:{body:'traeai-models-body',empty:'traeai-models-empty',namePrefix:'Trae 国际版 · '},
  raccoon:{body:'raccoon-models-body',empty:'raccoon-models-empty',namePrefix:'小浣熊 · '},
  core:{body:'core-models-body',empty:'core-models-empty',namePrefix:''}};
 // alias_disabled / model_disabled 是别名测试在发出上游请求之前就判定的结果，
@@ -200,7 +212,7 @@ const modelChannels={zcode:{body:'zcode-models-body',empty:'zcode-models-empty',
 const modelFailureLabels={timeout:'探测超时',access:'地区限制',error:'调用失败',model_error:'模型错误',auth:'未授权',rate_limit:'限流',empty:'空返回',alias_disabled:'别名已停用',model_disabled:'模型已停用'};
 const modelProbeSources={probe:'探测',request:'真实请求'};
 // 公共模型名带通道前缀（opencode-OC · X / glm-X / opencode/x）与 realm 前缀（cn:/global:），去掉后作为跨源对齐键。
-function modelKey(id){return String(id||'').replace(/^opencode-OC · /,'').replace(/^OC · /,'').replace(/^opencode\//,'').replace(/^(?:cn|global):/,'').replace(/^glm-/,'').replace(/^qoder-/,'').replace(/^autoclaw-/,'').replace(/^trae-/,'').replace(/^raccoon-/,'').toLowerCase().replace(/[^a-z0-9\u4e00-\u9fa5]+/g,'');}
+function modelKey(id){return String(id||'').replace(/^opencode-OC · /,'').replace(/^OC · /,'').replace(/^opencode\//,'').replace(/^(?:cn|global):/,'').replace(/^glm-/,'').replace(/^qoder-/,'').replace(/^autoclaw-/,'').replace(/^trae-/,'').replace(/^traeai-/,'').replace(/^raccoon-/,'').replace(/^freellm-/,'').toLowerCase().replace(/[^a-z0-9\u4e00-\u9fa5]+/g,'');}
 function badgeCell(text,tone){const td=document.createElement('td');const tag=document.createElement('span');tag.className='badge'+(tone?' '+tone:'');tag.textContent=text;td.append(tag);return td;}
 function chipsCell(labels,small){const td=document.createElement('td');if(labels.length){const row=document.createElement('span');row.className='badge-row';for(const label of labels){const tag=document.createElement('span');tag.className='badge';tag.textContent=label;row.append(tag);}td.append(row);}else td.textContent='—';if(small){const note=document.createElement('small');note.textContent=small;td.append(note);}return td;}
 // 五档语义：ok=探测确认能调，warn=能调但打了折（仅对话），bad=探测确认调不通，
@@ -467,7 +479,7 @@ function switchOpCell(row){
 // 通道键：core→"core"、zcode→"glm"、qoder→"qoder"、autoclaw→"autoclaw"、trae→"trae"、raccoon→"raccoon"（与后端 routeChannel 同一口径）。
 // 这张表同时是「页面上有哪几颗探测按钮」的唯一真源：下面的按钮禁用、进度行、事件绑定、
 // 退出登录复位都按它的键走，新通道只在这里加一行。
-const probeChannelNames={core:'core',zcode:'glm',qoder:'qoder',autoclaw:'autoclaw',trae:'trae',raccoon:'raccoon'};
+const probeChannelNames={core:'core',zcode:'glm',qoder:'qoder',autoclaw:'autoclaw',trae:'trae',traeai:'traeai',raccoon:'raccoon',freellm:'freellm'};
 function setProbeButtonsDisabled(disabled){for(const n of Object.keys(probeChannelNames))$('probe-'+n).disabled=disabled;}
 function renderProbeProgress(){
  const running=!!probeSnapshot.running,total=Number(probeSnapshot.total)||0,done=Number(probeSnapshot.done)||0;
@@ -493,6 +505,9 @@ function applyProbeResults(){
   // trae 状态接口的 health 只承载探测的 modelResults（无 healthy/total）；
   // 这里用刚完成的探测结论覆盖，保留其余字段。
   renderModelTable('trae',traeStatus.models,{...traeStatus.health,modelResults:ch.trae});
+ }
+ if(ch.traeai&&traeaiEnabled&&traeaiStatus){
+  renderModelTable('traeai',traeaiStatus.models,{...traeaiStatus.health,modelResults:ch.traeai});
  }
  if(ch.raccoon&&raccoonEnabled&&raccoonStatus){
   renderModelTable('raccoon',raccoonStatus.models,{...raccoonStatus.health,modelResults:ch.raccoon});
@@ -535,12 +550,12 @@ async function restoreProbe(){
  }catch{/* 旧核心无端点时静默降级 */}
 }
 // ── 运行概览：通道总览 + 全/单通道用量 ──
-// 通道可达性读 console 自己的后台探活（GET /admin/health，一轮覆盖「网关 + 七通道」）：
-// 服务端主动探，与操作者有没有点开某个通道页签无关，所以七个通道的状态同时准确、同时刷新。
+// 通道可达性读 console 自己的后台探活（GET /admin/health，一轮覆盖网关与全部已登记通道）：
+// 服务端主动探，与操作者有没有点开某个通道页签无关，所以各通道的状态同时准确、同时刷新。
 // 此前这里只读各页签缓存，没访问过就显示「未加载」，于是出现「WorkBuddy 有值、其他通道没有」
 // ——那是加载时机造成的假缺口，不是数据缺失。模型数不在探活结论里，仍取页签缓存，
 // 进入概览时按需补拉（loadMissingChannelStatuses）。两者都不伪造在线。
-const healthChannelKeys={core:'workbuddy',glm:'zcode',qoder:'qoder',opencode:'opencode',autoclaw:'autoclaw',trae:'trae',raccoon:'raccoon'};
+const healthChannelKeys={core:'workbuddy',glm:'zcode',qoder:'qoder',opencode:'opencode',autoclaw:'autoclaw',trae:'trae',traeai:'traeai',raccoon:'raccoon',freellm:'freellm'};
 function healthChannelResult(channel){
  if(!healthState||!Array.isArray(healthState.channels))return null;
  return healthState.channels.find(item=>healthChannelKeys[item.channel]===channel)||null;
@@ -549,6 +564,19 @@ function healthCheckedAtText(){
  const at=healthState&&healthState.checked_at?new Date(healthState.checked_at):null;
  return at&&!Number.isNaN(at.getTime())?at.toLocaleTimeString('zh-CN',{timeZone:'Asia/Shanghai',hour12:false}):'';
 }
+// traeaiEnabled 的来源与其余通道不同：POST /admin/session 的载荷里没有 traeai_enabled 这一位，
+// 登录当下唯一能拿到「这条旁路配了没有」的口径是 GET /admin/health 每条通道的 enabled
+// （后端 routeChannelOrder 全量下发，含未启用的通道）。所以每轮探活落地后同步一次，
+// 页签自己的 GET /admin/traeai 回报 enabled 时再确认一次。两处都只写实测到的配置事实：
+// 探活还没结论时保持「未启用」的观感（侧栏置灰），不替后端推断它已经配上了。
+function syncTraeaiAvailability(){
+ const result=healthChannelResult('traeai');
+ if(result)setTraeaiEnabled(!!result.enabled);
+}
+function setTraeaiEnabled(enabled){
+ traeaiEnabled=enabled;
+ $('nav-traeai').classList.toggle('nav-muted',!enabled);
+}
 async function loadHealth(quiet){
  if(!csrf)return;
  const generation=healthGeneration;
@@ -556,6 +584,7 @@ async function loadHealth(quiet){
   const data=await jsonAPI('health');
   if(generation!==healthGeneration)return;
   healthState=data;
+  syncTraeaiAvailability();
   if(page==='overview')renderOverview();
  }catch(error){if(!quiet&&generation===healthGeneration)notice(error.message);}
 }
@@ -572,8 +601,10 @@ function loadMissingChannelStatuses(){
  if(zcodeEnabled&&!zcodeStatus)void loadZcode();
  if(qoderEnabled&&!qoderStatus)void loadQoder();
  if(opencodeEnabled&&!opencodeStatus)void loadOpenCode();
+ if(freellmEnabled&&!freellmStatus)void loadFreellm();
  if(autoclawEnabled&&!autoclawStatus)void loadAutoClaw();
  if(traeEnabled&&!traeStatus)void loadTrae();
+ if(traeaiEnabled&&!traeaiStatus)void loadTraeai();
  if(raccoonEnabled&&!raccoonStatus)void loadRaccoon();
 }
 function overviewChannelStatus(channel){
@@ -621,7 +652,7 @@ function renderOverview(){
  const byChannel=new Map();
  for(const e of overviewUsageItems){const c=usageChannelOf(e);if(!byChannel.has(c))byChannel.set(c,[]);byChannel.get(c).push(e);}
  for(const c of usageChannelOrder){
-  const enabled=c==='workbuddy'||(c==='zcode'&&zcodeEnabled)||(c==='qoder'&&qoderEnabled)||(c==='opencode'&&opencodeEnabled)||(c==='autoclaw'&&autoclawEnabled)||(c==='trae'&&traeEnabled)||(c==='raccoon'&&raccoonEnabled);
+  const enabled=c==='workbuddy'||(c==='zcode'&&zcodeEnabled)||(c==='qoder'&&qoderEnabled)||(c==='opencode'&&opencodeEnabled)||(c==='autoclaw'&&autoclawEnabled)||(c==='trae'&&traeEnabled)||(c==='traeai'&&traeaiEnabled)||(c==='raccoon'&&raccoonEnabled)||(c==='freellm'&&freellmEnabled);
   if(!enabled)continue;
   const s=summarizeUsage(byChannel.get(c)||[]);
   const status=overviewChannelStatus(c);
@@ -653,7 +684,7 @@ function renderOverview(){
 // channelStatusOf 取某通道已加载的状态缓存（各页签共用同一份），未加载返回 null。
 // 这层映射只写一次，卡片、通道总览、模型数都从这里取，别再各摆一串三元。
 function channelStatusOf(channel){
- return channel==='zcode'?zcodeStatus:channel==='qoder'?qoderStatus:channel==='opencode'?opencodeStatus:channel==='autoclaw'?autoclawStatus:channel==='trae'?traeStatus:channel==='raccoon'?raccoonStatus:null;
+ return channel==='zcode'?zcodeStatus:channel==='qoder'?qoderStatus:channel==='opencode'?opencodeStatus:channel==='autoclaw'?autoclawStatus:channel==='trae'?traeStatus:channel==='traeai'?traeaiStatus:channel==='raccoon'?raccoonStatus:channel==='freellm'?freellmStatus:null;
 }
 // cardStats 描述每张通道卡片的统计格。前四项是七条通道共有的同一组口径
 // （模型 / 调用 / Tokens / 积分），后两项是该通道自己的账号或凭据口径。
@@ -679,6 +710,7 @@ function cardAccountStats(c){
  if(c==='zcode')return [['套餐',on?(st.plan==='coding-plan'?'Coding':st.plan==='start-plan'?'Start':'—'):'—'],['凭据',on?(st.control?(st.logged_in?'已登录':'未登录'):'—'):'—']];
  if(c==='qoder')return [['凭据',on?(st.control?(st.logged_in?'已登录':'未登录'):'PAT'):'—'],['控制端',on?(st.reachable?'在线':'不可达'):'—']];
  if(c==='opencode')return [['阶段',on&&st.health&&st.health.phase?st.health.phase:'—'],['账号','免登录']];
+ if(c==='freellm')return [['key 池',on&&Number.isFinite(Number(st.healthy_keys))?`${st.healthy_keys} 健康`:'—'],['受限',on&&Number.isFinite(Number(st.limited_keys))?String(st.limited_keys):'—']];
  if(c==='autoclaw')return [['账号',on&&st.health?`${st.health.healthy} / ${st.health.total}`:'—'],['可用',on&&st.health?String(st.health.healthy):'—']];
  const list=on&&Array.isArray(st.accounts)?st.accounts:[];
  const usable=list.filter(a=>a.enabled&&!a.disabled&&!a.cooling).length;
@@ -704,7 +736,7 @@ function renderCards(){
  const byChannel=new Map();
  for(const e of overviewUsageItems){const c=usageChannelOf(e);if(!byChannel.has(c))byChannel.set(c,[]);byChannel.get(c).push(e);}
  for(const c of usageChannelOrder){
-  const enabled=c==='workbuddy'||(c==='zcode'&&zcodeEnabled)||(c==='qoder'&&qoderEnabled)||(c==='opencode'&&opencodeEnabled)||(c==='autoclaw'&&autoclawEnabled)||(c==='trae'&&traeEnabled)||(c==='raccoon'&&raccoonEnabled);
+  const enabled=c==='workbuddy'||(c==='zcode'&&zcodeEnabled)||(c==='qoder'&&qoderEnabled)||(c==='opencode'&&opencodeEnabled)||(c==='autoclaw'&&autoclawEnabled)||(c==='trae'&&traeEnabled)||(c==='traeai'&&traeaiEnabled)||(c==='raccoon'&&raccoonEnabled)||(c==='freellm'&&freellmEnabled);
   if(!enabled)continue;
   const status=cardStatus(c);
   // 每张卡片顶沿一条本色细带、名字用本色文字版，其余回到内容区那套白面与语义徽章：
@@ -887,8 +919,8 @@ document.addEventListener?.('click', e => {
  if (switchBtn) return modelSwitchAction(switchBtn);
 });
 async function refreshStatus() { try { renderAccounts(await jsonAPI('status')); } catch(e) { notice(e.message); } }
-function realmLabel(realm) { return realm === 'global' ? '国际版' : realm === 'cn' ? '国内版' : realm === 'glm' ? 'GLM·智谱' : realm === 'qoder' ? 'Qoder' : realm === 'opencode' ? 'OpenCode' : realm === 'autoclaw' ? 'AutoClaw' : realm === 'trae' ? 'Trae' : realm === 'raccoon' ? '小浣熊' : ''; }
-function modelRealm(model) { return model.realm || (model.id.startsWith('global:') ? 'global' : model.id.startsWith('glm-') ? 'glm' : model.id.startsWith('qoder-') ? 'qoder' : model.id.startsWith('opencode-') ? 'opencode' : model.id.startsWith('autoclaw-') ? 'autoclaw' : model.id.startsWith('trae-') ? 'trae' : model.id.startsWith('raccoon-') ? 'raccoon' : 'cn'); }
+function realmLabel(realm) { return realm === 'global' ? '国际版' : realm === 'cn' ? '国内版' : realm === 'glm' ? 'GLM·智谱' : realm === 'qoder' ? 'Qoder' : realm === 'opencode' ? 'OpenCode' : realm === 'autoclaw' ? 'AutoClaw' : realm === 'trae' ? 'Trae' : realm === 'traeai' ? 'Trae 国际版' : realm === 'raccoon' ? '小浣熊' : realm === 'freellm' ? 'FreeLLMAPI' : ''; }
+function modelRealm(model) { return model.realm || (model.id.startsWith('global:') ? 'global' : model.id.startsWith('glm-') ? 'glm' : model.id.startsWith('qoder-') ? 'qoder' : model.id.startsWith('opencode-') ? 'opencode' : model.id.startsWith('autoclaw-') ? 'autoclaw' : model.id.startsWith('trae-') ? 'trae' : model.id.startsWith('traeai-') ? 'traeai' : model.id.startsWith('raccoon-') ? 'raccoon' : model.id.startsWith('freellm-') ? 'freellm' : 'cn'); }
 function modelOption(model) { const label = realmLabel(modelRealm(model)); const n = Array.isArray(model.accounts) ? model.accounts.length : 0; return `${label ? `${label} · ` : ''}${model.id}${n > 1 ? ` · ${n}账号` : ''}`; }
 // accessModelOptions feeds the API-access select: core models plus the GLM
 // channel models (the public /v1/models merges them, but /admin/models only
@@ -898,8 +930,10 @@ function accessModelOptions() {
  for (const id of zcodeModels) if (id && !items.some(m => m.id === id)) items.push({id, realm: 'glm'});
  for (const id of qoderModels) if (id && !items.some(m => m.id === id)) items.push({id, realm: 'qoder'});
  for (const id of opencodeModels) if (id && !items.some(m => m.id === id)) items.push({id, realm: 'opencode'});
+ for (const id of freellmModels) if (id && !items.some(m => m.id === id)) items.push({id, realm: 'freellm'});
  for (const id of autoclawModels) if (id && !items.some(m => m.id === id)) items.push({id, realm: 'autoclaw'});
  for (const id of traeModels) if (id && !items.some(m => m.id === id)) items.push({id, realm: 'trae'});
+ for (const id of traeaiModels) if (id && !items.some(m => m.id === id)) items.push({id, realm: 'traeai'});
  for (const id of raccoonModels) if (id && !items.some(m => m.id === id)) items.push({id, realm: 'raccoon'});
  return items;
 }
@@ -1039,15 +1073,15 @@ const usageModeNames={stream:'流式',sync:'同步'};
 const usageAPINames={chat:'Chat',messages:'Messages',responses:'Responses'};
 // 通道归类：旁路通道的用量由 console 以固定占位 uid（与通道同名）上报 core 账本，
 // 其余 uid 都是核心账号池的真实账号。分布表按此口径聚合，明细按当前筛选过滤。
-const usageChannelNames={workbuddy:'WorkBuddy',zcode:'GLM（Zcode）',qoder:'Qoder',opencode:'OpenCode',autoclaw:'AutoClaw',trae:'Trae',raccoon:'小浣熊'};
-const usageChannelOrder=['workbuddy','zcode','qoder','opencode','autoclaw','trae','raccoon'];
+const usageChannelNames={workbuddy:'WorkBuddy',zcode:'GLM（Zcode）',qoder:'Qoder',opencode:'OpenCode',autoclaw:'AutoClaw',trae:'Trae',traeai:'Trae 国际版',raccoon:'小浣熊',freellm:'FreeLLMAPI'};
+const usageChannelOrder=['workbuddy','zcode','qoder','opencode','autoclaw','trae','traeai','raccoon','freellm'];
 // 客户端列的通道标签：client 一律是调用方自报的 User-Agent（旁路在 console 的 newUsageCapture
 // 取公开口入站头，核心由 console 转发后在 core 的 OriginOf 取），和「通道」列是两个维度——
 // 同一条 UA 能走任一通道，同一通道也混着多个调用方。认不出是谁发的，才前置通道标签
 // 说明这束用量从哪条路进来；核心那一路本来就是客户端 UA，不加前缀。
 // workbuddy 的标签留空即「原样显示」，键的顺序与 usageChannelOrder 一致（有判据按同序反查）。
-const usageChannelTags={workbuddy:'',zcode:'GLM',qoder:'Qoder',opencode:'OpenCode',autoclaw:'AutoClaw',trae:'Trae',raccoon:'小浣熊'};
-function usageChannelOf(entry){const uid=entry.uid||'';return uid==='zcode'||uid==='qoder'||uid==='opencode'||uid==='autoclaw'||uid==='trae'||uid==='raccoon'?uid:'workbuddy';}
+const usageChannelTags={workbuddy:'',zcode:'GLM',qoder:'Qoder',opencode:'OpenCode',autoclaw:'AutoClaw',trae:'Trae',traeai:'Trae 国际版',raccoon:'小浣熊',freellm:'FreeLLMAPI'};
+function usageChannelOf(entry){const uid=entry.uid||'';return uid==='zcode'||uid==='qoder'||uid==='opencode'||uid==='autoclaw'||uid==='trae'||uid==='traeai'||uid==='raccoon'||uid==='freellm'?uid:'workbuddy';}
 // 客户端列的「准确名称」对照表：raw 串里认得出的关键词 → 这个调用方的真名。
 // 只增不改、按序匹配、忽略大小写、含即中（UA 常带版本号，如「Hertz/0.10.1」也认得出）。
 // 认得出就显示「真名（原始串）」，认不出就退回上面的通道标签，绝不猜。
@@ -1813,6 +1847,80 @@ async function loadOpenCode(){
  try{renderOpenCode(await jsonAPI('opencode'));}
  catch(error){notice(error.message);}
 }
+// FreeLLMAPI 免费池：免登录、无 plan/provider 面板；状态、模型目录与测试对话全按 /admin/freellm 单端点走。
+async function loadFreellm(){
+ if(!csrf)return;
+ try{renderFreellm(await jsonAPI('freellm'));}
+ catch(error){notice(error.message);}
+}
+async function renderFreellm(session){
+ freellmStatus = session;
+ const on = freellmEnabled;
+ $('freellm-disabled').hidden = on;
+ $('freellm-content').hidden = !on;
+ if(!on) return;
+ renderFreellmHealth(session);
+ const dataTab=on&&Array.isArray(session.models)&&session.models.length>0;
+ if(freellmView!=='status'&&!dataTab)freellmView='status';
+ $('freellm-view-models').hidden=!dataTab;
+ $('freellm-view-chat').hidden=!dataTab;
+ for(const view of ['status','models','chat']){
+  $('freellm-view-'+view).classList.toggle('active',view===freellmView);
+  $('freellm-pane-'+view).hidden=view!==freellmView;
+ }
+ if(dataTab){
+  freellmModels=(session.models||[]).map(item=>item.id).filter(Boolean);
+  renderModelTable('freellm',session.models,null);
+  renderAccessModelSelect();renderAccess();
+  const previous=$('freellm-model').value;
+  $('freellm-model').replaceChildren(...freellmModels.map(id=>new Option(id,id)));
+  if(freellmModels.includes(previous))$('freellm-model').value=previous;
+  $('freellm-model').disabled=!freellmModels.length||!!activeRequest;
+  $('freellm-send').disabled=!freellmModels.length||!!activeRequest;
+ }
+}
+function renderFreellmHealth(session){
+ const wrap=$('freellm-health-wrap'), body=$('freellm-health-body');
+ if(!wrap||!body) return;
+ const on=freellmEnabled;
+ wrap.hidden=!on;
+ body.replaceChildren();
+ if(!on) return;
+ // 三个口径分开读：进程活着（reachable）≠ 池里有能服务的上游（pool_ready）
+ // ≠ 目录有货（model_count）。免费池最常见的误判就是「目录 259 条」被当成
+ // 「259 条能用」——上游自己用 execution_status 区分，缺 key 的条目调用必 503。
+ const counts=session.provider_counts;
+ const pools=Array.isArray(session.providers)?session.providers:[];
+ const quota=Array.isArray(session.quota_forecast&&session.quota_forecast.pools)?session.quota_forecast.pools:[];
+ const rows=[
+  ['进程',session.reachable?'在线':'不可达'],
+  ['供应商池',session.pool_ready?`就绪 · 可服务上游 ${session.ready_upstreams||0} 个`:session.pool_reason?`暂无可用上游（${session.pool_reason}）`:'暂无可用上游'],
+  ['模型目录',`共 ${session.model_count||0} 条 · 此刻可调用 ${session.callable_count||0} 条`],
+  ['key 池',counts?`健康 ${counts.healthy||0} · 限流 ${counts.rate_limited||0} · 失效 ${counts.invalid||0} · 未知 ${counts.unknown||0}`:'未上报'],
+ ];
+ if((session.callable_count||0)===0&&(session.model_count||0)>0){
+  rows.push(['为什么不可用','目录是上游的全网能力清单，与是否配好供应商 key 无关；配齐后此处自动出现可调用条目。']);
+ }
+ for(const p of pools.slice(0,8)){
+  const bits=[p.status||'未知'];
+  if(typeof p.keys==='number') bits.push(`${p.keys} 把 key`);
+  if(p.requests_remaining_pct!=null) bits.push(`请求余量 ${p.requests_remaining_pct}%`);
+  if(p.resume_at) bits.push(`${new Date(p.resume_at).toLocaleString('zh-CN',{timeZone:'Asia/Shanghai',hour12:false})} 恢复`);
+  if(p.last_error) bits.push(String(p.last_error));
+  rows.push([p.name||p.platform||'平台',bits.join(' · ')]);
+ }
+ // 日帽余量来自 /v1/quota-forecast。used/remaining/limit 都可能是 null
+ // （上游没报窗口就是未知），未知不拿 0 冒充。
+ for(const q of quota.slice(0,6)){
+  const bits=[];
+  if(q.remaining_pct!=null) bits.push(`余 ${q.remaining_pct}%`);
+  if(q.remaining!=null&&q.limit!=null) bits.push(`${q.remaining}/${q.limit} 次`);
+  if(q.seconds_until_reset!=null) bits.push(`${Math.max(1,Math.round(q.seconds_until_reset/60))} 分钟后重置`);
+  if(q.low_balance===true) bits.push('余额偏低，建议本窗口内少投');
+  rows.push([q.pool||q.platform||'配额池',bits.length?bits.join(' · '):'窗口未知']);
+ }
+ for(const [k,v] of rows){const tr=document.createElement('tr');const td1=document.createElement('td');td1.textContent=k;const td2=document.createElement('td');td2.textContent=String(v);tr.append(td1,td2);body.append(tr);}
+}
 function renderOpenCode(status){
  opencodeStatus=status;
  const enabled=!!status.enabled;
@@ -1910,6 +2018,33 @@ $('opencode-form').addEventListener('submit',async event=>{
  finally{controller.abort();activeRequest=undefined;opencodeControls();}
 });
 
+for(const view of ['status','models','chat'])$('freellm-view-'+view).addEventListener('click',()=>{freellmView=view;freellmViewTouched=true;if(freellmStatus)renderFreellm(freellmStatus);});
+$('freellm-stop').addEventListener('click',()=>activeRequest?.abort());
+runTopRefresh($('freellm-refresh'),async()=>{
+ if(freellmBusy)return;
+ const generation=sessionGeneration;freellmBusy=true;$('freellm-refresh').disabled=true;
+ try{await loadFreellm();}finally{if(generation===sessionGeneration){freellmBusy=false;$('freellm-refresh').disabled=false;}}
+});
+
+// FreeLLMAPI 测试对话：POST /admin/freellm/chat（非流式），status 200/400 由 adminFreellmChat 判定。
+$('freellm-form').addEventListener('submit',async event=>{
+ event.preventDefault();if(activeRequest)return;const text=$('freellm-prompt').value.trim();if(!text||!$('freellm-model').value)return;
+ const generation=sessionGeneration;
+ notice('');message('user',text,$('freellm-messages'));$('freellm-prompt').value='';const answer=message('assistant','正在等待模型…',$('freellm-messages'));
+ const controller=new AbortController();activeRequest=controller;
+ try{
+  const response=await api('freellm/chat',{model:$('freellm-model').value,message:text},controller.signal);
+  const result=await response.json().catch(()=>({}));
+  if(!response.ok)throw new Error(typeof result.error==='string'?result.error:result.error?.message||`HTTP ${response.status}`);
+  const content=result.content||result.message?.content?.[0]?.text||'模型未返回文本内容。';
+  answer.content.textContent=content;
+  freellmHistory=[{role:'user',content:text},{role:'assistant',content}];
+  const u=result.usage||{};
+  $('freellm-usage').textContent=(u.total_tokens!=null?`输入 ${u.prompt_tokens??'—'} · 输出 ${u.completion_tokens??'—'} · 总计 ${u.total_tokens} tokens`:'上游未返回用量')+' · 本次通道：FreeLLMAPI（免费池）';
+ }catch(e){if(generation===sessionGeneration){const msg=e.name==='AbortError'?'已停止生成':e.message;answer.content.textContent=msg;$('freellm-usage').textContent=msg;}}
+ finally{controller.abort();activeRequest=undefined;}
+});
+
 $('add-account').addEventListener('submit',async event=>{
  event.preventDefault();clearTimeout(flowTimer);const button=event.submitter;button.disabled=true;notice('');
  const popup=window.open('about:blank','_blank');if(popup)popup.opener=null;
@@ -1977,8 +2112,9 @@ function renderAccess(){
  const isOpenCode=model.startsWith('opencode-');
  const isAutoClaw=model.startsWith('autoclaw-');
  const isTrae=model.startsWith('trae-');
+ const isTraeAI=model.startsWith('traeai-');
  const isRaccoon=model.startsWith('raccoon-');
- if(anthropic&&(isGlm||isQoder||isOpenCode||isAutoClaw||isTrae||isRaccoon)){$('copy-example').disabled=true;$('api-example').textContent=(isGlm?'GLM':isQoder?'Qoder':isOpenCode?'OpenCode':isAutoClaw?'AutoClaw':isTrae?'Trae':'小浣熊')+' 通道仅支持 OpenAI 协议（/v1/chat/completions），请切换协议后复制示例。';return;}
+ if(anthropic&&(isGlm||isQoder||isOpenCode||isAutoClaw||isTrae||isTraeAI||isRaccoon)){$('copy-example').disabled=true;$('api-example').textContent=(isGlm?'GLM':isQoder?'Qoder':isOpenCode?'OpenCode':isAutoClaw?'AutoClaw':isTrae?'Trae':isTraeAI?'Trae 国际版':'小浣熊')+' 通道仅支持 OpenAI 协议（/v1/chat/completions），请切换协议后复制示例。';return;}
  const body={model,...(anthropic?{max_tokens:1024}:{}),messages:[{role:'user',content:'你好'}],stream:true};
  const auth=anthropic?'  -H "x-api-key: <你的 API Key>" \\\n  -H "anthropic-version: 2023-06-01"':'  -H "Authorization: Bearer <你的 API Key>"';
  const json=JSON.stringify(body,null,2).replace(/'/g,"'\\''");
@@ -1988,7 +2124,11 @@ function renderAccess(){
  else if(isOpenCode) prefix='# OpenCode 免费模型经 OW Bridge sidecar 转发（按 opencode- 前缀分流）\ncurl ';
  else if(isAutoClaw) prefix='# AutoClaw 模型经 autoclaw2api 桥接转发（按 autoclaw- 前缀分流），账号为容器内登录态\ncurl ';
  else if(isTrae) prefix='# Trae 模型经 trae2api 桥接转发（按 trae- 前缀分流），账号为容器内登录态\ncurl ';
+ else if(isTraeAI) prefix='# Trae 国际版模型经 trae2api 桥接转发（按 traeai- 前缀分流），账号为容器内登录态\ncurl ';
  else if(isRaccoon) prefix='# 小浣熊模型经 raccoon2api 桥接转发（按 raccoon- 前缀分流），账号为导入的桌面端凭证\ncurl ';
+ // freellm 不进上面那条 Anthropic 拒绝名单：上游 FreeLLMAPI 自己实现了 /v1/messages 与
+ // /v1/responses（routes/anthropic.ts、routes/responses.ts），三种入口都转发得过去。
+ else if(model.startsWith('freellm-')) prefix='# FreeLLMAPI 免费池模型经 sidecar 转发（按 freellm- 前缀分流），供应商 key 由 sidecar 自管\ncurl ';
  else if(!anthropic) prefix='# 成功响应头 X-Account / X-Account-Realm 标明本次服务的账号与平台\ncurl ';
  else prefix='curl ';
  $('api-example').textContent=prefix+$('api-endpoint').value+` \\\n${auth} \\\n  -H "Content-Type: application/json" \\\n  -d '${json}'`;
@@ -1996,7 +2136,7 @@ function renderAccess(){
 document.querySelectorAll('[data-protocol]').forEach(button=>button.addEventListener('click',()=>setProtocol(button.dataset.protocol)));
 $('access-model').addEventListener('change',renderAccess);
 $('copy-example').addEventListener('click',async()=>{if($('copy-example').disabled)return;try{await navigator.clipboard.writeText($('api-example').textContent);notice('调用示例已复制，请替换 API Key 占位符');}catch{notice('浏览器不允许自动复制，请手动复制下方示例');}});
-$('go-chat').addEventListener('click',()=>{if(activeRequest||$('go-chat').disabled)return;const model=$('access-model').value;if(model.startsWith('glm-')){if(zcodeModels.includes(model))$('zcode-model').value=model;showPage('zcode');return;}if(model.startsWith('qoder-')){if(qoderModels.includes(model))$('qoder-model').value=model;showPage('qoder');return;}if(model.startsWith('opencode-')){if(opencodeModels.includes(model))$('opencode-model').value=model;showPage('opencode');return;}if(model.startsWith('autoclaw-')){if(autoclawModels.includes(model))$('autoclaw-model').value=model;showPage('autoclaw');return;}if(model.startsWith('trae-')){if(traeModels.includes(model))$('trae-model').value=model;showPage('trae');return;}if(model.startsWith('raccoon-')){if(raccoonModels.includes(model))$('raccoon-model').value=model;showPage('raccoon');return;}$('model').value=model;updateEfforts();setWorkBuddyView('chat');showPage('workbuddy');});
+$('go-chat').addEventListener('click',()=>{if(activeRequest||$('go-chat').disabled)return;const model=$('access-model').value;if(model.startsWith('glm-')){if(zcodeModels.includes(model))$('zcode-model').value=model;showPage('zcode');return;}if(model.startsWith('qoder-')){if(qoderModels.includes(model))$('qoder-model').value=model;showPage('qoder');return;}if(model.startsWith('opencode-')){if(opencodeModels.includes(model))$('opencode-model').value=model;showPage('opencode');return;}if(model.startsWith('autoclaw-')){if(autoclawModels.includes(model))$('autoclaw-model').value=model;showPage('autoclaw');return;}if(model.startsWith('trae-')){if(traeModels.includes(model))$('trae-model').value=model;showPage('trae');return;}if(model.startsWith('traeai-')){if(traeaiModels.includes(model))$('traeai-model').value=model;showPage('traeai');return;}if(model.startsWith('raccoon-')){if(raccoonModels.includes(model))$('raccoon-model').value=model;showPage('raccoon');return;}if(model.startsWith('freellm-')){if(freellmModels.includes(model))$('freellm-model').value=model;showPage('freellm');return;}$('model').value=model;updateEfforts();setWorkBuddyView('chat');showPage('workbuddy');});
 function chatControls(){
  for(const id of ['model','access-model','clear-chat','send-chat','max-tokens'])$(id).disabled=!!activeRequest;
  $('stop-chat').hidden=!activeRequest;
@@ -2015,7 +2155,7 @@ function accountNote(response) {
  const platform = realm === 'global' ? '国际版' : realm === 'cn' ? '国内版' : realm;
  return ` · 本次账号：${account || '—'}${platform ? `（${platform}）` : ''}`;
 }
-for(const [inputId,formId] of [['prompt','chat-form'],['zcode-prompt','zcode-form'],['qoder-prompt','qoder-form'],['opencode-prompt','opencode-form'],['autoclaw-prompt','autoclaw-form'],['trae-prompt','trae-form'],['raccoon-prompt','raccoon-form']])$(inputId).addEventListener('keydown',event=>{
+for(const [inputId,formId] of [['prompt','chat-form'],['zcode-prompt','zcode-form'],['qoder-prompt','qoder-form'],['opencode-prompt','opencode-form'],['freellm-prompt','freellm-form'],['autoclaw-prompt','autoclaw-form'],['trae-prompt','trae-form'],['traeai-prompt','traeai-form'],['raccoon-prompt','raccoon-form']])$(inputId).addEventListener('keydown',event=>{
  if(event.key!=='Enter'||event.shiftKey||event.isComposing)return;
  event.preventDefault();$(formId).requestSubmit();
 });
@@ -2066,7 +2206,7 @@ renderAccess();
 // auto_preview, aliases, channels}；POST /admin/route/save 接收
 // {models:[{alias,channel,model,enabled,note}], auto_fallback}。
 // 路由判定完全在服务端，页面只负责展示与编辑；保存即生效，无需重启。
-const routeChannelLabels={core:'核心账号池',glm:'GLM 通道',qoder:'Qoder 通道',opencode:'OpenCode 通道',autoclaw:'AutoClaw 通道',trae:'Trae 通道',raccoon:'小浣熊通道'};
+const routeChannelLabels={core:'核心账号池',glm:'GLM 通道',qoder:'Qoder 通道',opencode:'OpenCode 通道',freellm:'FreeLLMAPI 通道',autoclaw:'AutoClaw 通道',trae:'Trae 通道',traeai:'Trae 国际版通道',raccoon:'小浣熊通道'};
 function routeChannelLabel(channel){return routeChannelLabels[channel]||channel||'—';}
 async function loadRoutes(){
  if(!csrf)return;
@@ -3082,7 +3222,11 @@ $('trae-import-form').addEventListener('submit',async event=>{
  const generation=sessionGeneration;traeLoginBusy=true;$('trae-import').disabled=true;notice('');
  $('trae-import-hint').textContent='正在导入…';
  try{
-  const result=await jsonAPI('trae/accounts/import',{callback_url:text});
+  // 按内容挑字段：回调链接进 callback_url，凭据 JSON 与桌面客户端 storage.json 全文进 json。
+  // sidecar 的 importRequest 这两者是二选一，统一塞 callback_url 会让页面文案承诺的
+  // 「也可粘贴凭据 JSON」必然失败（国际版与小浣熊页签本来就是按内容判的）。
+  const payload=/^https?:\/\//i.test(text)?{callback_url:text}:{json:text};
+  const result=await jsonAPI('trae/accounts/import',payload);
   if(generation!==sessionGeneration)return;
   $('trae-import-url').value='';
   $('trae-import-hint').textContent=`已导入 ${result.nickname||result.uid||'账号'}，建议刷新积分核对。`;
@@ -3194,6 +3338,315 @@ $('trae-form').addEventListener('submit',async event=>{
   $('trae-usage').textContent=(usage?`输入 ${usage.prompt_tokens??'—'} · 输出 ${usage.completion_tokens??'—'} · 总计 ${usage.total_tokens??'—'} tokens`:'上游未返回用量')+' · 本次通道：Trae';
  }catch(e){if(generation===sessionGeneration){const msg=e.name==='AbortError'?'已停止生成':e.message;answer.content.textContent=(content?content+'\n\n':'')+msg;$('trae-usage').textContent=msg;}}
  finally{controller.abort();activeRequest=undefined;traeControls();}
+});
+
+// ── Trae 国际版通道（trae2api 旁路的 intl 实例，traeai- 前缀）──
+// 与国内版同一个镜像、同一套控制协议，端点只差路径段 traeai，所以这一段是照着国内版
+// 写的，但有两处必须不一样：
+//   1. 权益是订阅档位。容器 /status 那条 pool 口径里的 credits 数值在国际版没有对应量
+//      （上游只有 pay_status），所以账号表一律不读它，档位只来自 /admin/traeai/credits，
+//      没刷到就写「未知」——未知额度不许变成零，也不许拿空字符串冒充已知。
+//   2. 没有签到体系：POST /admin/traeai/schedule/checkin 直接 409，页签因此不放签到按钮，
+//      也不把那条调用打出去（「一键签到」在这一路根本不存在）。
+// 控制链路同样用标准 HTTP 状态码表达业务结果（400/404/409 原样透传），jsonAPI 的 !ok
+// 分支已能抛错，这里不再包一层。
+async function loadTraeai(){
+ if(!csrf)return;
+ try{renderTraeai(await jsonAPI('traeai'));}
+ catch(error){notice(error.message);}
+}
+function renderTraeai(status){
+ traeaiStatus=status;
+ // 页签自己回报的 enabled 是「这条旁路配了没有」的一手口径，比后台探活那一轮更近。
+ setTraeaiEnabled(!!status.enabled);
+ const enabled=!!status.enabled;
+ $('traeai-disabled').hidden=enabled;
+ $('traeai-content').hidden=!enabled;
+ if(!enabled)return;
+ const reachable=!!status.reachable;
+ const accounts=Array.isArray(status.accounts)?status.accounts:[];
+ const badge=$('traeai-status-badge');
+ let tone='bad',label='不可达',text='trae2api 国际版容器不可达：请确认 overlay 已随 compose 启动；若容器在运行，通常是 console 刚被重启、旁路网络失联，重启旁路容器即可恢复。';
+ if(reachable){
+  if(!accounts.length){tone='warn';label='无账号';text='容器可达，但还没有账号：到「登录与导入」子页走 OAuth 登录，或粘贴桌面客户端 storage.json、凭据 JSON、回调 URL 导入。';}
+  else{tone='ok';label='在线';text=`trae2api 国际版可达 · ${status.model_count||0} 个模型 · ${accounts.length} 个账号`;}
+ }
+ badge.textContent=label;badge.className='badge '+tone;
+ $('traeai-status-text').textContent=text;
+ // 区域说明由后端下发（edition_note），页面原样显示；没下发就整条收起，不自己编一句。
+ const note=typeof status.edition_note==='string'?status.edition_note.trim():'';
+ const noteEl=$('traeai-edition-note');noteEl.textContent=note;noteEl.hidden=!note;
+ // 容器不可达时 /status 不存在，区域、模型数与账号数一律留空而不是编造。
+ const rows=[];
+ if(reachable){
+  if(status.edition_label)rows.push(['区域版本',String(status.edition_label)]);
+  if(status.edition)rows.push(['区域标识',String(status.edition)]);
+  if(status.agent_host)rows.push(['上游入口',String(status.agent_host)]);
+  rows.push(['模型数',String(status.model_count||0)]);
+  rows.push(['账号数',String(accounts.length)]);
+ }
+ const detail=$('traeai-health-body');detail.replaceChildren();
+ for(const [k,v] of rows){const tr=document.createElement('tr');tr.append(cell(String(k)),cell(String(v)));detail.append(tr);}
+ $('traeai-health-wrap').hidden=!rows.length;
+ // 登录与导入子页在容器不可达时也保留（那是排障入口），其余数据子页只在可达时开放。
+ const dataTab=reachable;
+ if(traeaiView!=='status'&&traeaiView!=='login'&&!dataTab)traeaiView='status';
+ for(const view of ['accounts','schedule','models','chat','usage'])$('traeai-view-'+view).hidden=!dataTab;
+ for(const view of ['status','login','accounts','schedule','models','chat','usage']){
+  $('traeai-view-'+view).classList.toggle('active',view===traeaiView);
+  $('traeai-pane-'+view).hidden=view!==traeaiView;
+ }
+ traeaiModels=(status.models||[]).map(item=>item.id).filter(Boolean);
+ renderAccessModelSelect();renderAccess();
+ const previous=$('traeai-model').value;
+ $('traeai-model').replaceChildren();
+ for(const id of traeaiModels)$('traeai-model').append(new Option(id,id));
+ if(traeaiModels.includes(previous))$('traeai-model').value=previous;
+ renderModelTable('traeai',status.models,status.health||null);
+ renderTraeaiAccounts(accounts);
+ $('traeai-model').disabled=!traeaiModels.length||!!activeRequest;
+ $('traeai-send').disabled=!traeaiModels.length||!!activeRequest;
+ traeaiControls();traeaiActionControls();
+}
+function traeaiControls(){
+ for(const id of ['traeai-model','traeai-prompt','traeai-send'])$(id).disabled=!!activeRequest;
+ $('traeai-stop').hidden=!activeRequest;
+}
+function traeaiActionControls(){
+ for(const id of ['traeai-refresh','traeai-credits-refresh','traeai-schedule-refresh','traeai-refresh-now'])$(id).disabled=traeaiBusy;
+}
+function traeaiRecoveryHint(a){
+ if(!a.cooling||!a.until)return '';
+ const until=new Date(a.until);
+ if(Number.isNaN(until.getTime()))return '';
+ return '约 '+until.toLocaleString('zh-CN',{timeZone:'Asia/Shanghai',hour12:false})+' 恢复';
+}
+// 权益档位文本：只认「刷新权益」那一次上游明确回报的 subscription 字符串。
+// 没刷过、刷失败、上游没给档位名，一律是「未知」——绝不回落到 /status 的 credits 数值，
+// 那个字段在国际版本就没有对应量，拿它显示等于凭空造一个积分余额。
+function traeaiEntitlementText(uid){
+ const hit=traeaiEntitlements.get(String(uid));
+ return hit&&typeof hit.subscription==='string'&&hit.subscription?hit.subscription:'未知';
+}
+function traeaiEntitlementHint(uid){
+ const hit=traeaiEntitlements.get(String(uid));
+ const fast=hit?Number(hit.fast_request_per):NaN;
+ return Number.isFinite(fast)&&fast>0?'快速请求额度 '+fast:'';
+}
+function traeaiAccountNote(a){
+ const hit=traeaiEntitlements.get(String(a.uid));
+ if(hit&&hit.error)return String(hit.error);
+ return a.reason||'—';
+}
+function renderTraeaiAccounts(list){
+ traeaiAccounts=Array.isArray(list)?list:[];
+ const usable=traeaiAccounts.filter(a=>!a.disabled&&!a.cooling).length;
+ const cooling=traeaiAccounts.filter(a=>a.cooling&&!a.disabled).length;
+ const disabled=traeaiAccounts.filter(a=>a.disabled).length;
+ $('traeai-stat-total').textContent=String(traeaiAccounts.length);
+ $('traeai-stat-usable').textContent=String(usable);
+ $('traeai-stat-cooling').textContent=String(cooling);
+ $('traeai-stat-disabled').textContent=String(disabled);
+ const body=$('traeai-accounts-body');body.replaceChildren();
+ for(const a of traeaiAccounts){
+  const tr=document.createElement('tr');
+  const state=a.disabled?'已停用':a.cooling?'冷却中':'可用';
+  const tone=a.disabled?'idle':a.cooling?'warn':'ok';
+  const status=cell('');const badge=document.createElement('span');badge.className='badge '+tone;badge.textContent=state;status.append(badge);
+  const expires=a.expires_at?new Date(Number(a.expires_at)*1000).toLocaleString('zh-CN',{timeZone:'Asia/Shanghai',hour12:false}):'—';
+  const ta=(label,action,cls)=>{const btn=document.createElement('button');btn.className=cls;btn.textContent=label;btn.dataset.traact=action;btn.dataset.uid=a.uid;return btn;};
+  const op=document.createElement('td');
+  if(a.disabled)op.append(ta('启用','enable','secondary'),' ',ta('删除','delete','quiet'));
+  else op.append(ta('停用','disable','secondary'),' ',ta('刷新','refresh','quiet'),' ',ta('删除','delete','quiet'));
+  // sidecar 只回报失败次数，没有成功计数；成功列留「—」而不是拿 0 充数。
+  tr.append(cell(a.nickname||a.uid,a.uid),status,cell(traeaiEntitlementText(a.uid),traeaiEntitlementHint(a.uid)),numCell('— / '+(a.err_count||0)),cell(expires,a.expired_soon?'Token 即将过期':''),cell(traeaiAccountNote(a),traeaiRecoveryHint(a)),op);
+  body.append(tr);
+ }
+ $('traeai-accounts-empty').hidden=traeaiAccounts.length>0;
+}
+async function traeaiAccountAction(action,uid){
+ if(traeaiBusy)return;
+ const generation=sessionGeneration;
+ if(action==='delete'&&!confirm(`确定删除账号 ${uid}？凭据将从容器中移除，需要重新登录或重新导入才能恢复。`))return;
+ traeaiBusy=true;traeaiActionControls();notice('');
+ try{
+  if(action==='enable'||action==='disable')await jsonAPI('traeai/accounts/patch',{uid,enabled:action==='enable'});
+  else if(action==='delete'){await jsonAPI('traeai/accounts/delete',{uid});if(generation===sessionGeneration)notice('账号已删除');}
+  else if(action==='refresh')await jsonAPI('traeai/accounts/refresh',{uid});
+  if(generation!==sessionGeneration)return;
+  await loadTraeai();
+ }catch(error){if(generation===sessionGeneration)notice(error.message);}
+ finally{if(generation===sessionGeneration){traeaiBusy=false;traeaiActionControls();}}
+}
+$('traeai-accounts-body').addEventListener('click',event=>{
+ const btn=event.target.closest('button[data-traact]');if(!btn||btn.disabled)return;
+ return traeaiAccountAction(btn.dataset.traact,btn.dataset.uid);
+});
+// 登录由容器侧 OAuth 回调驱动，console 只轮询 pending 状态；退出管理会话即中止轮询。
+// 回调落点（/authorize）两条区域共用，后端按「最近一次登录由哪条通道发起」转给对应容器。
+async function pollTraeaiLogin(generation,pendingId){
+ while(generation===sessionGeneration){
+  let state;
+  try{state=await jsonAPI('traeai/login?pending_id='+encodeURIComponent(pendingId));}
+  catch(error){
+   $('traeai-login-badge').textContent='未登录';$('traeai-login-badge').className='badge warn';
+   $('traeai-login-hint').textContent=error.message;return;
+  }
+  if(generation!==sessionGeneration)return;
+  if(state.state==='success'){
+   $('traeai-login-badge').textContent='已登录';$('traeai-login-badge').className='badge ok';
+   $('traeai-auth-row').hidden=true;traeaiAuthURL='';
+   $('traeai-login-hint').textContent=state.nickname?`账号 ${state.nickname} 已登录。`:'账号已登录。';
+   notice('Trae 国际版账号登录成功');
+   traeaiView='accounts';await loadTraeai();
+   return;
+  }
+  if(state.state==='failed'){
+   $('traeai-login-badge').textContent='未登录';$('traeai-login-badge').className='badge warn';
+   $('traeai-login-hint').textContent=`登录失败：${state.error||'未知错误'}，可重新发起。`;return;
+  }
+  if(state.state==='canceled'){$('traeai-login-hint').textContent='登录已取消。';return;}
+  await new Promise(resolve=>{traeaiPollTimer=setTimeout(resolve,2000);});
+ }
+}
+$('traeai-login-form').addEventListener('submit',async event=>{
+ event.preventDefault();if(traeaiLoginBusy)return;
+ const generation=sessionGeneration;traeaiLoginBusy=true;$('traeai-login-start').disabled=true;notice('');
+ $('traeai-login-hint').textContent='正在发起登录…';
+ try{
+  const result=await jsonAPI('traeai/login',{});
+  if(generation!==sessionGeneration)return;
+  traeaiAuthURL=result.login_url||'';
+  $('traeai-auth-row').hidden=!traeaiAuthURL;
+  if(traeaiAuthURL){
+   $('traeai-auth-link').href=traeaiAuthURL;
+   try{window.open(traeaiAuthURL,'_blank','noopener');}catch(_){}
+  }
+  $('traeai-login-badge').textContent='登录中';$('traeai-login-badge').className='badge warn';
+  $('traeai-login-hint').textContent='请在新打开的页面完成授权，本页会自动等待结果。';
+  void pollTraeaiLogin(generation,result.pending_id);
+ }catch(error){
+  if(generation===sessionGeneration){
+   $('traeai-login-badge').textContent='未登录';$('traeai-login-badge').className='badge warn';
+   $('traeai-login-hint').textContent=error.message;
+  }
+ }finally{if(generation===sessionGeneration){traeaiLoginBusy=false;$('traeai-login-start').disabled=false;}}
+});
+$('traeai-import-form').addEventListener('submit',async event=>{
+ event.preventDefault();if(traeaiLoginBusy)return;
+ const text=$('traeai-import-url').value.trim();
+ if(!text){$('traeai-import-hint').textContent='请粘贴浏览器回调 URL、导出的凭据 JSON，或桌面客户端 storage.json 全文。';return;}
+ const generation=sessionGeneration;traeaiLoginBusy=true;$('traeai-import').disabled=true;notice('');
+ $('traeai-import-hint').textContent='正在导入…';
+ try{
+  // console 把请求体原样转给容器，字段名得对得上容器的判别：
+  // 回调链接走 callback_url，凭据 JSON 与 storage.json 全文走 json。
+  const payload=/^https?:\/\//i.test(text)?{callback_url:text}:{json:text};
+  const result=await jsonAPI('traeai/accounts/import',payload);
+  if(generation!==sessionGeneration)return;
+  $('traeai-import-url').value='';
+  $('traeai-import-hint').textContent=`已导入 ${result.nickname||result.uid||'账号'}，建议刷新权益核对档位。`;
+  notice('Trae 国际版账号凭据导入成功');
+  await loadTraeai();
+ }catch(error){
+  if(generation===sessionGeneration)$('traeai-import-hint').textContent=error.status===409?'该账号已有更新的凭证，未覆盖（409）。':error.message;
+ }finally{if(generation===sessionGeneration){traeaiLoginBusy=false;$('traeai-import').disabled=false;}}
+});
+function renderTraeaiSchedule(data){
+ const rows=[];
+ if((data.refresh_hours||[]).length)rows.push(['凭据刷新时段',data.refresh_hours.join(', ')]);
+ if(data.next_fire)rows.push(['下次执行',String(data.next_fire)]);
+ if(data.last_refresh)rows.push(['上次刷新',String(data.last_refresh)]);
+ const body=$('traeai-schedule-body');body.replaceChildren();
+ for(const [k,v] of rows){const tr=document.createElement('tr');tr.append(cell(String(k)),cell(String(v)));body.append(tr);}
+ $('traeai-schedule-empty').hidden=rows.length>0;
+}
+function renderTraeaiUsage(data){
+ const days=Array.isArray(data.days)?data.days:[];
+ const body=$('traeai-usage-body');body.replaceChildren();
+ for(const day of days){
+  const tr=document.createElement('tr');
+  tr.append(cell(String(day.date||'—')),numCell(String(day.requests||0)),numCell(String(day.errors||0)),numCell(String(day.prompt_tokens||0)),numCell(String(day.completion_tokens||0)),numCell(String(day.total_tokens||0)));
+  body.append(tr);
+ }
+ $('traeai-usage-empty').hidden=days.length>0;
+}
+$('traeai-credits-refresh').addEventListener('click',async()=>{
+ if(traeaiBusy)return;const generation=sessionGeneration;traeaiBusy=true;traeaiActionControls();notice('');
+ try{
+  const result=await jsonAPI('traeai/credits');
+  if(generation!==sessionGeneration)return;
+  const list=Array.isArray(result.accounts)?result.accounts:[];
+  // 档位只在这一次请求之后才有值：按 uid 存上游明确回报的 subscription，缺字段就不存，
+  // 渲染层随之显示「未知」。这里不折算、不补零。
+  for(const a of list){
+   if(!a||a.uid==null)continue;
+   traeaiEntitlements.set(String(a.uid),{
+    subscription:typeof a.subscription==='string'?a.subscription:'',
+    error:typeof a.error==='string'?a.error:'',
+    fast_request_per:a.fast_request_per
+   });
+  }
+  const failed=list.filter(x=>x&&x.error);
+  const missing=list.filter(x=>x&&!(typeof x.subscription==='string'&&x.subscription)).length;
+  if(failed.length)notice(`权益刷新完成，${failed.length} 个账号失败：${failed[0].error}`);
+  else if(missing)notice(`权益已刷新（${list.length} 个账号），${missing} 个账号上游未回报档位`);
+  else notice(`权益已刷新（${list.length} 个账号）`);
+  await loadTraeai();
+ }catch(error){if(generation===sessionGeneration)notice(error.message);}
+ finally{if(generation===sessionGeneration){traeaiBusy=false;traeaiActionControls();}}
+});
+$('traeai-schedule-refresh').addEventListener('click',async()=>{
+ if(traeaiBusy)return;const generation=sessionGeneration;traeaiBusy=true;traeaiActionControls();
+ try{renderTraeaiSchedule(await jsonAPI('traeai/schedule'));}
+ catch(error){if(generation===sessionGeneration)notice(error.message);}
+ finally{if(generation===sessionGeneration){traeaiBusy=false;traeaiActionControls();}}
+});
+$('traeai-refresh-now').addEventListener('click',async()=>{
+ if(traeaiBusy)return;const generation=sessionGeneration;traeaiBusy=true;traeaiActionControls();
+ try{
+  await jsonAPI('traeai/schedule/refresh',{});
+  if(generation!==sessionGeneration)return;
+  $('traeai-schedule-hint').textContent='已触发凭据刷新：容器将在本轮执行，完成后点「刷新排程」查看结果。';
+ }catch(error){if(generation===sessionGeneration)$('traeai-schedule-hint').textContent=error.message;}
+ finally{if(generation===sessionGeneration){traeaiBusy=false;traeaiActionControls();}}
+});
+$('traeai-usage-refresh').addEventListener('click',async()=>{
+ if(traeaiBusy)return;const generation=sessionGeneration;traeaiBusy=true;$('traeai-usage-refresh').disabled=true;
+ try{renderTraeaiUsage(await jsonAPI('traeai/usage'));}
+ catch(error){if(generation===sessionGeneration)notice(error.message);}
+ finally{if(generation===sessionGeneration){traeaiBusy=false;$('traeai-usage-refresh').disabled=false;}}
+});
+for(const view of ['status','login','accounts','schedule','models','chat','usage'])$('traeai-view-'+view).addEventListener('click',()=>{traeaiView=view;if(traeaiStatus)renderTraeai(traeaiStatus);});
+runTopRefresh($('traeai-refresh'),async()=>{
+ if(traeaiBusy)return;const generation=sessionGeneration;traeaiBusy=true;traeaiActionControls();
+ try{await loadTraeai();}finally{if(generation===sessionGeneration){traeaiBusy=false;traeaiActionControls();}}
+});
+$('traeai-stop').addEventListener('click',()=>activeRequest?.abort());
+$('traeai-form').addEventListener('submit',async event=>{
+ event.preventDefault();if(activeRequest)return;const text=$('traeai-prompt').value.trim();if(!text||!$('traeai-model').value)return;
+ const generation=sessionGeneration;
+ notice('');message('user',text,$('traeai-messages'));$('traeai-prompt').value='';const answer=message('assistant','正在等待模型…',$('traeai-messages'));
+ const controller=new AbortController();activeRequest=controller;traeaiControls();
+ let content='',usage,finished=false;const outgoing=[...traeaiHistory,{role:'user',content:text}];
+ try{
+  const response=await api('traeai/chat',{model:$('traeai-model').value,messages:outgoing,stream:true},controller.signal);
+  if(!response.ok){const err=await response.json();throw new Error(err.error?.message||err.error||`HTTP ${response.status}`);}
+  const reader=response.body.getReader(),decoder=new TextDecoder();let buffer='';
+  const processFrame=frame=>{
+   const payload=frame.split('\n').filter(l=>l.startsWith('data:')).map(l=>l.slice(5).trimStart()).join('\n');if(!payload)return;
+   if(payload==='[DONE]'){finished=true;return;}
+   const part=JSON.parse(payload);if(part.error)throw new Error(part.error.message||'上游流式响应发生错误');
+   content+=part.choices?.[0]?.delta?.content||'';answer.content.textContent=content||'模型正在思考…';
+   if(part.usage)usage=part.usage;
+  };
+  while(true){const{value,done}=await reader.read();if(controller.signal.aborted){const error=new Error('已停止生成');error.name='AbortError';throw error;}buffer+=done?decoder.decode():decoder.decode(value,{stream:true});buffer=buffer.replace(/\r\n/g,'\n');let split;while((split=buffer.indexOf('\n\n'))>=0){processFrame(buffer.slice(0,split));buffer=buffer.slice(split+2);}if(done){if(buffer.trim())processFrame(buffer);break;}}
+  if(!finished)throw new Error('响应提前中断，可重新发送问题');
+  if(!content)answer.content.textContent='模型未返回文本内容。';
+  traeaiHistory=[...outgoing,{role:'assistant',content}];
+  $('traeai-usage').textContent=(usage?`输入 ${usage.prompt_tokens??'—'} · 输出 ${usage.completion_tokens??'—'} · 总计 ${usage.total_tokens??'—'} tokens`:'上游未返回用量')+' · 本次通道：Trae 国际版';
+ }catch(e){if(generation===sessionGeneration){const msg=e.name==='AbortError'?'已停止生成':e.message;answer.content.textContent=(content?content+'\n\n':'')+msg;$('traeai-usage').textContent=msg;}}
+ finally{controller.abort();activeRequest=undefined;traeaiControls();}
 });
 
 // ── 小浣熊通道（raccoon2api 旁路，raccoon- 前缀）──

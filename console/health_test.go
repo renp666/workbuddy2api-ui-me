@@ -14,11 +14,27 @@ import (
 // healthChannelStub 描述一条旁路 sidecar 的探活应答形状。
 type healthChannelStub struct {
 	// path 是该通道探活命中的路径：glm/qoder 走 /v1/models，opencode 走 /health，
-	// autoclaw/trae/raccoon 走 /healthz。
+	// autoclaw/trae/raccoon 走 /healthz，freellm 走 /livez。
 	path string
 	// body 是应答体；status 是应答码。
 	body   string
 	status int
+	// extra 覆盖同一 sidecar 的其他路径（freellm 的可达性与池就绪是两个端点）。
+	// 未列出的路径仍按 404 应答，避免把「没设计到的调用」混成默认 200。
+	extra map[string]healthChannelStub
+}
+
+func (stub healthChannelStub) serve(w http.ResponseWriter, path string) {
+	if path != stub.path {
+		if next, ok := stub.extra[path]; ok {
+			next.serve(w, path)
+			return
+		}
+		w.WriteHeader(404)
+		return
+	}
+	w.WriteHeader(stub.status)
+	fmt.Fprint(w, stub.body)
 }
 
 // healthyStub 返回一条默认健康应答，覆盖各通道被探活时命中的路径。
@@ -30,8 +46,17 @@ func healthyStub(c routeChannel) healthChannelStub {
 		return healthChannelStub{path: "/health", body: `{"phase":"ready"}`, status: 200}
 	case channelAutoClaw:
 		return healthChannelStub{path: "/healthz", body: `{"healthy":2,"total":3}`, status: 200}
-	case channelTrae, channelRaccoon:
+	case channelTrae, channelTraeAI, channelRaccoon:
 		return healthChannelStub{path: "/healthz", body: "ok", status: 200}
+	case channelFreellm:
+		// 可达性看 /livez，池就绪看 /readyz；/v1/models 只用于目录，不再是可达判据。
+		return healthChannelStub{
+			path: "/livez", body: `{"status":"ok","version":"0.4.1","uptime_s":1}`, status: 200,
+			extra: map[string]healthChannelStub{
+				"/readyz":    {path: "/readyz", body: `{"status":"ok","ready_upstreams":1}`, status: 200},
+				"/v1/models": {path: "/v1/models", body: `{"data":[{"id":"freellm-test-model","execution_status":"ready"}]}`, status: 200},
+			},
+		}
 	}
 	return healthChannelStub{path: "/", body: "{}", status: 200}
 }
@@ -51,12 +76,7 @@ func healthConsole(t *testing.T, channels map[routeChannel]healthChannelStub, pr
 	for channel, stub := range channels {
 		stub := stub
 		ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			if r.URL.Path != stub.path {
-				w.WriteHeader(404)
-				return
-			}
-			w.WriteHeader(stub.status)
-			fmt.Fprint(w, stub.body)
+			stub.serve(w, r.URL.Path)
 		}))
 		t.Cleanup(ts.Close)
 		target := mustParseURL(t, ts.URL)
@@ -76,9 +96,15 @@ func healthConsole(t *testing.T, channels map[routeChannel]healthChannelStub, pr
 		case channelTrae:
 			cfg.TraeURL = target
 			cfg.TraeKey = strings.Repeat("t", 32)
+		case channelTraeAI:
+			cfg.TraeAIURL = target
+			cfg.TraeAIKey = strings.Repeat("i", 32)
 		case channelRaccoon:
 			cfg.RaccoonURL = target
 			cfg.RaccoonKey = strings.Repeat("r", 32)
+		case channelFreellm:
+			cfg.FreellmURL = target
+			cfg.FreellmKey = strings.Repeat("f", 32)
 		}
 	}
 	h, err := NewServer(cfg)

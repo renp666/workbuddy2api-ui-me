@@ -336,12 +336,12 @@ func (h *server) corePinHint(ctx context.Context) string {
 			continue
 		}
 		accounts = append(accounts, account{
-			uid:        strOf(m, "uid"),
-			nickname:   orDefault(strOf(m, "nickname"), strOf(m, "uid")),
-			realm:      strOf(m, "realm"),
-			reason:     strOf(m, "reason"),
-			cooling:    m["cooling"] == true,
-			remaining:  numOf(m, "cool_remaining_sec"),
+			uid:       strOf(m, "uid"),
+			nickname:  orDefault(strOf(m, "nickname"), strOf(m, "uid")),
+			realm:     strOf(m, "realm"),
+			reason:    strOf(m, "reason"),
+			cooling:   m["cooling"] == true,
+			remaining: numOf(m, "cool_remaining_sec"),
 		})
 	}
 
@@ -443,6 +443,21 @@ func (h *server) channelReachable(ctx context.Context, c routeChannel) (bool, st
 			return false, "OW Bridge /health 不可达"
 		}
 		return true, ""
+	case channelFreellm:
+		// 可达性看 /livez（进程活着），池就绪看 /readyz；两者都不进 sidecar 的
+		// 分钟限流器。目录抓取不再作为可达判据：它既不能证明能调用（实测 259 条
+		// 里 257 条 needsKey），每 30 秒一轮还会挤占推理面的额度预算。
+		if !h.freellmLiveness(ctx) {
+			return false, "FreeLLMAPI 进程不可达"
+		}
+		ready, reason, upstreams := h.freellmPool(ctx)
+		if ready {
+			return true, fmt.Sprintf("ready_upstreams=%d", upstreams)
+		}
+		if reason != "" {
+			return true, fmt.Sprintf("池内暂无可用上游（%s）", reason)
+		}
+		return true, "池内暂无可用上游"
 	case channelAutoClaw:
 		state := h.autoclawHealth(ctx)
 		if state == nil {
@@ -452,8 +467,8 @@ func (h *server) channelReachable(ctx context.Context, c routeChannel) (bool, st
 		healthy, _ := state["healthy"].(float64)
 		total, _ := state["total"].(float64)
 		return true, fmt.Sprintf("healthy=%d total=%d", int(healthy), int(total))
-	case channelTrae:
-		if !h.traeHealth(ctx) {
+	case channelTrae, channelTraeAI:
+		if !h.traeHealth(ctx, h.traeChannelByChannel(c)) {
 			return false, "sidecar /healthz 未返回 ok"
 		}
 		return true, ""

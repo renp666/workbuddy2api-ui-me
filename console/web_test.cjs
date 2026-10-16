@@ -122,7 +122,11 @@ function taskFixture(fetch, cryptoImpl={randomUUID:()=> '11111111-2222-4333-8444
   }
   const get=id=>{if(!elements.has(id))elements.set(id,element());return elements.get(id);};
   const protocolButtons=['access-openai','access-anthropic','chat-openai','chat-anthropic'].map(id=>{const button=get(id);button.dataset.protocol=id.split('-')[1];return button;});
-  const railButtons=[['refresh','overview'],['zcode-refresh','zcode'],['qoder-refresh','qoder'],['opencode-refresh','opencode'],['ccr-refresh','ccr'],['autoclaw-refresh','autoclaw'],['trae-refresh','trae'],['raccoon-refresh','raccoon'],['usage-refresh','usage'],['routes-refresh','routes']].map(([id,view])=>{const button=get(id);button.dataset.refreshFor=view;return button;});
+  // 顶栏刷新按钮的名单从 app.js 的 usageChannelOrder 现读（WorkBuddy 没有页面级刷新，
+  // 它的「刷新任务」留在原位），再加三条非通道页。先前这里写死四条，freellm 的按钮
+  // 上了页面却没人看过——新通道漏一颗不会报错，只会多一个永远点不亮的死按钮。
+  const channelRefresh=channelList(readFileSync(__dirname+'/web/app.js','utf8')).filter(c=>c!=='workbuddy').map(c=>[c+'-refresh',c]);
+  const railButtons=[['refresh','overview'],...channelRefresh,['ccr-refresh','ccr'],['usage-refresh','usage'],['routes-refresh','routes']].map(([id,view])=>{const button=get(id);button.dataset.refreshFor=view;return button;});
   const opened=[];
   const ctx=vm.createContext({document:{getElementById:get,querySelectorAll:selector=>selector==='[data-protocol]'?protocolButtons:selector==='[data-refresh-for]'?railButtons:[],createElement:element,hidden:false,handlers:{},addEventListener(name,fn){this.handlers[name]=fn;}},
     location:{origin:'http://console.test'},AbortController,TextDecoder,TextEncoder,Option:function(text,value){return {textContent:text,value};},
@@ -1602,17 +1606,45 @@ test('autoclaw account checkin reports the tally, chains maintenance and reloads
 
 function traeFixture(traeStatus){
   const response=body=>({ok:true,status:200,json:async()=>body});
+  const posts=[];
   let statusGets=0;
-  const {ctx,get,opened}=taskFixture(url=>{
+  const {ctx,get,opened}=taskFixture((url,options)=>{
+    if(options&&options.method==='POST'&&url.indexOf('/admin/trae/')===0)posts.push({url,body:JSON.parse(options.body)});
     if(url==='/admin/session')return new Promise(()=>{});
     if(url==='/admin/status')return response({total:0,healthy:0,cooling:0,disabled:0,accounts:[]});
     if(url==='/admin/models')return response({data:[]});
+    if(url==='/admin/trae/accounts/import')return response({uid:'t9',nickname:'九号',action:'created'});
     if(url==='/admin/trae'){statusGets++;return response(traeStatus);}
     throw new Error('unexpected '+url);
   });
   get('realm').querySelector=()=>({disabled:false});
-  return {ctx,get,opened,statusGets:()=>statusGets};
+  return {ctx,get,opened,posts,statusGets:()=>statusGets};
 }
+
+// 国内版导入此前一条判据都没有（夹具连 POST 都不记录），所以「页面写着可粘凭据 JSON、
+// 代码却一律塞 callback_url」这个缺陷一直没被抓到。这里按内容钉两种形态。
+test('trae 导入按内容挑字段：回调链接进 callback_url，凭据 JSON 与 storage.json 全文进 json',async()=>{
+  const {ctx,get,posts}=traeFixture({enabled:true,reachable:true,model_count:0,models:[],accounts:[]});
+  await vm.runInContext("signedIn({csrf:'c',global_enabled:true,zcode_enabled:false,qoder_enabled:false,opencode_enabled:false,autoclaw_enabled:false,trae_enabled:true})",ctx);
+  await vm.runInContext('loadTrae()',ctx);
+  get('trae-import-url').value='http://127.0.0.1:7863/authorize?refreshToken=abc';
+  await get('trae-import-form').handlers.submit({preventDefault(){}});
+  assert.equal(posts.length,1,'导入没有发出请求');
+  assert.equal(posts[0].url,'/admin/trae/accounts/import');
+  assert.equal(posts[0].body.callback_url,'http://127.0.0.1:7863/authorize?refreshToken=abc');
+  assert.equal(posts[0].body.json,undefined,'回调链接不该同时占着 json 字段');
+  get('trae-import-url').value='{"iCubeAuthInfo://icube.cloudide":"blob","telemetry.machineId":"m"}';
+  await get('trae-import-form').handlers.submit({preventDefault(){}});
+  assert.equal(posts.length,2,'JSON 形态没被送出去');
+  assert.match(posts[1].body.json,/iCubeAuthInfo/,'凭据 JSON/storage.json 走错了字段：sidecar 的 callback_url 与 json 是二选一');
+  assert.equal(posts[1].body.callback_url,undefined);
+  assert.equal(get('trae-import-url').value,'','导入成功后输入框没清空');
+  // 入口文案要把三种形态都写出来，否则用户只会去粘回调链接。
+  const html=readFileSync(__dirname+'/web/index.html','utf8');
+  const block=html.split('\n').find(l=>l.includes('id="trae-import-url"'));
+  assert.match(block,/storage\.json/,'导入框没提 storage.json');
+  assert.match(block,/凭据 JSON/,'导入框没提凭据 JSON');
+});
 
 test('trae tab greys out and shows the disabled notice when the channel is off',async()=>{
   const {ctx,get}=traeFixture({enabled:false});
@@ -1750,6 +1782,338 @@ test('trae login start opens the authorize page and the poll loop lands on the a
   assert.equal(vm.runInContext('traeView',ctx),'accounts','a successful login did not switch to the account tab');
   assert.equal(statusGets,1,'a successful login did not reload the channel status');
   assert.equal(vm.runInContext('traeLoginBusy',ctx),false,'the login button stayed locked');
+});
+
+// ── Trae 国际版通道（trae2api 的 intl 实例，traeai- 前缀）──
+// 与国内版同形，但两处必须不一样：权益是订阅档位（容器 /status 那个 credits 数值在这条
+// 路线上没有对应量，拿它显示等于凭空造一个余额），以及没有签到体系（签到端点直接 409，
+// 页签不放签到按钮，也不把那条调用打出去）。
+const TRAEAI_NOTE='上游按区域分入口（默认 SG）；权益是订阅档位，没有每日签到与积分';
+function traeaiFixture(traeaiStatus,health,creditsBody){
+  const response=body=>({ok:true,status:200,json:async()=>body});
+  const posts=[];
+  let statusGets=0;
+  const {ctx,get,opened}=taskFixture((url,options)=>{
+    if(options&&options.method==='POST'&&url.indexOf('/admin/traeai/')===0)posts.push({url,body:JSON.parse(options.body)});
+    if(url==='/admin/session')return new Promise(()=>{});
+    if(url==='/admin/status')return response({total:0,healthy:0,cooling:0,disabled:0,accounts:[]});
+    if(url==='/admin/models')return response({data:[]});
+    if(url==='/admin/health')return response(health||{ok:true,checked_at:'',channels:[],history:[]});
+    if(url==='/admin/traeai/credits')return response(creditsBody||{edition:'intl',entitlement_mode:'subscription',checkin_supported:false,accounts:[]});
+    if(url==='/admin/traeai/accounts/import')return response({uid:'i1',nickname:'一号',action:'created'});
+    if(url.startsWith('/admin/traeai/accounts/')||url.startsWith('/admin/traeai/schedule/'))return response({ok:true});
+    if(url==='/admin/traeai'){statusGets++;return response(traeaiStatus);}
+    throw new Error('unexpected '+url);
+  });
+  get('realm').querySelector=()=>({disabled:false});
+  return {ctx,get,opened,posts,statusGets:()=>statusGets};
+}
+const traeaiReachable={enabled:true,reachable:true,checkin:false,edition:'intl',edition_label:'Trae 国际版',
+  agent_host:'https://coresg-normal.trae.ai',edition_note:TRAEAI_NOTE,model_count:1,
+  models:[{id:'traeai-gpt-5.4',realm:'traeai',credits:'x0.08'}],
+  accounts:[{uid:'i1',nickname:'一号',credits:0,cooling:false,disabled:false,enabled:true,err_count:0,expires_at:1799999999,expired_soon:false},
+    {uid:'i2',nickname:'二号',credits:0,cooling:true,disabled:false,enabled:true,err_count:2,until:'2026-10-09T12:00:00Z'}]};
+const traeaiSignIn="signedIn({csrf:'c',global_enabled:true,zcode_enabled:false,qoder_enabled:false,opencode_enabled:false,autoclaw_enabled:false,trae_enabled:false})";
+
+test('traeai tab greys out and shows the disabled notice when the channel is off',async()=>{
+  const {ctx,get}=traeaiFixture({enabled:false,checkin:false,edition_note:TRAEAI_NOTE});
+  await vm.runInContext(traeaiSignIn,ctx);
+  await vm.runInContext('loadTraeai()',ctx);
+  assert.equal(get('traeai-disabled').hidden,false,'disabled notice stayed hidden');
+  assert.equal(get('traeai-content').hidden,true,'enabled content showed while disabled');
+  assert.equal(get('nav-traeai').classList.toggled['nav-muted'],true,'未启用的国际版通道没把侧栏页签压暗');
+});
+
+test('traeai 的启用位从 /admin/health 的通道条目现读：session 载荷里没有 traeai_enabled 这一位',async()=>{
+  const on=traeaiFixture(traeaiReachable,{channels:[{channel:'traeai',enabled:true,reachable:true}]});
+  await vm.runInContext(traeaiSignIn,on.ctx);
+  await new Promise(resolve=>setImmediate(resolve));
+  assert.equal(vm.runInContext('traeaiEnabled',on.ctx),true,'探活已报 traeai.enabled=true，页签却仍当它没配');
+  assert.equal(on.get('nav-traeai').classList.toggled['nav-muted'],false,'通道配上了，侧栏页签却没点亮');
+  const off=traeaiFixture({enabled:false},{channels:[{channel:'traeai',enabled:false,reachable:false}]});
+  await vm.runInContext(traeaiSignIn,off.ctx);
+  await new Promise(resolve=>setImmediate(resolve));
+  assert.equal(vm.runInContext('traeaiEnabled',off.ctx),false,'探活报未启用，页签却点亮了');
+  assert.equal(off.get('nav-traeai').classList.toggled['nav-muted'],true,'没配置的通道页签该压暗');
+});
+
+test('traeai tab renders badge, edition note, region rows, accounts and models when reachable',async()=>{
+  const {ctx,get,statusGets}=traeaiFixture(traeaiReachable);
+  await vm.runInContext(traeaiSignIn,ctx);
+  // 走 showPage 而不是直接调加载器：页签切换那一行的派发也归这条管，漏了页签会是空的。
+  vm.runInContext("showPage('traeai')",ctx);
+  await new Promise(resolve=>setImmediate(resolve));
+  assert.equal(statusGets(),1,'切到 traeai 页签没有去读通道状态');
+  assert.equal(get('traeai-disabled').hidden,true);
+  assert.equal(get('traeai-content').hidden,false);
+  assert.equal(get('traeai-status-badge').textContent,'在线');
+  assert.equal(get('traeai-status-badge').className,'badge ok');
+  assert.match(get('traeai-status-text').textContent,/trae2api 国际版可达 · 1 个模型 · 2 个账号/);
+  // 区域提示由后端下发（edition_note），页面原样显示；前端不自己编，也不许把它吞掉。
+  assert.equal(get('traeai-edition-note').hidden,false,'后端下发了 edition_note，页面上却没显示');
+  assert.equal(get('traeai-edition-note').textContent,TRAEAI_NOTE);
+  assert.deepEqual(get('traeai-health-body').children.map(tr=>tr.children[0].textContent),
+    ['区域版本','区域标识','上游入口','模型数','账号数']);
+  assert.deepEqual(get('traeai-health-body').children.map(tr=>tr.children[1].textContent),
+    ['Trae 国际版','intl','https://coresg-normal.trae.ai','1','2']);
+  assert.deepEqual(['traeai-stat-total','traeai-stat-usable','traeai-stat-cooling','traeai-stat-disabled'].map(id=>get(id).textContent),
+    ['2','1','1','0']);
+  assert.deepEqual(get('traeai-model').children.map(o=>o.value),['traeai-gpt-5.4']);
+  assert.equal(get('traeai-models-body').children.length,1,'国际版模型表行数不对');
+});
+
+test('traeai 不可达时只保留登录与导入入口，区域读数一律留空而不是编造',async()=>{
+  const {ctx,get}=traeaiFixture({enabled:true,reachable:false,checkin:false,edition_note:TRAEAI_NOTE,model_count:0,models:[],accounts:[]});
+  await vm.runInContext(traeaiSignIn,ctx);
+  await vm.runInContext('loadTraeai()',ctx);
+  assert.equal(get('traeai-status-badge').textContent,'不可达');
+  assert.equal(get('traeai-status-badge').className,'badge bad');
+  assert.equal(get('traeai-health-wrap').hidden,true,'容器不可达时 /status 不存在，还画出一张读数表就是编的');
+  assert.equal(get('traeai-edition-note').textContent,TRAEAI_NOTE,'状态接口带了区域提示，不可达时也该显示');
+  for(const id of ['traeai-view-accounts','traeai-view-schedule','traeai-view-models','traeai-view-chat','traeai-view-usage'])
+    assert.equal(get(id).hidden,true,id+' 在容器不可达时仍然开放');
+  assert.equal(get('traeai-view-login').hidden,false,'登录与导入是排障入口，必须留着');
+});
+
+test('traeai 权益列只认上游回报的订阅档位：没刷到写「未知」，绝不把 /status 的 credits 0 当积分显示',async()=>{
+  const html=readFileSync(__dirname+'/web/index.html','utf8');
+  const head=html.split('\n').find(l=>l.includes('id="traeai-accounts-body"'));
+  assert.ok(head,'index.html 里找不到 traeai-accounts-body');
+  assert.match(head,/<th>权益档位<\/th>/,'账号表的权益列没按「档位」命名，容易读成一个数字');
+  assert.doesNotMatch(head,/<th[^>]*>积分<\/th>/,'国际版没有积分余额，表头不该写「积分」');
+  assert.equal((head.match(/<th class="num">/g)||[]).length,1,'权益档位是文本列，只有「成功 / 错误」该挂 num');
+  const {ctx,get}=traeaiFixture(traeaiReachable,null,{edition:'intl',entitlement_mode:'subscription',checkin_supported:false,
+    accounts:[{uid:'i1',nickname:'一号',subscription:'Pro',fast_request_per:600},{uid:'i2',nickname:'二号',error:'subscription: 401'}]});
+  await vm.runInContext(traeaiSignIn,ctx);
+  await vm.runInContext('loadTraeai()',ctx);
+  const tierOf=tr=>tr.children[2].textContent;
+  // /status 的每条账号都带着 credits:0（Go 侧没有 omitempty），那是「这条通道没有这个量」，
+  // 不是「余额为零」。刷之前只能写「未知」。
+  assert.deepEqual(get('traeai-accounts-body').children.map(tierOf),['未知','未知'],'一次权益都没刷，权益列就该是「未知」，不是 0、不是空字符串');
+  assert.deepEqual(get('traeai-accounts-body').children.map(tr=>tr.children.filter(td=>String(td.className).split(' ').includes('num')).length),[1,1],'数值单元格与表头的 num 列数不一致');
+  await get('traeai-credits-refresh').handlers.click();
+  const rows=get('traeai-accounts-body').children;
+  assert.deepEqual(rows.map(tierOf),['Pro','未知'],'上游回报的档位没显示，或缺档位的账号被补了值');
+  assert.equal(rows[0].children[2].children.length,1,'fast_request_per 是上游明确给的数，该作为小字副行显示');
+  assert.equal(rows[0].children[2].children[0].textContent,'快速请求额度 600');
+  assert.equal(rows[1].children[2].children.length,0,'上游没给 fast_request_per（omitempty），不该补一个 0 副行');
+  assert.match(rows[1].children[5].textContent,/subscription: 401/,'权益刷新失败的原因没落到说明列');
+  assert.match(rows[1].children[5].children[0].textContent,/约 .* 恢复/,'冷却中的账号该带上恢复时刻');
+  // 页面上的口径说明要跟着这条规矩走：没刷到就是「未知」，不折算成积分。
+  const note=html.match(new RegExp('<p id="traeai-accounts-note"[^>]*>([\\s\\S]*?)</p>'));
+  assert.ok(note,'index.html 缺 traeai-accounts-note');
+  assert.match(note[1],/未知/,'账号备注没写明「上游没回报档位就显示未知」');
+  assert.match(note[1],/不折算|不补零/,'账号备注没写明不把档位折算成积分数字');
+});
+
+test('Trae 国际版没有签到体系：页面上不该有签到按钮，脚本也不该打那条注定 409 的端点',async()=>{
+  const html=readFileSync(__dirname+'/web/index.html','utf8');
+  const js=readFileSync(__dirname+'/web/app.js','utf8');
+  for(const id of ['traeai-maintain','traeai-checkin-now','traeai-checkin','traeai-signin'])
+    assert.ok(!html.includes('id="'+id+'"'),`index.html 里有 ${id}：国际版点它会拿到 409`);
+  assert.ok(!js.includes("jsonAPI('traeai/schedule/checkin'"),'app.js 里仍在调用 traeai 的签到端点');
+  // 反向保护：别把国内版那条签到一起删了（它有真实签到体系）。
+  assert.ok(html.includes('id="trae-checkin-now"'),'国内版的立即签到按钮被误删');
+  assert.ok(html.includes('id="traeai-refresh-now"'),'国际版的立即刷新凭据按钮不该一起消失');
+  // 行为面：把排程子页两个按钮都点一遍，一条签到请求都不该发出去。
+  const {ctx,get,posts}=traeaiFixture(traeaiReachable);
+  await vm.runInContext(traeaiSignIn,ctx);
+  await vm.runInContext('loadTraeai()',ctx);
+  await get('traeai-schedule-refresh').handlers.click();
+  await get('traeai-refresh-now').handlers.click();
+  assert.deepEqual(posts.map(p=>p.url),['/admin/traeai/schedule/refresh'],'排程子页发出了不该发的控制调用');
+});
+
+test('traeai 导入按内容挑字段：回调链接进 callback_url，凭据 JSON 与 storage.json 全文进 json',async()=>{
+  const {ctx,get,posts}=traeaiFixture(traeaiReachable);
+  await vm.runInContext(traeaiSignIn,ctx);
+  await vm.runInContext('loadTraeai()',ctx);
+  get('traeai-import-url').value='http://127.0.0.1:7863/authorize?refreshToken=abc';
+  await get('traeai-import-form').handlers.submit({preventDefault(){}});
+  assert.equal(posts.length,1,'导入没有发出请求');
+  assert.equal(posts[0].url,'/admin/traeai/accounts/import');
+  assert.equal(posts[0].body.callback_url,'http://127.0.0.1:7863/authorize?refreshToken=abc');
+  assert.equal(posts[0].body.json,undefined,'回调链接不该同时占着 json 字段');
+  get('traeai-import-url').value='{"iCubeAuthInfo://icube.cloudide":{"accessToken":"t"},"telemetry.machineId":"m"}';
+  await get('traeai-import-form').handlers.submit({preventDefault(){}});
+  assert.equal(posts.length,2,'storage.json 全文没被送出去');
+  assert.match(posts[1].body.json,/iCubeAuthInfo/,'storage.json 走错了字段：容器按 json 判别 storage/凭据');
+  assert.equal(posts[1].body.callback_url,undefined);
+  assert.equal(get('traeai-import-url').value,'','导入成功后输入框没清空');
+  // 提示文案要把三种入口都写出来，否则用户只会去粘回调链接。
+  const html=readFileSync(__dirname+'/web/index.html','utf8');
+  const block=html.split('\n').find(l=>l.includes('id="traeai-import-url"'));
+  assert.match(block,/storage\.json/,'导入框没提 storage.json');
+  assert.match(block,/回调 URL|回调链接/,'导入框没提回调链接');
+  assert.match(block,/凭据 JSON/,'导入框没提凭据 JSON');
+});
+
+test('traeai 登录发起后轮询落到账号子页，并把授权链接交出去',async()=>{
+  let starts=0,polls=0;
+  const response=body=>({ok:true,status:200,json:async()=>body});
+  const {ctx,get,opened}=taskFixture(url=>{
+    if(url==='/admin/session')return new Promise(()=>{});
+    if(url==='/admin/status')return response({total:0,healthy:0,cooling:0,disabled:0,accounts:[]});
+    if(url==='/admin/models')return response({data:[]});
+    if(url==='/admin/traeai/login'&&url.indexOf('pending_id')<0){starts++;return response({login_url:'https://auth.test/authorize?x=1',pending_id:'p1'});}
+    if(url==='/admin/traeai/login?pending_id=p1'){polls++;return response({state:'success',uid:'i1',nickname:'一号'});}
+    if(url==='/admin/traeai')return response({...traeaiReachable,accounts:[{uid:'i1',nickname:'一号',credits:0,cooling:false,disabled:false,enabled:true,err_count:0}]});
+    throw new Error('unexpected '+url);
+  });
+  get('realm').querySelector=()=>({disabled:false});
+  await vm.runInContext(traeaiSignIn,ctx);
+  await get('traeai-login-form').handlers.submit({preventDefault(){}});
+  assert.equal(starts,1,'登录没有发起');
+  assert.equal(get('traeai-auth-row').hidden,false,'授权链接没交出去，用户无处可点');
+  assert.equal(get('traeai-auth-link').href,'https://auth.test/authorize?x=1');
+  assert.ok(opened.some(w=>w.location.href==='https://auth.test/authorize?x=1'),'没有新开授权页');
+  // fixture 的 setTimeout 不会回调，成功路径没有定时器参与，排空微任务即可走完轮询。
+  await new Promise(resolve=>setImmediate(resolve));
+  await new Promise(resolve=>setImmediate(resolve));
+  assert.equal(polls,1,'登录结果没有被轮询');
+  assert.equal(get('traeai-login-badge').textContent,'已登录');
+  assert.equal(get('traeai-login-badge').className,'badge ok');
+  assert.equal(get('traeai-auth-row').hidden,true,'登录完成后授权链接该收起');
+  assert.match(get('traeai-login-hint').textContent,/一号/);
+  assert.equal(vm.runInContext('traeaiView',ctx),'accounts','登录成功后没切到账号子页');
+  assert.equal(vm.runInContext('traeaiLoginBusy',ctx),false,'登录按钮停在锁定态');
+});
+
+test('traeai 对话发到国际版代理、按前缀认通道，并从接入页路由到国际版页签',async()=>{
+  const response=body=>({ok:true,status:200,json:async()=>body});
+  const chunks=[
+    new TextEncoder().encode('data: '+JSON.stringify({choices:[{delta:{content:'国际版'}}]})+'\n\n'),
+    new TextEncoder().encode('data: '+JSON.stringify({choices:[{delta:{content:' 回答'}}],usage:{prompt_tokens:2,completion_tokens:3,total_tokens:5}})+'\n\n'),
+    new TextEncoder().encode('data: [DONE]\n\n')];
+  let body,posts=0;
+  const {ctx,get}=taskFixture((url,options)=>{
+    if(url==='/admin/session')return new Promise(()=>{});
+    if(url==='/admin/status')return response({total:0,healthy:0,cooling:0,disabled:0,accounts:[]});
+    if(url==='/admin/models')return response({data:[]});
+    if(url==='/admin/traeai')return response(traeaiReachable);
+    if(url==='/admin/traeai/chat'){posts++;body=JSON.parse(options.body);return {ok:true,status:200,body:{getReader:()=>{let i=0;return {read:async()=>i<chunks.length?({done:false,value:chunks[i++]}):({done:true})};}}};}
+    throw new Error('unexpected '+url);
+  });
+  get('realm').querySelector=()=>({disabled:false});
+  await vm.runInContext(traeaiSignIn,ctx);
+  await vm.runInContext('loadTraeai()',ctx);
+  // 接入页的模型下拉要并上国际版目录，且示例按 traeai- 前缀认出这条通道。
+  assert.deepEqual(get('access-model').children.map(o=>o.value),['traeai-gpt-5.4'],'接入页没合并国际版模型');
+  assert.deepEqual(get('access-model').children.map(o=>o.textContent),['Trae 国际版 · traeai-gpt-5.4'],'接入页的 realm 标签没认出国际版');
+  get('access-model').value='traeai-gpt-5.4';
+  vm.runInContext("protocol='anthropic';renderAccess()",ctx);
+  assert.match(get('api-example').textContent,/Trae 国际版 通道仅支持 OpenAI 协议/,'Anthropic 协议下的国际版拒绝文案不对');
+  vm.runInContext("protocol='openai';renderAccess()",ctx);
+  assert.match(get('api-example').textContent,/traeai- 前缀分流/,'国际版调用示例的注释没写清分流前缀');
+  get('traeai-model').value='traeai-gpt-5.4';
+  get('traeai-prompt').value='你好';
+  await get('traeai-form').handlers.submit({preventDefault(){}});
+  assert.equal(posts,1,'国际版对话没有发出请求');
+  assert.equal(body.model,'traeai-gpt-5.4');
+  assert.match(vm.runInContext('traeaiHistory[1].content',ctx),/国际版 回答/);
+  assert.match(get('traeai-usage').textContent,/输入 2 · 输出 3 · 总计 5/);
+  assert.match(get('traeai-usage').textContent,/本次通道：Trae 国际版/);
+  assert.equal(vm.runInContext('activeRequest',ctx),undefined,'对话结束后控件停在锁定态');
+  // go-chat 必须按 traeai- 前缀落到国际版页签，而不是国内版那张表。
+  get('access-model').value='traeai-gpt-5.4';vm.runInContext('renderAccess()',ctx);
+  await get('go-chat').handlers.click();
+  assert.equal(vm.runInContext('page',ctx),'traeai','go-chat 没把国际版模型带去国际版页签');
+  assert.equal(get('traeai-model').value,'traeai-gpt-5.4','go-chat 没有预选模型');
+});
+
+// 通道公共面的反查：名单一律从 app.js 的 usageChannelOrder 现读，逐条回查页面与脚本里
+// 那几处「漏了不会报错、只会静默缺数据/缺颜色」的落点。写死字面名单在本仓实测导致过
+// 测试一直绿而缺陷一直在页面上（autoclaw、trae 接入时都踩过）。
+test('通道公共面：每条通道都要有自己的页签、模型表、状态区与脚本归类，漏一处就静默缺数据',()=>{
+  const js=readFileSync(__dirname+'/web/app.js','utf8');
+  const html=readFileSync(__dirname+'/web/index.html','utf8');
+  const channels=channelList(js);
+  const {ctx}=taskFixture(async()=>({ok:true,status:200,json:async()=>({}),headers:{get:()=>null}}));
+  const call=expr=>vm.runInContext(expr,ctx);
+  // 脚本侧：模型表配置、页面名、探活归类、色束翻译，都要认得每一条通道。
+  for(const channel of channels){
+    const tableKey=channel==='workbuddy'?'core':channel;
+    assert.equal(call(`!!modelChannels[${JSON.stringify(tableKey)}]`),true,
+      `modelChannels 里缺 ${tableKey}：这条通道的模型表渲染会读到 undefined 直接抛错`);
+    assert.ok(html.includes('id="'+call(`modelChannels[${JSON.stringify(tableKey)}].body`)+'"'),
+      `modelChannels.${tableKey}.body 指向的表体在 index.html 里不存在`);
+    assert.ok(html.includes('id="'+call(`modelChannels[${JSON.stringify(tableKey)}].empty`)+'"'),
+      `modelChannels.${tableKey}.empty 指向的空提示在 index.html 里不存在`);
+    assert.ok(call(`typeof pageNames[${JSON.stringify(channel)}]==='string'&&pageNames[${JSON.stringify(channel)}].length>0`),
+      `pageNames 里缺 ${channel}：面包屑会显示原始通道名`);
+    assert.ok(call(`Object.values(healthChannelKeys).includes(${JSON.stringify(channel)})`),
+      `healthChannelKeys 里没有 ${channel}：后台探活的结论映射不到这条通道，概览会一直显示「未加载」`);
+    assert.equal(call(`[${JSON.stringify(channel)}].includes(channelKeyOf(${JSON.stringify(channel)}))`),true,
+      `channelKeyOf(${channel}) 翻译完不在通道名单里：那一格拿不到色束`);
+    if(channel==='workbuddy')continue;
+    // 公共模型前缀：与后端 routeChannel 同一口径，所以现读 probeChannelNames 的值，
+    // 表里没有的（opencode）通道名本身就是前缀。zcode 是唯一前缀与通道名不同的一条（glm-）。
+    const prefix=call(`probeChannelNames[${JSON.stringify(channel)}]||${JSON.stringify(channel)}`);
+    const realm=call(`modelRealm({id:${JSON.stringify(prefix+'-demo')}})`);
+    assert.notEqual(realm,'cn',
+      `modelRealm 的推断链不认 ${prefix}- 前缀：没有 realm 字段的 ${channel} 模型会被算成国内版`);
+    assert.ok(call(`realmLabel(${JSON.stringify(realm)}).length>0`),
+      `realmLabel 里缺 ${realm}：接入页下拉会少掉这一段的 realm 标签`);
+  }
+  // 页面侧：每条旁路通道那一套元素 id，少一个就是脚本读到 null。
+  const suffixes=['disabled','content','status-badge','status-text','view-status','model','models-body','models-empty','form','prompt','messages','stop','send','usage'];
+  for(const channel of channels.filter(c=>c!=='workbuddy')){
+    assert.ok(html.includes('data-view="'+channel+'"'),`侧栏里没有 ${channel} 的导航项`);
+    assert.ok(html.includes('id="nav-'+channel+'"'),`侧栏 ${channel} 导航项缺 id，脚本没法压暗它`);
+    assert.ok(html.includes('data-page="'+channel+'"'),`内容区里没有 ${channel} 的页面区块`);
+    assert.ok(html.includes('data-refresh-for="'+channel+'"'),`顶栏里没有 ${channel} 的刷新按钮`);
+    for(const suffix of suffixes)
+      assert.ok(html.includes('id="'+channel+'-'+suffix+'"'),`index.html 缺 ${channel}-${suffix}：脚本会给 null 绑事件或读不到元素`);
+  }
+  // 探测按钮名单与路由标签同步：probeChannelNames 的每个值都要有对应的路由通道名。
+  for(const routeName of call('Object.values(probeChannelNames)'))
+    assert.ok(call(`!!routeChannelLabels[${JSON.stringify(routeName)}]`),
+      `routeChannelLabels 里缺 ${routeName}：别名页的通道列会显示原始名`);
+  // 反方向也要查：页面上每颗探测按钮和每条进度行都得在 probeChannelNames 里有一行。
+  // 只查单向的话，从名单里漏掉一条会让页面剩下一颗点了没人读进度、也没绑事件的死按钮。
+  for(const pattern of [/id="probe-([a-z]+)"/g,/id="probe-([a-z]+)-progress"/g]){
+    for(const m of html.matchAll(pattern))
+      assert.ok(call(`Object.keys(probeChannelNames).includes(${JSON.stringify(m[1])})`),
+        `probeChannelNames 里没有 ${m[1]}，页面上那颗探测按钮/进度行就没人认领`);
+  }
+  // 状态缓存这一层只写一次映射（channelStatusOf），概览行、通道卡片、模型数都从这里取；
+  // 漏一条通道的后果是那一行永远读不到模型数，且页面不报错。
+  for(const channel of channels.filter(c=>c!=='workbuddy')){
+    call(`${channel}Status={enabled:true,reachable:true,model_count:7}`);
+    assert.equal(call(`(channelStatusOf(${JSON.stringify(channel)})||{}).model_count`),7,
+      `channelStatusOf 不认 ${channel}：概览与卡片取不到这条通道的已加载状态，会一直显示「未加载」`);
+  }
+  // signedOut 的逐通道复位：缓存不清，退出再登录就会把上一条会话的读数留在页面上。
+  vm.runInContext('signedOut()',ctx);
+  for(const channel of channels.filter(c=>c!=='workbuddy'))
+    assert.equal(call(`channelStatusOf(${JSON.stringify(channel)})`),null,
+      `signedOut 没有复位 ${channel} 的状态缓存：这一条的整行复位漏写了`);
+});
+
+test('通道总览与卡片按通道名单出行：启用判据漏掉任何一条通道，那一行就静默消失',async()=>{
+  const channels=channelList(readFileSync(__dirname+'/web/app.js','utf8'));
+  const {ctx,get}=taskFixture(async()=>{throw new Error('本用例不该发请求');});
+  // 把每条通道的启用位都打开，行集合应当正好等于通道名单——renderOverview 与 renderCards
+  // 各自那一串三元判据漏一条，对应那一行/那一张卡就没了，而且不会报错。
+  vm.runInContext(channels.filter(c=>c!=='workbuddy').map(c=>`${c}Enabled=true`).join(';')+';overviewUsageItems=[];renderOverview()',ctx);
+  const names=channels.map(c=>vm.runInContext(`usageChannelNames[${JSON.stringify(c)}]`,ctx));
+  assert.deepEqual(get('overview-channels-body').children.map(tr=>tr.children[0].textContent),names,
+    '通道总览的行集合与通道名单不一致：renderOverview 的启用判据漏了一条通道');
+  assert.deepEqual(get('overview-cards').children.map(card=>card.children[0].children[0].textContent),names,
+    '通道卡片的集合与通道名单不一致：renderCards 的启用判据漏了一条通道');
+  // 每行的色束也要挂上，否则那一行在谱线之外没有颜色。
+  assert.deepEqual(get('overview-channels-body').children.map(tr=>tr.className),
+    channels.map(c=>'ch-'+c+' ch-band'),'通道总览的行没按通道认色');
+});
+
+test('traeai 的探测结论回灌到自己的模型表，不会静默丢掉速度',async()=>{
+  const {ctx,get}=traeaiFixture(traeaiReachable);
+  await vm.runInContext(traeaiSignIn,ctx);
+  await vm.runInContext('loadTraeai()',ctx);
+  vm.runInContext("probeSnapshot={running:false,done:1,total:1,channels:{traeai:{'traeai-gpt-5.4':{ok:true,durationMs:1000,tokensPerSec:12,source:'probe'}}}};applyProbeResults()",ctx);
+  const row=get('traeai-models-body').children[0];
+  assert.equal(row.children[2].children[0].textContent,'可用','探测结论没落到国际版模型表的状态列');
+  assert.match(row.children[4].textContent,/12\.0 tok\/s/,'探测速度没落到国际版模型表的速度列');
 });
 
 // 小浣熊通道：与 trae 同为标准 HTTP 状态码控制链路，但没有网页登录（桌面登录态依赖宿主
@@ -3464,6 +3828,7 @@ test('overview page, probe buttons and the speed column exist in the page shell'
   // 探测按钮的名单从 app.js 的 probeChannelNames 现读：先前这里写死四颗，
   // Trae 接入时页面补了按钮、脚本补了监听，这条测试一直没去看第三处。
   const js=readFileSync(__dirname+'/web/app.js','utf8');
+  const channels=channelList(js);
   const probeNames=objectKeysFrom(js,'probeChannelNames');
   for(const name of probeNames){
     assert.ok(html.includes('id="probe-'+name+'"'),'探测按钮 probe-'+name+' 不存在，脚本会给 undefined 绑事件');
@@ -3471,8 +3836,16 @@ test('overview page, probe buttons and the speed column exist in the page shell'
   }
   assert.ok(!html.includes('id="probe-opencode"'),'opencode must not get a manual probe button');
   // 允许表头带 class（数值列要挂 class="num" 才能和单元格同侧对齐），只认列名本身。
-  // 7 张通道模型表 + 别名表（别名也要显示速度），合计 8。
-  assert.equal((html.match(/<th[^>]*>速度<\/th>/g)||[]).length,8,'every model table and the alias table must carry the speed column');
+  // 速度列的张数从通道名单现读：每条 usage 通道一张模型表（core 表就是 WorkBuddy 那张），
+  // 再加别名表。先前这里写死一个数字，新增通道补了表却没数这条，测试一直绿、页面少一列。
+  const modelTableIds=['core',...channels.filter(c=>c!=='workbuddy')];
+  for(const id of modelTableIds){
+    const line=html.split('\n').find(l=>l.includes('id="'+id+'-models-body"'));
+    assert.ok(line,`index.html 里找不到 ${id}-models-body 这张模型表`);
+    assert.ok(/<th[^>]*>速度<\/th>/.test(line),`${id} 模型表缺速度列`);
+  }
+  assert.equal((html.match(/<th[^>]*>速度<\/th>/g)||[]).length,modelTableIds.length+1,
+    '速度列的张数不等于「每条通道一张模型表 + 别名表」，有表漏列或多出一张没人认领的表');
   assert.match(html,/gateway-auto/,'routes page still advertises the bare auto name');
   // 改造后的界面契约：常驻无障碍播报区存在，逐节的营销小标题不再回来。
   assert.match(html,/id="announce"[^>]*aria-live="polite"/,'persistent live region missing');
@@ -3529,7 +3902,8 @@ test('changing page starts the new view at its own top', () => {
 test('页面级刷新按钮吸顶，落在网关状态左侧且只有当前页那一个可见', () => {
   const html=readFileSync(__dirname+'/web/index.html','utf8');
   const rail=html.match(/<header class="topbar">[\s\S]*?<\/header>/)[0];
-  const ids=['refresh','zcode-refresh','qoder-refresh','opencode-refresh','ccr-refresh','autoclaw-refresh','trae-refresh','raccoon-refresh','usage-refresh','routes-refresh'];
+  // 名单从通道真源现读，不在测试里再抄一份：漏一条就是「页面上那颗按钮没人验过」。
+  const ids=['refresh',...channelList(readFileSync(__dirname+'/web/app.js','utf8')).filter(c=>c!=='workbuddy').map(c=>c+'-refresh'),'ccr-refresh','usage-refresh','routes-refresh'];
   const stateAt=rail.indexOf('id="service-state"');
   assert.ok(stateAt>0,'顶栏里找不到网关状态，无从判断左右');
   for(const id of ids){
@@ -3542,7 +3916,7 @@ test('页面级刷新按钮吸顶，落在网关状态左侧且只有当前页�
 
   const {ctx,get}=taskFixture(async()=>({ok:true,status:200,json:async()=>({}),headers:{get:()=>null}}));
   const visible=()=>ids.filter(id=>get(id).hidden===false);
-  for(const [view,id] of [['overview','refresh'],['zcode','zcode-refresh'],['qoder','qoder-refresh'],['opencode','opencode-refresh'],['ccr','ccr-refresh'],['autoclaw','autoclaw-refresh'],['trae','trae-refresh'],['raccoon','raccoon-refresh'],['usage','usage-refresh'],['routes','routes-refresh']]){
+  for(const [view,id] of [['overview','refresh'],...channelList(readFileSync(__dirname+'/web/app.js','utf8')).filter(c=>c!=='workbuddy').map(c=>[c,c+'-refresh']),['ccr','ccr-refresh'],['usage','usage-refresh'],['routes','routes-refresh']]){
     vm.runInContext(`showPage('${view}')`,ctx);
     assert.deepEqual(visible(),[id],`切到 ${view} 页时顶栏可见的刷新按钮不是唯一那一个`);
   }
@@ -4029,7 +4403,7 @@ test('旁路通道的能力备注与代码口径一致：写「不采集积分�
   const html=readFileSync(__dirname+'/web/index.html','utf8');
   const js=readFileSync(__dirname+'/web/app.js','utf8');
   // trae 不进 modelNotes：它有真实倍率、参与开关，备注口径与三家免费通道相反。
-  const modelNotes={autoclaw:'autoclaw-models-note',raccoon:'raccoon-models-note',opencode:'opencode-models-note'};
+  const modelNotes={autoclaw:'autoclaw-models-note',raccoon:'raccoon-models-note',opencode:'opencode-models-note',freellm:'freellm-models-note'};
   const tag=id=>new RegExp('<p id="'+id+'"[^>]*>([\\s\\S]*?)</p>');
   // 从 app.js 现读「哪些通道不采集积分倍率」，不在测试里再抄一份名单。
   const stmt=js.match(/function channelHasCredits\(channel\)\{return ([^}]+)\}/);
@@ -4055,13 +4429,29 @@ test('旁路通道的能力备注与代码口径一致：写「不采集积分�
   assert.doesNotMatch(traeNote[0],/hidden/,`trae-models-note 的备注带了 hidden，等于没写`);
   // 隐藏本地自定义模型的承诺也要写在页面上，否则用户会去 IDE 里加的模型里找。
   assert.match(traeNote[1],/自定义模型/,`trae 的模型备注没说明本地自定义模型为什么不列出来`);
+  // 国际版同样采倍率（上游 display_contact_config 的 consumption_rate），备注口径与国内版
+  // 同侧：不能写「免费」「不采集积分倍率」。差异单独钉住：国际版保留上游的自定义/BYOK
+  // 槽位条目，所以国内版那句「自定义模型不列在这里」不能照抄过来。
+  const traeaiNote=html.match(tag('traeai-models-note'));
+  assert.ok(traeaiNote,'index.html 缺 traeai-models-note：这条通道没说明倍率怎么用');
+  assert.match(traeaiNote[1],/consumption_rate/,`traeai 的模型备注没说清倍率从哪个字段来`);
+  assert.match(traeaiNote[1],/默认启用/,`traeai 的模型备注没说明模型默认启用`);
+  assert.doesNotMatch(traeaiNote[1],/免费/,`traeai 不是免费通道，备注不能写「免费」`);
+  assert.doesNotMatch(traeaiNote[1],/不采集积分倍率/,`traeai 采集倍率，备注不能写「不采集积分倍率」`);
+  assert.doesNotMatch(traeaiNote[0],/hidden/,`traeai-models-note 的备注带了 hidden，等于没写`);
+  assert.match(traeaiNote[1],/BYOK|自定义/,`traeai 的模型备注没说明国际版保留上游自定义槽位，会被当成国内版那种剔除口径`);
   // 多账号旁路通道：必须写明没有「独锁」，否则用户会去找一个不存在的按钮。
-  for(const id of ['autoclaw-accounts-note','trae-accounts-note','raccoon-accounts-note']){
+  for(const id of ['autoclaw-accounts-note','trae-accounts-note','traeai-accounts-note','raccoon-accounts-note']){
     const el=html.match(tag(id));
     assert.ok(el,`index.html 缺 ${id}`);
     assert.match(el[1],/独锁/,`${id} 没说明该通道没有独锁`);
     assert.doesNotMatch(el[0],/hidden/,`${id} 的备注带了 hidden，等于没写`);
   }
+  // 结构反查：页面上每多一张旁路账号表，就得配一条同前缀的独锁说明。新通道补了表忘了
+  // 备注时这条会红，而不是等上面那份名单和页面各自漂移。
+  const noteless=[...html.matchAll(/id="([a-z]+-)accounts-body"/g)].map(m=>m[1])
+    .filter(prefix=>!html.includes('id="'+prefix+'accounts-note"'));
+  assert.deepEqual(noteless,[],'有旁路账号表却没有配套的独锁备注：'+noteless.join(','));
   // 单账号通道：说明为什么不需要独锁，且点明模型停用仍可用，避免被读成「这条通道什么都没有」。
   for(const id of ['zcode-accounts-note','qoder-accounts-note']){
     const el=html.match(tag(id));
@@ -4120,4 +4510,76 @@ test('别名页两处口径：状态徽章写「已启用/已停用」，通道�
   // 别名表的状态徽章与模型表同口径：同一行还有「停用/启用」按钮，撞词会分不清状态和动作。
   const js=readFileSync(__dirname+'/web/app.js','utf8');
   assert.match(js,/entry\.enabled\?'已启用':'已停用'/,'别名表状态徽章没用「已启用/已停用」');
+});
+
+// 接入页（renderAccess / go-chat）是两处「按通道枚举」的表，历史上每加一条通道就漏一次：
+// freellm 两条都漏（选了它的模型点「前往测试」会掉进 WorkBuddy 对话框），traeai 差点同样。
+// 这里用 usageChannelOrder 反向扫，新增通道只要没进派发链就红，不靠人记得顺手改。
+test('接入页的通道枚举覆盖每条旁路：go-chat 派发链与调用示例注释前缀',()=>{
+  const src=readFileSync(__dirname+'/web/app.js','utf8');
+  const channels=channelList(src).filter(c=>c!=='workbuddy');
+  const prefixByChannel={zcode:'glm-',qoder:'qoder-',opencode:'opencode-',autoclaw:'autoclaw-',
+    trae:'trae-',traeai:'traeai-',raccoon:'raccoon-',freellm:'freellm-'};
+  const unregistered=channels.filter(c=>!prefixByChannel[c]);
+  assert.deepEqual(unregistered,[],`这些通道没登记前缀映射，判据自身需要先补：${unregistered.join(', ')}`);
+  const dispatch=(src.split("$('go-chat').addEventListener")[1]||'').split('\n')[0];
+  assert.ok(dispatch.length>50,'找不到 go-chat 的派发链（被拆行了？锚点需要跟着改）');
+  for(const c of channels){
+    const p=prefixByChannel[c];
+    assert.ok(dispatch.includes(`startsWith('${p}')`),
+      `go-chat 派发链缺 ${p} 分支：接入页选 ${p}* 点「前往测试」会被塞进 WorkBuddy 对话框`);
+  }
+  // 调用示例的注释前缀也要每条通道有自己那句，否则落到 core 那句「响应头 X-Account」上——
+  // 旁路根本不挂那两个头，等于给用户一份可复制但必错的说明。
+  const exampleBlock=src.split('let prefix=')[1]||'';
+  for(const c of channels){
+    const p=prefixByChannel[c];
+    assert.ok(exampleBlock.includes(`startsWith('${p}')`)||exampleBlock.includes(`is${c[0].toUpperCase()}${c.slice(1)}`)||exampleBlock.includes(`is${p.replace(/-$/,'').replace(/(^|-)(\w)/g,(_,a,b)=>b.toUpperCase())}`),
+      `调用示例注释里没有 ${p} 自己的那一行`);
+  }
+});
+
+test('freellm 不进「仅支持 OpenAI 协议」名单：上游自己实现了 /v1/messages 与 /v1/responses',()=>{
+  const src=readFileSync(__dirname+'/web/app.js','utf8');
+  const line=(src.split('\n').find(l=>l.includes('if(anthropic&&('))||'');
+  assert.ok(line,'renderAccess 里找不到 Anthropic 拦截那一行（锚点被改了？）');
+  assert.ok(!/freellm/.test(line),
+    'freellm 被加进了 Anthropic 拒绝名单——但 FreeLLMAPI 上游实现了 /v1/messages（server/src/routes/anthropic.ts），拒绝它等于替用户关掉一条能用协议');
+  const readme=readFileSync(__dirname+'/../README.md','utf8');
+  const exclusion=(readme.split('\n').find(l=>l.includes('旁路模型不适用')||l.includes('Anthropic 协议只覆盖'))||'');
+  assert.ok(!/FreeLLMAPI|freellm/i.test(exclusion),'README 的 Anthropic 排除名单里出现了 FreeLLMAPI，与上游实现矛盾');
+});
+
+// freellm 状态面板读的是 /admin/freellm 的载荷。这一处已经栽过两次：
+// 页面读 session.unified_key_hint / session.last_chat_ok / healthy_keys，
+// 后端从来没有发过这些字段，于是页签永远显示「—」和「未测试」——
+// 看着像接线好了，实际一行读数都取不到。判据从两侧源码现读，不写死字段名。
+test('freellm 页读的每个 session 字段后端都真发得出',()=>{
+  const app=readFileSync(__dirname+'/web/app.js','utf8');
+  const go=readFileSync(__dirname+'/freellm.go','utf8');
+  const block=(name)=>{
+    const i=app.indexOf('function '+name+'(');
+    assert.ok(i>=0,`app.js 里缺 ${name}`);
+    const j=app.indexOf('\nfunction ',i+1);
+    return app.slice(i,j<0?app.length:j);
+  };
+  const keys=new Set();
+  for(const fn of ['renderFreellm','renderFreellmHealth']){
+    for(const m of block(fn).matchAll(/session\.([a-z_][a-z0-9_]*)/g)) keys.add(m[1]);
+  }
+  const missing=[...keys].filter((k)=>!go.includes(`"${k}"`));
+  assert.ok(keys.size>=4,'没解析出字段，判据本身失效：'+JSON.stringify([...keys]));
+  assert.deepEqual(missing,[],'后端 /admin/freellm 不发这些字段，页面却在读：'+missing.join(','));
+});
+
+// 免费池最容易误判的一点：目录有货≠能调用。状态面板必须把「可调用/目录总数」
+// 和上游给的原因档（no_upstreams_configured 等）摆出来，红灯才自带处置办法。
+test('freellm 状态面板解释「目录有货但不可调用」而不是只报在线',()=>{
+  const app=readFileSync(__dirname+'/web/app.js','utf8');
+  const i=app.indexOf('function renderFreellmHealth(');
+  assert.ok(i>=0,'缺 renderFreellmHealth');
+  const body=app.slice(i,app.indexOf('\nfunction ',i+1));
+  for(const key of ['pool_ready','pool_reason','callable_count','model_count']){
+    assert.ok(body.includes(`session.${key}`),`状态面板没读 session.${key}，会把「没配供应商 key」显示成普通在线`);
+  }
 });

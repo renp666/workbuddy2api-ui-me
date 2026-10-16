@@ -29,12 +29,17 @@ const (
 	channelOpenCode routeChannel = "opencode"
 	channelAutoClaw routeChannel = "autoclaw"
 	channelTrae     routeChannel = "trae"
-	channelRaccoon  routeChannel = "raccoon"
+	// channelTraeAI 是同一 sidecar 镜像的国际版实例（traeai-* 上游，trae.ai 账号体系）。
+	// 与国内版是两条独立通道：各自账号池、各自凭据文件目录、各自权益口径。
+	channelTraeAI  routeChannel = "traeai"
+	channelRaccoon routeChannel = "raccoon"
+	channelFreellm routeChannel = "freellm"
 )
 
 // routeChannelOrder 是页面展示与目录抓取的固定通道顺序：core 在前，
-// 让「回退核心通道」的默认目标在界面上排在最前面。
-var routeChannelOrder = []routeChannel{channelCore, channelGLM, channelQoder, channelOpenCode, channelAutoClaw, channelTrae, channelRaccoon}
+// 让「回退核心通道」的默认目标在界面上排在最前面。两条 Trae 区域相邻，
+// 国内版在前（它是既有部署的默认形态）。
+var routeChannelOrder = []routeChannel{channelCore, channelGLM, channelQoder, channelOpenCode, channelAutoClaw, channelTrae, channelTraeAI, channelRaccoon, channelFreellm}
 
 // autoModelName 是 console 自建的虚拟模型名：不在任何上游目录里，由 console
 // 在请求时按探测结论挑一条最优链路。名字带 gateway- 前缀，是为了和各通道可能
@@ -146,8 +151,12 @@ func (c routeChannel) prefix() string {
 		return autoclawModelPrefix
 	case channelTrae:
 		return traeModelPrefix
+	case channelTraeAI:
+		return traeAIModelPrefix
 	case channelRaccoon:
 		return raccoonModelPrefix
+	case channelFreellm:
+		return freellmModelPrefix
 	}
 	return ""
 }
@@ -186,8 +195,12 @@ func (c routeChannel) realm(model string) string {
 		return "autoclaw"
 	case channelTrae:
 		return "trae"
+	case channelTraeAI:
+		return "traeai"
 	case channelRaccoon:
 		return "raccoon"
+	case channelFreellm:
+		return "freellm"
 	}
 	if strings.HasPrefix(model, "global:") {
 		return "global"
@@ -240,7 +253,7 @@ const routeBodyLimit = 256 << 10
 
 // reservedAliasPrefixes 是别名不得占用的前缀：各旁路通道的公共前缀加上 core 的
 // 两个命名空间。别名解析发生在前缀分流之前，占用这些前缀会静默遮蔽同名真实模型。
-var reservedAliasPrefixes = []string{zcodeModelPrefix, qoderModelPrefix, opencodeModelPrefix, autoclawModelPrefix, traeModelPrefix, raccoonModelPrefix, "cn:", "global:"}
+var reservedAliasPrefixes = []string{zcodeModelPrefix, qoderModelPrefix, opencodeModelPrefix, autoclawModelPrefix, traeModelPrefix, traeAIModelPrefix, raccoonModelPrefix, freellmModelPrefix, "cn:", "global:"}
 
 // validateRouteEntries 校验整份配置，返回第一条可读的错误文案直接给页面用。
 // 校验失败一律拒绝写入，不做「尽力而为的部分生效」。
@@ -311,9 +324,9 @@ func validateRouteStrategy(entry routeEntry) error {
 // 主目标与每一条备用共用这套口径，避免两处判断漂移。
 func validateTarget(channel routeChannel, model string) error {
 	switch channel {
-	case channelCore, channelGLM, channelQoder, channelOpenCode, channelAutoClaw, channelTrae, channelRaccoon:
+	case channelCore, channelGLM, channelQoder, channelOpenCode, channelAutoClaw, channelTrae, channelTraeAI, channelRaccoon, channelFreellm:
 	default:
-		return errors.New("通道必须是 core、glm、qoder、opencode、autoclaw、trae 或 raccoon")
+		return errors.New("通道必须是 core、glm、qoder、opencode、autoclaw、trae、raccoon 或 freellm")
 	}
 	if !validRouteName(model, 128, routeModelChars) {
 		return errors.New("模型名不合法：只允许字母、数字、点、下划线、冒号、连字符、空格、中点和斜杠，长度 1-128")
@@ -798,7 +811,7 @@ func (h *server) collectProbeCandidates(ctx context.Context) (map[routeChannel][
 			}
 		}
 	}
-	for _, channel := range []routeChannel{channelCore, channelGLM, channelQoder, channelAutoClaw, channelTrae, channelRaccoon} {
+	for _, channel := range []routeChannel{channelCore, channelGLM, channelQoder, channelAutoClaw, channelTrae, channelTraeAI, channelRaccoon, channelFreellm} {
 		results := h.probe.channelResults(channel)
 		if len(results) == 0 {
 			continue
@@ -1320,8 +1333,12 @@ func (h *server) channelEnabled(c routeChannel) bool {
 		return h.cfg.AutoClawURL != nil
 	case channelTrae:
 		return h.cfg.TraeURL != nil
+	case channelTraeAI:
+		return h.cfg.TraeAIURL != nil
 	case channelRaccoon:
 		return h.cfg.RaccoonURL != nil
+	case channelFreellm:
+		return h.cfg.FreellmURL != nil
 	}
 	return false
 }
@@ -1340,8 +1357,12 @@ func (h *server) channelUpstream(c routeChannel) (*url.URL, string) {
 		return h.cfg.AutoClawURL, h.cfg.AutoClawKey
 	case channelTrae:
 		return h.cfg.TraeURL, h.cfg.TraeKey
+	case channelTraeAI:
+		return h.cfg.TraeAIURL, h.cfg.TraeAIKey
 	case channelRaccoon:
 		return h.cfg.RaccoonURL, h.cfg.RaccoonKey
+	case channelFreellm:
+		return h.cfg.FreellmURL, h.cfg.FreellmKey
 	}
 	return h.cfg.CoreURL, h.cfg.APIKey
 }
@@ -1400,6 +1421,12 @@ func (h *server) fetchChannelModels(ctx context.Context, c routeChannel) ([]stri
 	// 目录与探测必须用同一份「账号真能服务」的清单，因此这里复用同一判据。
 	if c == channelGLM {
 		list = filterZcodeModels(list, h.zcodeEntitlements(ctx), h.zcodePlan(ctx))
+	}
+	// FreeLLMAPI 的目录是「全网能力清单」，不是「本实例可服务清单」：实测无供应商
+	// key 时 259 条里 257 条 execution_status=needsKey。拿原始目录去播种，探测与别名
+	// 选择器都会被钉在一批必然 503 的目标上，与 GLM 那条坑同构，所以共用同一判据。
+	if c == channelFreellm {
+		list = filterFreellmModels(list)
 	}
 	ids := make([]string, 0, len(list))
 	for _, item := range list {

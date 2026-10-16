@@ -27,18 +27,18 @@
     --ch 是本色（描边/色点/色带），--ch-ink 是浅色底上的文字版，--ch-wash 是极浅底。
     文字版一律 ≥4.5:1（ink 落在各自 wash 上）；这条不靠注释担保，由 web_test.cjs
     从下面的色值现算对比度逐条把关。本色只做图形不做正文。 */
- --ch-workbuddy:#4f52d6;--ch-zcode:#0a7f96;--ch-qoder:#7a3fc4;--ch-opencode:#c4356f;--ch-autoclaw:#8a5a00;--ch-trae:#3f7a1e;--ch-raccoon:#a14e2c;
- --ch-workbuddy-ink:#3d40a8;--ch-zcode-ink:#076b80;--ch-qoder-ink:#6a36ab;--ch-opencode-ink:#b02f63;--ch-autoclaw-ink:#6e4700;--ch-trae-ink:#326219;--ch-raccoon-ink:#86401f;
- --ch-workbuddy-wash:#eef0fa;--ch-zcode-wash:#e6f4f7;--ch-qoder-wash:#f2ecfb;--ch-opencode-wash:#fbeaf1;--ch-autoclaw-wash:#faf3e2;--ch-trae-wash:#edf4e7;--ch-raccoon-wash:#f8efe8;
+ --ch-workbuddy:#4f52d6;--ch-zcode:#0a7f96;--ch-qoder:#7a3fc4;--ch-opencode:#c4356f;--ch-freellm:#17795a;--ch-autoclaw:#8a5a00;--ch-trae:#3f7a1e;--ch-traeai:#1a5fc0;--ch-raccoon:#a14e2c;
+ --ch-workbuddy-ink:#3d40a8;--ch-zcode-ink:#076b80;--ch-qoder-ink:#6a36ab;--ch-opencode-ink:#b02f63;--ch-freellm-ink:#135f47;--ch-autoclaw-ink:#6e4700;--ch-trae-ink:#326219;--ch-traeai-ink:#124c96;--ch-raccoon-ink:#86401f;
+ --ch-workbuddy-wash:#eef0fa;--ch-zcode-wash:#e6f4f7;--ch-qoder-wash:#f2ecfb;--ch-opencode-wash:#fbeaf1;--ch-freellm-wash:#e9f5f0;--ch-autoclaw-wash:#faf3e2;--ch-trae-wash:#edf4e7;--ch-traeai-wash:#e8f1fb;--ch-raccoon-wash:#f8efe8;
  /* --ch-lit 是暗底（机架面 --sidebar）上的文字版，同样由那条测试实测过 4.5:1。
     概览卡片改走浅色内容区后，这一版留给机架面（侧栏/顶栏）用：色值与对比度一并保留，
     免得哪天要在暗底上写通道名时再回头配一遍。 */
- --ch-workbuddy-lit:#8f92ff;--ch-zcode-lit:#4fd6e8;--ch-qoder-lit:#b78cf5;--ch-opencode-lit:#ff8fb8;--ch-autoclaw-lit:#e8b45a;--ch-trae-lit:#9ad86a;--ch-raccoon-lit:#e89a6a;
+ --ch-workbuddy-lit:#8f92ff;--ch-zcode-lit:#4fd6e8;--ch-qoder-lit:#b78cf5;--ch-opencode-lit:#ff8fb8;--ch-freellm-lit:#3fd9a2;--ch-autoclaw-lit:#e8b45a;--ch-trae-lit:#9ad86a;--ch-traeai-lit:#7fc4f7;--ch-raccoon-lit:#e89a6a;
  /* 谱线按色相排（靛→紫罗兰→琥珀→赭→草→青→玫红），不是 usageChannelOrder 的通道顺序：
     隔色相邻会断成几段色条，顺色相才读成一道连续的光。列表顺序仍以通道为准。
     新通道要同时补进这两条谱线，缺一处谱线就少一束，测试按通道全量反查。 */
- --spectrum:linear-gradient(90deg,var(--ch-workbuddy) 0%,var(--ch-qoder) 24%,var(--ch-autoclaw) 40%,var(--ch-raccoon) 52%,var(--ch-trae) 63%,var(--ch-zcode) 76%,var(--ch-opencode) 100%);
- --spectrum-v:linear-gradient(180deg,var(--ch-workbuddy) 0%,var(--ch-qoder) 24%,var(--ch-autoclaw) 40%,var(--ch-raccoon) 52%,var(--ch-trae) 63%,var(--ch-zcode) 76%,var(--ch-opencode) 100%);
+ --spectrum:linear-gradient(90deg,var(--ch-workbuddy) 0%,var(--ch-qoder) 20%,var(--ch-freellm) 33%,var(--ch-autoclaw) 46%,var(--ch-raccoon) 56%,var(--ch-trae) 66%,var(--ch-zcode) 78%,var(--ch-traeai) 88%,var(--ch-opencode) 100%);
+ --spectrum-v:linear-gradient(180deg,var(--ch-workbuddy) 0%,var(--ch-qoder) 20%,var(--ch-freellm) 33%,var(--ch-autoclaw) 46%,var(--ch-raccoon) 56%,var(--ch-trae) 66%,var(--ch-zcode) 78%,var(--ch-traeai) 88%,var(--ch-opencode) 100%);
  --sidebar:#0f1120;
  --sidebar-hi:#262b50;
  --sidebar-ink:#d3d6ee;
@@ -105,8 +105,10 @@ code{font-family:var(--font-mono);font-size:.92em}
 .ch-zcode{--ch:var(--ch-zcode);--ch-ink:var(--ch-zcode-ink);--ch-wash:var(--ch-zcode-wash);--ch-lit:var(--ch-zcode-lit)}
 .ch-qoder{--ch:var(--ch-qoder);--ch-ink:var(--ch-qoder-ink);--ch-wash:var(--ch-qoder-wash);--ch-lit:var(--ch-qoder-lit)}
 .ch-opencode{--ch:var(--ch-opencode);--ch-ink:var(--ch-opencode-ink);--ch-wash:var(--ch-opencode-wash);--ch-lit:var(--ch-opencode-lit)}
+.ch-freellm{--ch:var(--ch-freellm);--ch-ink:var(--ch-freellm-ink);--ch-wash:var(--ch-freellm-wash);--ch-lit:var(--ch-freellm-lit)}
 .ch-autoclaw{--ch:var(--ch-autoclaw);--ch-ink:var(--ch-autoclaw-ink);--ch-wash:var(--ch-autoclaw-wash);--ch-lit:var(--ch-autoclaw-lit)}
 .ch-trae{--ch:var(--ch-trae);--ch-ink:var(--ch-trae-ink);--ch-wash:var(--ch-trae-wash);--ch-lit:var(--ch-trae-lit)}
+.ch-traeai{--ch:var(--ch-traeai);--ch-ink:var(--ch-traeai-ink);--ch-wash:var(--ch-traeai-wash);--ch-lit:var(--ch-traeai-lit)}
 .ch-raccoon{--ch:var(--ch-raccoon);--ch-ink:var(--ch-raccoon-ink);--ch-wash:var(--ch-raccoon-wash);--ch-lit:var(--ch-raccoon-lit)}
 /* 通道名单元格：色点由 ::before 画，不另起 <span>——文字仍是这个单元格的唯一子节点，
    读屏念出来也只有通道名，不会多出一段无意义的点。 */
@@ -200,8 +202,10 @@ button.badge:focus-visible{outline:2px solid var(--focus);outline-offset:2px}
 .stroke-zcode{stroke:var(--ch-zcode)}
 .stroke-qoder{stroke:var(--ch-qoder)}
 .stroke-opencode{stroke:var(--ch-opencode)}
+.stroke-freellm{stroke:var(--ch-freellm)}
 .stroke-autoclaw{stroke:var(--ch-autoclaw)}
 .stroke-trae{stroke:var(--ch-trae)}
+.stroke-traeai{stroke:var(--ch-traeai)}
 .stroke-raccoon{stroke:var(--ch-raccoon)}
 /* viewBox 会被 .trend-svg 的 width:100% 等比放大，stroke-width:2 跟着一起变粗，
    宽屏上线糊成一片。non-scaling-stroke 把线宽钉回 2 个 CSS 像素，与缩放无关。 */
@@ -211,8 +215,10 @@ button.badge:focus-visible{outline:2px solid var(--focus);outline-offset:2px}
 .fill-zcode{fill:var(--ch-zcode)}
 .fill-qoder{fill:var(--ch-qoder)}
 .fill-opencode{fill:var(--ch-opencode)}
+.fill-freellm{fill:var(--ch-freellm)}
 .fill-autoclaw{fill:var(--ch-autoclaw)}
 .fill-trae{fill:var(--ch-trae)}
+.fill-traeai{fill:var(--ch-traeai)}
 .fill-raccoon{fill:var(--ch-raccoon)}
 
 /* ---------- 页面骨架 ---------- */
@@ -273,8 +279,10 @@ button.badge:focus-visible{outline:2px solid var(--focus);outline-offset:2px}
 .sw-zcode{background:var(--ch-zcode)}
 .sw-qoder{background:var(--ch-qoder)}
 .sw-opencode{background:var(--ch-opencode)}
+.sw-freellm{background:var(--ch-freellm)}
 .sw-autoclaw{background:var(--ch-autoclaw)}
 .sw-trae{background:var(--ch-trae)}
+.sw-traeai{background:var(--ch-traeai)}
 .sw-raccoon{background:var(--ch-raccoon)}
 
 /* ---------- 调用统计：Token 热力图 / 每日趋势 / 模型占比 ---------- */
@@ -327,6 +335,9 @@ button.badge:focus-visible{outline:2px solid var(--focus);outline-offset:2px}
 /* ---------- 表单 ---------- */
 .inline-form{display:flex;align-items:center;gap:12px;flex-wrap:wrap}
 .inline-form input{flex:1;min-width:180px}
+/* 导入框可能要贴一整份 storage.json（几十 KB、多行），得用 textarea 才能看清贴进去的
+   是什么；伸缩规则跟 input 同一条口径，否则它会缩成一小格。 */
+.inline-form textarea{flex:1;min-width:240px;resize:vertical;font-family:var(--font-mono);font-size:12px}
 .inline-form select{min-width:190px}
 .flow{border-top:1px solid var(--line-soft);margin-top:18px;padding-top:18px;font-size:13px}
 .flow .inline-form{margin-top:16px}

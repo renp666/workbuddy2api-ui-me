@@ -1,0 +1,62 @@
+# 可选并列旁路通道：FreeLLMAPI 免费池（freellm- 前缀）。
+# 默认不启用；宿主用 `docker compose -f docker-compose.yml -f deploy/compose.freellm.yml up -d` 接入。
+# 生产入口 docker-compose.yml 不引入本文件，因此不设开关变量时公共出口逐字节不变。
+#
+# 与其它旁路的分工（本通道的定案口径）：
+#   - sidecar 自管：供应商 key 池、池内路由与 fallback、429/5xx 熔断冷却、key 轮换、
+#     粘性会话、响应缓存与提示压缩。这些是免费池的生存策略，放在池内才有全局视野，
+#     拆到网关只会得到一个更差的碎片版本，所以网关一概不重复实现。
+#   - console 自管：别名与模型榜单、6 组排序、积分经济、timeout>=60s / retry=1、
+#     X-Routed-Via 透传日志、用量记账。网关是唯一对外口，账只能在这里收。
+#   - 模型命名空间收敛：公共模型名带 freellm- 前缀（真实 id 剥前缀后转发），不把上游
+#     上百个 id 灌进网关的别名体系，避免模型榜单被免费档噪声淹没。
+#   - 供应商白名单只 5 家（声明式配置的 keys 数组）：不注册 Cohere（试用条款禁个人用途）、
+#     不注册 NVIDIA（端点默认关闭），不建反向 custom provider（避免与棱镜成环）。
+#
+# 密钥面（重要）：FreeLLMAPI 的统一 key（freellmapi-…）由 sidecar 首启在 SQLite 里生成，
+# 没有声明式入口，取法是首启后从 ./runtime/freellm/freeapi.db 的 settings.unified_api_key
+# 读出、回填 .env 的 WB2A_FREELLMAPI_KEY——console 只认这个统一 key，不持有供应商 key。
+# 供应商 key 也不落进本仓：.env 里只写一个 FREEAPI_CONFIG_JSON（声明式配置，支持
+# FREEAPI_CONFIG_JSON 优于 FILE 路径，本仓不提交带密钥的 JSON 文件）。
+# 另需 FREEAPI_ENCRYPTION_KEY（64 位 hex）：sidecar 生产模式强制，用于加密 SQLite 里的
+# 供应商 key；生成：node -e "console.log(require('crypto').randomBytes(32).toString('hex'))"。
+services:
+  freellmapi:
+    # 上游官方镜像；本机 Docker Hub 直连不通时用 ghcr.io/tashfeenahmed/freellmapi:latest。
+    image: ${FREELLMAPI_IMAGE:-ghcr.io/tashfeenahmed/freellmapi:latest}
+    platform: linux/amd64
+    restart: unless-stopped
+    # 借 console 的网络命名空间：数据面只监听回环，宿主访问不到 7868。
+    network_mode: service:console
+    environment:
+      TZ: Asia/Shanghai
+      PORT: "7868"
+      HOST: 127.0.0.1
+      # SQLite 落在挂载卷里，重启不丢统一 key 与配额学习。
+      FREEAPI_DB_PATH: /data/freeapi.db
+      # production 镜像强制要求：加密 SQLite 里的供应商 key（64 位 hex，宿主 .env 一次性生成）。
+      ENCRYPTION_KEY: ${FREEAPI_ENCRYPTION_KEY:-}
+      # /data 是预存在的挂载目录，显式声明收紧其权限（WAL 侧车文件同权）。
+      FREEAPI_DB_DIR_HARDENING: "1"
+      # 声明式配置（白名单 key + 路由策略），由宿主 .env 注入，不进版本库。
+      FREEAPI_CONFIG_JSON: ${FREEAPI_CONFIG_JSON:-}
+      # OpenRouter 免费档 50 次/天（充值 >=10 美元升到 1000）：超额就该换池，不该重试到死。
+      PROVIDER_DAILY_REQUEST_CAP_OPENROUTER: "50"
+      PROVIDER_DAILY_REQUEST_CAP_GROQ: "500"
+      # sidecar 的分钟闸按直连对端分桶，默认 120。棱镜流量全部经 console 转发
+      # （console 为防伪造一律剥 x-forwarded-*，且旁路共享 console 的网络命名空间），
+      # 在 sidecar 眼里就是同一个回环客户端——沿用默认值等于给整条通道钉一个桶，
+      # 连每 30 秒一轮的探活也算在内。抬到 600 让它不再是瓶颈，真闸留给上面的日帽。
+      PROXY_RATE_LIMIT_RPM: "600"
+    volumes:
+      - ./runtime/freellm:/data
+
+  console:
+    environment:
+      # 设置后才分流：公共 /v1/chat/completions、/v1/messages、/v1/responses 按 model 的
+      # freellm- 前缀转发到 sidecar，/v1/models 合并其目录；/admin/* 管理链路不走这里。
+      WB2A_FREELLMAPI_URL: http://127.0.0.1:7868
+      WB2A_FREELLMAPI_KEY: ${WB2A_FREELLMAPI_KEY:-}
+    depends_on:
+      core:
+        condition: service_started

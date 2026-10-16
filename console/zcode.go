@@ -54,9 +54,18 @@ func (h *server) zcodeProxy() *httputil.ReverseProxy {
 // go to zcode-proxy, qoder-* model requests go to qoder-proxy, opencode-* model requests go to
 // the opencode sidecar, autoclaw-* model requests go to the autoclaw2api sidecar,
 // trae-* model requests go to the trae2api sidecar, raccoon-* model requests go to
-// the raccoon2api sidecar, everything else stays on core.
+// the raccoon2api sidecar, freellm-* model requests go to the FreeLLMAPI
+// sidecar, everything else stays on core.
 func (h *server) publicRouter(core *httputil.ReverseProxy) http.HandlerFunc {
-	var zcode, qoder, opencode, autoclaw, trae, raccoon *httputil.ReverseProxy
+	var zcode, qoder, opencode, autoclaw, raccoon, freellm *httputil.ReverseProxy
+	// 两条 Trae 区域通道（国内 trae-* / 国际 traeai-*）在同一处按前缀表分流。
+	// 前缀必须互不包含：traeai-gpt-5.4 不以 trae- 开头，所以两条分支不会互相剥错名字。
+	type traeDispatch struct {
+		prefix string
+		uid    string
+		proxy  *httputil.ReverseProxy
+	}
+	var traeRoutes []traeDispatch
 	if h.cfg.ZCodeURL != nil {
 		zcode = h.zcodeProxy()
 	}
@@ -69,11 +78,14 @@ func (h *server) publicRouter(core *httputil.ReverseProxy) http.HandlerFunc {
 	if h.cfg.AutoClawURL != nil {
 		autoclaw = h.autoclawProxy()
 	}
-	if h.cfg.TraeURL != nil {
-		trae = h.traeProxy()
+	for _, ch := range h.enabledTraeChannels() {
+		traeRoutes = append(traeRoutes, traeDispatch{prefix: ch.prefix, uid: string(ch.channel), proxy: h.traeProxy(ch)})
 	}
 	if h.cfg.RaccoonURL != nil {
 		raccoon = h.raccoonProxy()
+	}
+	if h.cfg.FreellmURL != nil {
+		freellm = h.freellmProxy()
 	}
 	return func(w http.ResponseWriter, r *http.Request) {
 		switch r.Method + " " + r.URL.Path {
@@ -172,15 +184,18 @@ func (h *server) publicRouter(core *httputil.ReverseProxy) http.HandlerFunc {
 				h.finishUsageCapture(capture)
 				return
 			}
-			if trae != nil && strings.HasPrefix(envelope.Model, traeModelPrefix) {
-				modified := stripTraeModelPrefix(body)
+			for _, tr := range traeRoutes {
+				if !strings.HasPrefix(envelope.Model, tr.prefix) {
+					continue
+				}
+				modified := stripTraeModelPrefix(body, tr.prefix)
 				r.Body = io.NopCloser(bytes.NewReader(modified))
 				r.ContentLength = int64(len(modified))
 				r.TransferEncoding = nil
 				r.Header.Del("Content-Length")
 				// trae 上报同样保留公共前缀模型名，便于与 zcode/core 区分通道。
-				capture := h.newUsageCapture(w, r, envelope.Model, "trae", envelope.Stream)
-				trae.ServeHTTP(capture, r)
+				capture := h.newUsageCapture(w, r, envelope.Model, tr.uid, envelope.Stream)
+				tr.proxy.ServeHTTP(capture, r)
 				h.finishUsageCapture(capture)
 				return
 			}
@@ -193,6 +208,19 @@ func (h *server) publicRouter(core *httputil.ReverseProxy) http.HandlerFunc {
 				// raccoon 上报同样保留公共前缀模型名，便于与 zcode/core 区分通道。
 				capture := h.newUsageCapture(w, r, envelope.Model, "raccoon", envelope.Stream)
 				raccoon.ServeHTTP(capture, r)
+				h.finishUsageCapture(capture)
+				return
+			}
+			if freellm != nil && strings.HasPrefix(envelope.Model, freellmModelPrefix) {
+				modified := stripFreellmModelPrefix(body)
+				r.Body = io.NopCloser(bytes.NewReader(modified))
+				r.ContentLength = int64(len(modified))
+				r.TransferEncoding = nil
+				r.Header.Del("Content-Length")
+				// freellm 上报同样保留公共前缀模型名，便于与 zcode/core 区分通道。
+				capture := h.newUsageCapture(w, r, envelope.Model, "freellm", envelope.Stream)
+				freellm.ServeHTTP(capture, r)
+				logFreellmAttribution(capture.Header(), envelope.Model)
 				h.finishUsageCapture(capture)
 				return
 			}
@@ -427,6 +455,7 @@ func (h *server) mergedModels(w http.ResponseWriter, r *http.Request, core *http
 		autoclawRaw   []json.RawMessage
 		traeRaw       []json.RawMessage
 		raccoonRaw    []json.RawMessage
+		freellmRaw    []json.RawMessage
 		zcodePlan     string
 		zcodeEntitled map[string]bool
 	)
@@ -571,39 +600,41 @@ func (h *server) mergedModels(w http.ResponseWriter, r *http.Request, core *http
 			}
 		}()
 	}
-	if h.cfg.TraeURL != nil {
+	if traeCh := h.enabledTraeChannels(); len(traeCh) > 0 {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			traeURL := *h.cfg.TraeURL
-			traeURL.Path = "/v1/models"
-			traeReq, err := http.NewRequestWithContext(r.Context(), "GET", traeURL.String(), nil)
-			if err != nil {
-				return
-			}
-			// trae2api guards /v1/models with the bridge key.
-			if h.cfg.TraeKey != "" {
-				traeReq.Header.Set("Authorization", "Bearer "+h.cfg.TraeKey)
-			}
-			list, _ := h.fetchModels(traeReq)
-			for _, item := range list {
-				// Add routing prefix so public /v1/models entries match the trae-* dispatch.
-				var entry map[string]any
-				if json.Unmarshal(item, &entry) != nil || entry == nil {
-					continue
-				}
-				id, ok := entry["id"].(string)
-				if !ok || id == "" {
-					continue
-				}
-				if !strings.HasPrefix(id, traeModelPrefix) {
-					entry["id"] = traeModelPrefix + id
-				}
-				tagged, err := json.Marshal(entry)
+			for _, ch := range traeCh {
+				traeURL := *ch.url
+				traeURL.Path = "/v1/models"
+				traeReq, err := http.NewRequestWithContext(r.Context(), "GET", traeURL.String(), nil)
 				if err != nil {
 					continue
 				}
-				traeRaw = append(traeRaw, tagModelRealm(tagged, "trae"))
+				// trae2api guards /v1/models with the bridge key.
+				if ch.key != "" {
+					traeReq.Header.Set("Authorization", "Bearer "+ch.key)
+				}
+				list, _ := h.fetchModels(traeReq)
+				for _, item := range list {
+					// Add routing prefix so public /v1/models entries match the trae-*/traeai-* dispatch.
+					var entry map[string]any
+					if json.Unmarshal(item, &entry) != nil || entry == nil {
+						continue
+					}
+					id, ok := entry["id"].(string)
+					if !ok || id == "" {
+						continue
+					}
+					if !strings.HasPrefix(id, ch.prefix) {
+						entry["id"] = ch.prefix + id
+					}
+					tagged, err := json.Marshal(entry)
+					if err != nil {
+						continue
+					}
+					traeRaw = append(traeRaw, tagModelRealm(tagged, ch.realm))
+				}
 			}
 		}()
 	}
@@ -643,6 +674,45 @@ func (h *server) mergedModels(w http.ResponseWriter, r *http.Request, core *http
 			}
 		}()
 	}
+	if h.cfg.FreellmURL != nil {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			freellmURL := *h.cfg.FreellmURL
+			freellmURL.Path = "/v1/models"
+			freellmReq, err := http.NewRequestWithContext(r.Context(), "GET", freellmURL.String(), nil)
+			if err != nil {
+				return
+			}
+			// FreeLLMAPI 的 /v1/models 走统一 key 鉴权。
+			if h.cfg.FreellmKey != "" {
+				freellmReq.Header.Set("Authorization", "Bearer "+h.cfg.FreellmKey)
+			}
+			list, _ := h.fetchModels(freellmReq)
+			// 公共目录只公布此刻真能服务的条目：上游目录是全网能力清单，
+			// needsKey/exhausted 一律 503，列出来就是给客户端递假候选。
+			list = filterFreellmModels(list)
+			for _, item := range list {
+				// Add routing prefix so public /v1/models entries match the freellm-* dispatch.
+				var entry map[string]any
+				if json.Unmarshal(item, &entry) != nil || entry == nil {
+					continue
+				}
+				id, ok := entry["id"].(string)
+				if !ok || id == "" {
+					continue
+				}
+				if !strings.HasPrefix(id, freellmModelPrefix) {
+					entry["id"] = freellmModelPrefix + id
+				}
+				tagged, err := json.Marshal(entry)
+				if err != nil {
+					continue
+				}
+				freellmRaw = append(freellmRaw, tagModelRealm(tagged, "freellm"))
+			}
+		}()
+	}
 	wg.Wait()
 	zcodeRaw = filterZcodeModels(zcodeRaw, zcodeEntitled, zcodePlan)
 	coreList, ok := parseModelList(coreResp)
@@ -658,7 +728,7 @@ func (h *server) mergedModels(w http.ResponseWriter, r *http.Request, core *http
 		w.Write(coreResp.body)
 		return
 	}
-	totalLen := len(coreList) + len(zcodeRaw) + len(qoderRaw) + len(opencodeRaw) + len(autoclawRaw) + len(traeRaw) + len(raccoonRaw)
+	totalLen := len(coreList) + len(zcodeRaw) + len(qoderRaw) + len(opencodeRaw) + len(autoclawRaw) + len(traeRaw) + len(raccoonRaw) + len(freellmRaw)
 	seen := make(map[string]bool, totalLen)
 	merged := make([]json.RawMessage, 0, totalLen)
 	all := append(append([]json.RawMessage{}, coreList...), zcodeRaw...)
@@ -667,6 +737,7 @@ func (h *server) mergedModels(w http.ResponseWriter, r *http.Request, core *http
 	all = append(all, autoclawRaw...)
 	all = append(all, traeRaw...)
 	all = append(all, raccoonRaw...)
+	all = append(all, freellmRaw...)
 	// 用刚拿到的 core 目录刷新倍率缓存，倍率只用于模型表展示与计费参考，
 	// 不再参与放行/公布判定。
 	if h.credits != nil {

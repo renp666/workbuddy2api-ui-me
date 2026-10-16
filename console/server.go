@@ -52,10 +52,18 @@ type Config struct {
 	AutoClawURL *url.URL
 	// AutoClawKey 是转发到 AutoClawURL 时替换 Authorization 的桥接密钥（bridge 的 AC2A_API_KEY）。
 	AutoClawKey string
+	// FreellmURL 是可选的 FreeLLMAPI sidecar 容器地址（freellm-* 模型上游）；nil 时不启用分流。
+	FreellmURL *url.URL
+	// FreellmKey 是转发到 FreellmURL 时替换 Authorization 的统一 key（freellmapi-…）。
+	FreellmKey string
 	// TraeURL 是可选的 trae2api sidecar 容器地址（trae-* 模型上游）；nil 时不启用分流。
 	TraeURL *url.URL
 	// TraeKey 是转发到 TraeURL 时替换 Authorization 的桥接密钥（sidecar 的 TRAE_API_KEY）。
 	TraeKey string
+	// TraeAIURL/TraeAIKey 是同一 sidecar 镜像的国际版实例（TRAE_EDITION=intl，
+	// traeai-* 模型上游）；nil 时不启用分流，公共出口与现状一致。
+	TraeAIURL *url.URL
+	TraeAIKey string
 	// RaccoonURL 是可选的 raccoon2api sidecar 容器地址（raccoon-* 模型上游）；nil 时不启用分流。
 	RaccoonURL *url.URL
 	// RaccoonKey 是转发到 RaccoonURL 时替换 Authorization 的桥接密钥（sidecar 的 RACCOON_API_KEY）。
@@ -153,8 +161,14 @@ func NewServer(cfg Config) (http.Handler, error) {
 	if cfg.TraeURL != nil && !validOriginURL(cfg.TraeURL) {
 		return nil, errors.New("WB2A_TRAE_URL 必须是无凭据、路径、查询和片段的 HTTP(S) 地址")
 	}
+	if cfg.TraeAIURL != nil && !validOriginURL(cfg.TraeAIURL) {
+		return nil, errors.New("WB2A_TRAEAI_URL 必须是无凭据、路径、查询和片段的 HTTP(S) 地址")
+	}
 	if cfg.RaccoonURL != nil && !validOriginURL(cfg.RaccoonURL) {
 		return nil, errors.New("WB2A_RACCOON_URL 必须是无凭据、路径、查询和片段的 HTTP(S) 地址")
+	}
+	if cfg.FreellmURL != nil && !validOriginURL(cfg.FreellmURL) {
+		return nil, errors.New("WB2A_FREELLMAPI_URL 必须是无凭据、路径、查询和片段的 HTTP(S) 地址")
 	}
 	if !ValidateAdminOrigin(cfg.PublicOrigin) {
 		return nil, errors.New("WB2A_PUBLIC_ORIGIN 必须是有效的 HTTP(S) origin")
@@ -200,10 +214,20 @@ func NewServer(cfg Config) (http.Handler, error) {
 		traeTarget.Path = ""
 		cfg.TraeURL = &traeTarget
 	}
+	if cfg.TraeAIURL != nil {
+		traeAITarget := *cfg.TraeAIURL
+		traeAITarget.Path = ""
+		cfg.TraeAIURL = &traeAITarget
+	}
 	if cfg.RaccoonURL != nil {
 		raccoonTarget := *cfg.RaccoonURL
 		raccoonTarget.Path = ""
 		cfg.RaccoonURL = &raccoonTarget
+	}
+	if cfg.FreellmURL != nil {
+		freellmTarget := *cfg.FreellmURL
+		freellmTarget.Path = ""
+		cfg.FreellmURL = &freellmTarget
 	}
 	cfg.PublicOrigin = strings.TrimRight(cfg.PublicOrigin, "/")
 	var trusted []*net.IPNet
@@ -248,7 +272,7 @@ func NewServer(cfg Config) (http.Handler, error) {
 	// 旁路通道靠它按前缀分流，路由别名与 auto 虚拟模型也只在它内部生效。
 	// 只配了 core 的部署（RouteFile 非空但旁路 URL 全空）同样要挂上，
 	// 否则别名改写与 /v1/models 的 auto 条目会静默失效。
-	if cfg.ZCodeURL != nil || cfg.QoderURL != nil || cfg.OpenCodeURL != nil || cfg.AutoClawURL != nil || cfg.TraeURL != nil || cfg.RaccoonURL != nil || cfg.RouteFile != "" {
+	if cfg.ZCodeURL != nil || cfg.QoderURL != nil || cfg.OpenCodeURL != nil || cfg.AutoClawURL != nil || cfg.TraeURL != nil || cfg.RaccoonURL != nil || cfg.FreellmURL != nil || cfg.RouteFile != "" {
 		routed := h.publicRouter(public)
 		h.mux.Handle("/v1/", routed)
 	} else {
@@ -263,7 +287,7 @@ func NewServer(cfg Config) (http.Handler, error) {
 			adminError(w, 503, err.Error())
 			return
 		}
-		writeJSON(w, 200, map[string]any{"csrf": sessionFrom(r).csrf, "global_enabled": info.GlobalEnabled, "zcode_enabled": cfg.ZCodeURL != nil, "zcode_control": cfg.ZCodeControlURL != nil, "qoder_enabled": cfg.QoderURL != nil, "qoder_control": cfg.QoderControlURL != nil, "opencode_enabled": cfg.OpenCodeURL != nil, "ccr_enabled": cfg.CCRURL != nil, "autoclaw_enabled": cfg.AutoClawURL != nil, "trae_enabled": cfg.TraeURL != nil, "raccoon_enabled": cfg.RaccoonURL != nil})
+		writeJSON(w, 200, map[string]any{"csrf": sessionFrom(r).csrf, "global_enabled": info.GlobalEnabled, "zcode_enabled": cfg.ZCodeURL != nil, "zcode_control": cfg.ZCodeControlURL != nil, "qoder_enabled": cfg.QoderURL != nil, "qoder_control": cfg.QoderControlURL != nil, "opencode_enabled": cfg.OpenCodeURL != nil, "ccr_enabled": cfg.CCRURL != nil, "autoclaw_enabled": cfg.AutoClawURL != nil, "trae_enabled": cfg.TraeURL != nil, "traeai_enabled": cfg.TraeAIURL != nil, "raccoon_enabled": cfg.RaccoonURL != nil, "freellm_enabled": cfg.FreellmURL != nil})
 	}))
 	h.mux.HandleFunc("POST /admin/logout", h.withAdmin(h.adminLogout))
 	h.mux.HandleFunc("GET /admin/zcode", h.withAdmin(h.adminZcodeStatus))
@@ -280,6 +304,8 @@ func NewServer(cfg Config) (http.Handler, error) {
 	h.mux.HandleFunc("POST /admin/qoder/logout", h.withAdmin(h.adminQoderLogout))
 	h.mux.HandleFunc("GET /admin/opencode", h.withAdmin(h.adminOpenCodeStatus))
 	h.mux.HandleFunc("POST /admin/opencode/chat", h.withAdmin(h.adminOpenCodeChat))
+	h.mux.HandleFunc("GET /admin/freellm", h.withAdmin(h.adminFreellmStatus))
+	h.mux.HandleFunc("POST /admin/freellm/chat", h.withAdmin(h.adminFreellmChat))
 	// AutoClaw 页签：状态/测试对话 + 完整控制链路（登录、账号启停、维护、签到、积分）。
 	h.mux.HandleFunc("GET /admin/autoclaw", h.withAdmin(h.adminAutoClawStatus))
 	h.mux.HandleFunc("POST /admin/autoclaw/chat", h.withAdmin(h.adminAutoClawChat))
@@ -293,28 +319,34 @@ func NewServer(cfg Config) (http.Handler, error) {
 	h.mux.HandleFunc("POST /admin/autoclaw/credits/refresh", h.withAdmin(h.adminAutoClawCreditsRefresh))
 	h.mux.HandleFunc("GET /admin/autoclaw/credits", h.withAdmin(h.adminAutoClawCredits))
 	h.mux.HandleFunc("POST /admin/autoclaw/checkin", h.withAdmin(h.adminAutoClawCheckin))
-	// Trae 页签：状态/测试对话 + 完整控制链路（OAuth 登录、账号管理、排程签到、积分）。
-	h.mux.HandleFunc("GET /admin/trae", h.withAdmin(h.adminTraeStatus))
-	h.mux.HandleFunc("POST /admin/trae/chat", h.withAdmin(h.adminTraeChat))
-	h.mux.HandleFunc("POST /admin/trae/login", h.withAdmin(h.adminTraeLoginStart))
-	h.mux.HandleFunc("GET /admin/trae/login", h.withAdmin(h.adminTraeLoginPoll))
-	h.mux.HandleFunc("POST /admin/trae/login/cancel", h.withAdmin(h.adminTraeLoginCancel))
-	h.mux.HandleFunc("POST /admin/trae/accounts/import", h.withAdmin(h.adminTraeImport))
-	h.mux.HandleFunc("POST /admin/trae/accounts/delete", h.withAdmin(h.adminTraeAccountsDelete))
-	h.mux.HandleFunc("POST /admin/trae/accounts/patch", h.withAdmin(h.adminTraeAccountsPatch))
-	h.mux.HandleFunc("POST /admin/trae/accounts/refresh", h.withAdmin(h.adminTraeAccountsRefresh))
-	h.mux.HandleFunc("GET /admin/trae/accounts/json", h.withAdmin(h.adminTraeAccountJSON))
-	h.mux.HandleFunc("GET /admin/trae/schedule", h.withAdmin(h.adminTraeSchedule))
-	h.mux.HandleFunc("POST /admin/trae/schedule/checkin", h.withAdmin(h.adminTraeScheduleCheckin))
-	h.mux.HandleFunc("POST /admin/trae/schedule/refresh", h.withAdmin(h.adminTraeScheduleRefresh))
-	h.mux.HandleFunc("GET /admin/trae/credits", h.withAdmin(h.adminTraeCredits))
-	h.mux.HandleFunc("GET /admin/trae/usage", h.withAdmin(h.adminTraeUsage))
-	// Trae OAuth 浏览器 302 的公开落点：TRAE 域跳转不带 console Cookie，
-	// 故无 withAdmin（与 sidecar /authorize 语义一致），只转发回调 query。
-	h.mux.HandleFunc("GET /admin/trae/authorize", h.adminTraeAuthorize)
+	// Trae 页签（国内版 trae-* 与国际版 traeai-*）：状态/测试对话 + 控制链路。
+	// 两只 sidecar 是同一个镜像、同一套控制协议，所以这里按通道描述符循环注册，
+	// 路径段就是通道名（/admin/trae、/admin/traeai），不再复制 16 行注册 ×2。
+	for _, ch := range h.traeChannels() {
+		base := "/admin/" + string(ch.channel)
+		h.mux.HandleFunc("GET "+base, h.withAdmin(h.adminTraeStatus(ch)))
+		h.mux.HandleFunc("POST "+base+"/chat", h.withAdmin(h.adminTraeChat(ch)))
+		h.mux.HandleFunc("POST "+base+"/login", h.withAdmin(h.adminTraeLoginStart(ch)))
+		h.mux.HandleFunc("GET "+base+"/login", h.withAdmin(h.adminTraeLoginPoll(ch)))
+		h.mux.HandleFunc("POST "+base+"/login/cancel", h.withAdmin(h.adminTraeLoginCancel(ch)))
+		h.mux.HandleFunc("POST "+base+"/accounts/import", h.withAdmin(h.adminTraeImport(ch)))
+		h.mux.HandleFunc("POST "+base+"/accounts/delete", h.withAdmin(h.adminTraeAccountsDelete(ch)))
+		h.mux.HandleFunc("POST "+base+"/accounts/patch", h.withAdmin(h.adminTraeAccountsPatch(ch)))
+		h.mux.HandleFunc("POST "+base+"/accounts/refresh", h.withAdmin(h.adminTraeAccountsRefresh(ch)))
+		h.mux.HandleFunc("GET "+base+"/accounts/json", h.withAdmin(h.adminTraeAccountJSON(ch)))
+		h.mux.HandleFunc("GET "+base+"/schedule", h.withAdmin(h.adminTraeSchedule(ch)))
+		h.mux.HandleFunc("POST "+base+"/schedule/checkin", h.withAdmin(h.adminTraeScheduleCheckin(ch)))
+		h.mux.HandleFunc("POST "+base+"/schedule/refresh", h.withAdmin(h.adminTraeScheduleRefresh(ch)))
+		h.mux.HandleFunc("GET "+base+"/credits", h.withAdmin(h.adminTraeCredits(ch)))
+		h.mux.HandleFunc("GET "+base+"/usage", h.withAdmin(h.adminTraeUsage(ch)))
+		// TRAE OAuth 浏览器 302 的公开落点：TRAE 域跳转不带 console Cookie，
+		// 故无 withAdmin（与 sidecar /authorize 语义一致），只转发回调 query。
+		h.mux.HandleFunc("GET "+base+"/authorize", h.adminTraeAuthorize)
+	}
 	// TRAE 授权页对 auth_callback_url 的形状有硬约束：主机必须是字面量 127.0.0.1、
 	// 路径必须是 /authorize（端口任意），否则 SSR 返回空数据并显示登录失败。所以
-	// 实际回调落在 console 根路径上，与 /admin/trae/authorize 共用同一处理器。
+	// 实际回调落在 console 根路径上，与各区域的 /admin/<region>/authorize 共用同一处理器；
+	// 两条区域共用这一个根路径，由处理器按"谁发起了登录"分发。
 	h.mux.HandleFunc("GET /authorize", h.adminTraeAuthorize)
 	// Raccoon 页签：状态/测试对话 + 凭证导入与账号控制链路（Docker 下无网页登录，只能粘贴凭证）。
 	h.mux.HandleFunc("GET /admin/raccoon", h.withAdmin(h.adminRaccoonStatus))
@@ -591,7 +623,7 @@ func (h *server) adminLogin(w http.ResponseWriter, r *http.Request) {
 	http.SetCookie(w, &http.Cookie{Name: "wb2a_admin", Value: id, Path: "/admin", HttpOnly: true, Secure: r.TLS != nil || strings.HasPrefix(h.cfg.PublicOrigin, "https://"), SameSite: http.SameSiteStrictMode, MaxAge: 8 * 3600})
 	// Authentication remains available during a core outage; actions still fail closed.
 	info, _ := h.coreInfo(r.Context())
-	writeJSON(w, 200, map[string]any{"csrf": csrf, "global_enabled": info.GlobalEnabled, "zcode_enabled": h.cfg.ZCodeURL != nil, "zcode_control": h.cfg.ZCodeControlURL != nil, "qoder_enabled": h.cfg.QoderURL != nil, "qoder_control": h.cfg.QoderControlURL != nil, "opencode_enabled": h.cfg.OpenCodeURL != nil, "ccr_enabled": h.cfg.CCRURL != nil, "autoclaw_enabled": h.cfg.AutoClawURL != nil, "trae_enabled": h.cfg.TraeURL != nil, "raccoon_enabled": h.cfg.RaccoonURL != nil})
+	writeJSON(w, 200, map[string]any{"csrf": csrf, "global_enabled": info.GlobalEnabled, "zcode_enabled": h.cfg.ZCodeURL != nil, "zcode_control": h.cfg.ZCodeControlURL != nil, "qoder_enabled": h.cfg.QoderURL != nil, "qoder_control": h.cfg.QoderControlURL != nil, "opencode_enabled": h.cfg.OpenCodeURL != nil, "ccr_enabled": h.cfg.CCRURL != nil, "autoclaw_enabled": h.cfg.AutoClawURL != nil, "trae_enabled": h.cfg.TraeURL != nil, "traeai_enabled": h.cfg.TraeAIURL != nil, "raccoon_enabled": h.cfg.RaccoonURL != nil, "freellm_enabled": h.cfg.FreellmURL != nil})
 }
 func (h *server) adminLogout(w http.ResponseWriter, r *http.Request) {
 	h.mu.Lock()

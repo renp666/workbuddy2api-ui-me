@@ -414,7 +414,29 @@ func probeFailResult(category, note string, durationMs int) map[string]any {
 }
 
 // probeableChannels 是手工探测覆盖的通道；opencode 由 OW Bridge 自带探测，排除。
-var probeableChannels = []routeChannel{channelCore, channelGLM, channelQoder, channelAutoClaw, channelTrae, channelRaccoon}
+var probeableChannels = []routeChannel{channelCore, channelGLM, channelQoder, channelAutoClaw, channelTrae, channelTraeAI, channelRaccoon, channelFreellm}
+
+// isProbeableChannel 判成员，而不是另抄一份通道名单。
+// 另抄的后果是实测发生过的：新通道接进来后这里漏改，该通道永远进不了探测，
+// 而 gateway-auto 也就永远选不到它。
+func isProbeableChannel(c routeChannel) bool {
+	for _, p := range probeableChannels {
+		if p == c {
+			return true
+		}
+	}
+	return false
+}
+
+// probeableChannelNames 把可探测通道拼成错误文案用的串，从 probeableChannels 现取，
+// 这样新增通道时不会出现"名单已生效、提示文案还漏一个"的两张皮。
+func probeableChannelNames() string {
+	names := make([]string, 0, len(probeableChannels))
+	for _, c := range probeableChannels {
+		names = append(names, string(c))
+	}
+	return strings.Join(names, "、")
+}
 
 // adminProbeStart 触发一轮手工探测。body.channels 缺省为全部可探测通道。
 func (h *server) adminProbeStart(w http.ResponseWriter, r *http.Request) {
@@ -429,8 +451,8 @@ func (h *server) adminProbeStart(w http.ResponseWriter, r *http.Request) {
 		wanted = nil
 		for _, raw := range body.Channels {
 			c := routeChannel(strings.TrimSpace(raw))
-			if c != channelCore && c != channelGLM && c != channelQoder && c != channelAutoClaw && c != channelTrae && c != channelRaccoon {
-				adminError(w, 400, "探测通道只能是 core、glm、qoder、autoclaw、trae 或 raccoon")
+			if !isProbeableChannel(c) {
+				adminError(w, 400, "探测通道只能是："+probeableChannelNames())
 				return
 			}
 			wanted = append(wanted, c)
