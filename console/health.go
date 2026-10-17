@@ -436,6 +436,7 @@ func (h *server) runHealthRound(ctx context.Context) healthRound {
 	}
 	wg.Wait()
 	round := healthRound{CheckedAt: time.Now(), OK: true, Channels: results}
+	markSidecarIsolation(&round)
 	for _, result := range results {
 		if !result.Enabled {
 			continue
@@ -447,6 +448,48 @@ func (h *server) runHealthRound(ctx context.Context) healthRound {
 		}
 	}
 	return round
+}
+
+// markSidecarIsolation 识别「console 被单独重启/重建」这一特定故障，并给每个旁路
+// 通道挂上可执行的处置提示。
+//
+// 全部旁路都是 network_mode: service:console，共享 console 的网络命名空间。console
+// 被单独 restart/recreate 后拿到新的网络命名空间，旁路仍留在旧的那一个里：从 console
+// 内部看，每个旁路的 127.0.0.1:<端口> 全部不可达，而 core（走 compose 网络）照常健康。
+// 这个组合特征足够独特——「core 可达 + 所有已启用旁路同时不可达」基本只可能是它，
+// 而不是 N 条通道各自独立地同时坏掉。
+//
+// 专门识别它的理由：此时 docker ps 里旁路全是 Up（旧命名空间还活着），容器 ID 锚点
+// 也仍指向当前 console（容器没被重建，ID 不变），常规排查手段全部显示「正常」，
+// 只有从 console 内部实际连一下才能发现——为此绕过两轮。
+func markSidecarIsolation(round *healthRound) {
+	sidecars, down := 0, 0
+	coreOK := false
+	for _, r := range round.Channels {
+		if !r.Enabled {
+			continue
+		}
+		if r.Channel == channelCore {
+			coreOK = r.Reachable
+			continue
+		}
+		sidecars++
+		if !r.Reachable {
+			down++
+		}
+	}
+	// 只配了 1 条旁路时不套用：单通道掉线有自己的原因，硬套网络命名空间说法会误导。
+	if !coreOK || sidecars < 2 || down != sidecars {
+		return
+	}
+	const hint = "core 正常但全部旁路同时不可达：console 被单独重启/重建，旁路仍留在旧网络命名空间。" +
+		"需把 console 与全部旁路放进同一条 compose 命令 --force-recreate 重建。"
+	for i := range round.Channels {
+		r := &round.Channels[i]
+		if r.Enabled && r.Channel != channelCore && !r.Reachable && r.ProbeHint == "" {
+			r.ProbeHint = hint
+		}
+	}
 }
 
 func (h *server) probeChannelHealth(ctx context.Context, c routeChannel) healthChannelResult {

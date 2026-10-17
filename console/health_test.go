@@ -843,3 +843,82 @@ func TestAdminHealthReplaysHistoryAfterRestart(t *testing.T) {
 		t.Fatalf("回放轮次缺 core 通道结论：%+v", last.Channels)
 	}
 }
+
+// markSidecarIsolation 认「console 被单独重启」这个组合：core 可达 + 全部旁路同时不可达。
+// 该故障下 docker ps 里旁路全是 Up、容器 ID 锚点也指向当前 console（容器没重建，ID 不变），
+// 常规手段全显示正常，只有从 console 内部实连才发现——所以红灯必须自带这条处置办法。
+func TestMarkSidecarIsolation(t *testing.T) {
+	round := healthRound{Channels: []healthChannelResult{
+		{Channel: channelCore, Enabled: true, Reachable: true},
+		{Channel: channelGLM, Enabled: true, Reachable: false},
+		{Channel: channelQoder, Enabled: true, Reachable: false},
+		{Channel: channelRaccoon, Enabled: true, Reachable: false},
+	}}
+	markSidecarIsolation(&round)
+	for _, r := range round.Channels {
+		if r.Channel == channelCore {
+			if r.ProbeHint != "" {
+				t.Fatalf("core 可达时不该被挂旁路提示：%q", r.ProbeHint)
+			}
+			continue
+		}
+		if !strings.Contains(r.ProbeHint, "同一条 compose 命令") {
+			t.Fatalf("%s 未挂隔离提示：%q", r.Channel, r.ProbeHint)
+		}
+	}
+}
+
+// 只有部分旁路不可达时不出提示：那是某条通道自己的问题，套「网络命名空间」说法会误导。
+func TestMarkSidecarIsolationSkipsPartialOutage(t *testing.T) {
+	round := healthRound{Channels: []healthChannelResult{
+		{Channel: channelCore, Enabled: true, Reachable: true},
+		{Channel: channelGLM, Enabled: true, Reachable: false},
+		{Channel: channelQoder, Enabled: true, Reachable: true},
+	}}
+	markSidecarIsolation(&round)
+	for _, r := range round.Channels {
+		if r.ProbeHint != "" {
+			t.Fatalf("%s 部分掉线却挂了隔离提示：%q", r.Channel, r.ProbeHint)
+		}
+	}
+}
+
+// core 自己也不可达时不是这个故障（可能整个宿主网络出问题），不出提示。
+func TestMarkSidecarIsolationNeedsHealthyCore(t *testing.T) {
+	round := healthRound{Channels: []healthChannelResult{
+		{Channel: channelCore, Enabled: true, Reachable: false},
+		{Channel: channelGLM, Enabled: true, Reachable: false},
+		{Channel: channelQoder, Enabled: true, Reachable: false},
+	}}
+	markSidecarIsolation(&round)
+	for _, r := range round.Channels {
+		if r.ProbeHint != "" {
+			t.Fatalf("core 也不可达却挂了隔离提示：%q", r.ProbeHint)
+		}
+	}
+}
+
+// 只配一条旁路时不套用（单通道掉线有自己的原因）；已有更具体提示的通道不被覆盖。
+func TestMarkSidecarIsolationRespectsSingleChannelAndExistingHint(t *testing.T) {
+	single := healthRound{Channels: []healthChannelResult{
+		{Channel: channelCore, Enabled: true, Reachable: true},
+		{Channel: channelGLM, Enabled: true, Reachable: false},
+	}}
+	markSidecarIsolation(&single)
+	if single.Channels[1].ProbeHint != "" {
+		t.Fatalf("单旁路场景不应出隔离提示：%q", single.Channels[1].ProbeHint)
+	}
+
+	existing := healthRound{Channels: []healthChannelResult{
+		{Channel: channelCore, Enabled: true, Reachable: true},
+		{Channel: channelRaccoon, Enabled: true, Reachable: false, ProbeHint: "token_expired: 请重新导入凭证"},
+		{Channel: channelQoder, Enabled: true, Reachable: false},
+	}}
+	markSidecarIsolation(&existing)
+	if existing.Channels[1].ProbeHint != "token_expired: 请重新导入凭证" {
+		t.Fatalf("已有具体提示被覆盖：%q", existing.Channels[1].ProbeHint)
+	}
+	if existing.Channels[2].ProbeHint == "" {
+		t.Fatal("无具体提示的通道应补上隔离提示")
+	}
+}
