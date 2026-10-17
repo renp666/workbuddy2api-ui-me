@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"strings"
@@ -419,11 +420,57 @@ func readProbeError(body io.Reader) string {
 	return text
 }
 
+// humanizeProbeNote 把被侧车包了一层的上游错误还原成人能读懂的原因。
+//
+// zcode 的 Anthropic 适配层收到非 Anthropic 形态的上游错误时，会把整段原文塞进
+// translation_failed 并以 502 返回。于是「额度用尽（code 1005）」在健康页上显示成
+// translation_failed——看着像适配层 bug，实际是账号额度，排查方向直接跑偏（实测就为此
+// 多绕了一圈）。这里只把内嵌的上游错误体还原成一句可执行结论，不改判定类别。
+func humanizeProbeNote(note string) string {
+	if !strings.Contains(note, "translation_failed") {
+		return note
+	}
+	code, msg := embeddedUpstreamError(note)
+	if code == "" && msg == "" {
+		return note
+	}
+	if code == "1005" || strings.Contains(strings.ToLower(msg), "quota") {
+		return fmt.Sprintf("上游额度用尽（code %s %s）：需续费或换号，不是适配层故障", code, msg)
+	}
+	return fmt.Sprintf("上游返回错误（code %s %s），被侧车包装成 translation_failed", code, msg)
+}
+
+// embeddedUpstreamError 从被包装的错误文本里抽出上游错误体的 code 与 msg。
+// 只认 {"code":1005,"msg":"…"} 这一种常见形态：抽不到就原样返回，不猜。
+//
+// 注意内嵌体是**转义过**的（\"code\":1005），因为它是外层 JSON 字符串的一部分；
+// 先把反斜杠去掉再按普通形态解析，否则永远抽不到。
+func embeddedUpstreamError(text string) (string, string) {
+	text = strings.ReplaceAll(text, `\"`, `"`)
+	code := ""
+	if i := strings.Index(text, `"code":`); i >= 0 {
+		rest := text[i+len(`"code":`):]
+		end := 0
+		for end < len(rest) && rest[end] >= '0' && rest[end] <= '9' {
+			end++
+		}
+		code = rest[:end]
+	}
+	msg := ""
+	if i := strings.Index(text, `"msg":"`); i >= 0 {
+		rest := text[i+len(`"msg":"`):]
+		if j := strings.Index(rest, `"`); j >= 0 {
+			msg = rest[:j]
+		}
+	}
+	return code, msg
+}
+
 func probeFailResult(category, note string, durationMs int) map[string]any {
 	return map[string]any{
 		"ok":         false,
 		"category":   category,
-		"error":      note,
+		"error":      humanizeProbeNote(note),
 		"source":     "probe",
 		"durationMs": durationMs,
 		"probedAt":   time.Now().UnixMilli(),

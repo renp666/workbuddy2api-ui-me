@@ -526,3 +526,39 @@ func TestProbeSideChannelStatusHealth(t *testing.T) {
 		t.Fatalf("raccoon health=%v", rstatus.Health.ModelResults)
 	}
 }
+
+// humanizeProbeNote 把被侧车包成 translation_failed 的上游错误还原成真实原因。
+// zcode 的 Anthropic 适配层收到非 Anthropic 形态的上游错误时会整段塞进
+// translation_failed 返回 502，于是「额度用尽」在健康页显示成「翻译失败」——
+// 看着像适配层 bug，实际是账号额度，排查方向会直接跑偏。
+func TestHumanizeProbeNote(t *testing.T) {
+	quota := `{"type": "translation_failed", "message": "upstream returned invalid Anthropic message: {\"code\":1005,\"msg\":\"exceed quota limit\",\"logid\":\"abc\"}"}`
+	got := humanizeProbeNote(quota)
+	for _, want := range []string{"上游额度用尽", "code 1005", "exceed quota limit", "不是适配层故障"} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("humanizeProbeNote=%q，缺少片段 %q", got, want)
+		}
+	}
+
+	// 其它内嵌上游错误也要还原 code/msg，但不得冒充额度问题。
+	other := `{"type":"translation_failed","message":"bad: {\"code\":3006,\"msg\":\"model not allowed\"}"}`
+	got = humanizeProbeNote(other)
+	if strings.Contains(got, "额度") {
+		t.Fatalf("非额度错误被说成额度：%q", got)
+	}
+	for _, want := range []string{"code 3006", "model not allowed"} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("humanizeProbeNote=%q，缺少片段 %q", got, want)
+		}
+	}
+
+	// 与 translation_failed 无关的错误原样返回，不做任何改写。
+	if got := humanizeProbeNote("探测超时"); got != "探测超时" {
+		t.Fatalf("无关错误被改写：%q", got)
+	}
+	// 抽不到 code/msg 时也原样返回，不猜。
+	bare := `{"type":"translation_failed","message":"upstream returned invalid Anthropic message"}`
+	if got := humanizeProbeNote(bare); got != bare {
+		t.Fatalf("无内嵌错误体却被改写：%q", got)
+	}
+}
