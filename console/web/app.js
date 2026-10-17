@@ -571,6 +571,12 @@ function healthCheckedAtText(){
  const at=healthState&&healthState.checked_at?new Date(healthState.checked_at):null;
  return at&&!Number.isNaN(at.getTime())?at.toLocaleTimeString('zh-CN',{timeZone:'Asia/Shanghai',hour12:false}):'';
 }
+// config_hint 只在「路由里有别名指向未配置上游地址的通道」时由后端给出（多半是 console
+// 用缺少对应 overlay 的 compose 链重建）。这类通道不会变红，而是整条从概览列表里消失，
+// 所以必须在列表上方显式说出来——否则「通道少了一半」会被当成本来就这么多。
+function healthConfigHint(){
+ return healthState&&healthState.config_hint?String(healthState.config_hint):'';
+}
 // traeaiEnabled 的来源与其余通道不同：POST /admin/session 的载荷里没有 traeai_enabled 这一位，
 // 登录当下唯一能拿到「这条旁路配了没有」的口径是 GET /admin/health 每条通道的 enabled
 // （后端 routeChannelOrder 全量下发，含未启用的通道）。所以每轮探活落地后同步一次，
@@ -654,7 +660,7 @@ function overviewChannelModelCount(channel){
 }
 function renderOverview(){
  const stamp=$('overview-health-stamp');
- if(stamp){const at=healthCheckedAtText();stamp.textContent=at?`每个通道一行；状态由网关自探，最近一轮 ${at}`:'每个通道一行；状态由网关自探，等待首次结论';}
+ if(stamp){const at=healthCheckedAtText();const base=at?`每个通道一行；状态由网关自探，最近一轮 ${at}`:'每个通道一行；状态由网关自探，等待首次结论';const cfgHint=healthConfigHint();stamp.textContent=cfgHint?`${base} ⚠ ${cfgHint}`:base;}
  const body=$('overview-channels-body');body.replaceChildren();
  const byChannel=new Map();
  for(const e of overviewUsageItems){const c=usageChannelOf(e);if(!byChannel.has(c))byChannel.set(c,[]);byChannel.get(c).push(e);}

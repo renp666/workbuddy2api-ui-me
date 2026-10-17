@@ -922,3 +922,68 @@ func TestMarkSidecarIsolationRespectsSingleChannelAndExistingHint(t *testing.T) 
 		t.Fatal("无具体提示的通道应补上隔离提示")
 	}
 }
+
+// config_hint 是「通道静默消失」的唯一出口。channelEnabled 的判据就是 URL 非 nil，所以
+// 用缺少某通道 overlay 的 compose 链重建 console 后，那条通道不是变红，而是从健康页整条
+// 消失——只配了 4 条通道的页面看起来完全正常，最容易被当成「本来就这么几条」。后端必须
+// 把「路由里有别名指向它、但它没配地址」这件事点破。
+func TestAdminHealthConfigHintForUnconfiguredChannel(t *testing.T) {
+	h, _ := routeConsole(t, func(w http.ResponseWriter, r *http.Request) { mockInfo(w, r) }, nil)
+	saveRoutes(t, h, []routeEntry{
+		{Alias: "5-free-v1", Channel: channelOpenCode, Model: "OC · Space Bunny Free", Enabled: true},
+		{Alias: "1-daily-v1", Channel: channelCore, Model: "global:deepseek-v4.1-flash", Enabled: true},
+	}, "")
+
+	cookie, csrf := login(t, h)
+	w := adminRequest(h, "GET", "/admin/health", "", cookie, csrf)
+	if w.Code != 200 {
+		t.Fatalf("health status=%d %s", w.Code, w.Body)
+	}
+	var got map[string]any
+	if err := json.Unmarshal(w.Body.Bytes(), &got); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	hint, _ := got["config_hint"].(string)
+	for _, want := range []string{"1 条通道未配置上游地址", "opencode", "5-free-v1", "compose overlay"} {
+		if !strings.Contains(hint, want) {
+			t.Fatalf("config_hint=%q，缺少片段 %q", hint, want)
+		}
+	}
+	// 配好的 core 不该被算进「缺地址」的名单里。
+	if strings.Contains(hint, "core（") {
+		t.Fatalf("core 已配置却进了缺失名单：%q", hint)
+	}
+}
+
+// 所有被路由引用的通道都配好了地址时，config_hint 这个键必须完全不存在——前端据此判断
+// 要不要提示，给出空串会让「有提示」和「没提示」两种状态混在一起。
+func TestAdminHealthOmitsConfigHintWhenAllConfigured(t *testing.T) {
+	h, _ := routeConsole(t, func(w http.ResponseWriter, r *http.Request) { mockInfo(w, r) }, nil)
+	saveRoutes(t, h, []routeEntry{
+		{Alias: "1-daily-v1", Channel: channelCore, Model: "global:deepseek-v4.1-flash", Enabled: true},
+	}, "")
+
+	cookie, csrf := login(t, h)
+	w := adminRequest(h, "GET", "/admin/health", "", cookie, csrf)
+	if w.Code != 200 {
+		t.Fatalf("health status=%d %s", w.Code, w.Body)
+	}
+	var got map[string]any
+	if err := json.Unmarshal(w.Body.Bytes(), &got); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if value, exists := got["config_hint"]; exists {
+		t.Fatalf("全部配置齐全却仍给出 config_hint=%v", value)
+	}
+}
+
+// 停用的别名不算「应该能用」：它指向未配置的通道是用户自己关掉的，不该报警。
+func TestConfigHintIgnoresDisabledAliases(t *testing.T) {
+	h, _ := routeConsole(t, func(w http.ResponseWriter, r *http.Request) { mockInfo(w, r) }, nil)
+	saveRoutes(t, h, []routeEntry{
+		{Alias: "6-try-v2", Channel: channelOpenCode, Model: "OC · Nemotron", Enabled: false},
+	}, "")
+	if hint := h.(*server).configHint(); hint != "" {
+		t.Fatalf("停用别名触发了配置告警：%q", hint)
+	}
+}

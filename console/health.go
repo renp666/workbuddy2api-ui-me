@@ -725,6 +725,54 @@ func (h *server) channelReachable(ctx context.Context, c routeChannel) (bool, st
 	return false, "未知通道"
 }
 
+// configHint 指出「路由里有别名指向、但 console 没配上游地址」的通道，没有这种通道时
+// 返回空串。
+//
+// channelEnabled 的判据就是「URL 非 nil」，所以用缺少某通道 overlay 的 compose 链重建
+// console 时，那条通道不是变红，而是**从健康页整条消失**：页面只剩几行、没有一条报错，
+// 最容易被当成「通道本来就这么几条」。这条提示把「少了一半的通道」显式说出来，并点明
+// 成因是 compose 链缺 overlay，而不是通道自己坏了——比让人对着空行位发呆有用得多。
+func (h *server) configHint() string {
+	if h.routes == nil {
+		return ""
+	}
+	byChannel := map[routeChannel][]string{}
+	seen := map[string]bool{}
+	var order []routeChannel
+	for _, entry := range h.routes.snapshot() {
+		if !entry.Enabled {
+			continue // 停用的别名不算「应该能用」，不该触发配置告警
+		}
+		for _, target := range entry.targets() {
+			c := target.Channel
+			if c == "" || h.channelEnabled(c) {
+				continue
+			}
+			if _, ok := byChannel[c]; !ok {
+				order = append(order, c)
+			}
+			key := string(c) + "\x00" + entry.Alias
+			if seen[key] {
+				continue
+			}
+			seen[key] = true
+			byChannel[c] = append(byChannel[c], entry.Alias)
+		}
+	}
+	if len(order) == 0 {
+		return ""
+	}
+	parts := make([]string, 0, len(order))
+	aliases := 0
+	for _, c := range order {
+		parts = append(parts, fmt.Sprintf("%s（%s）", c, strings.Join(byChannel[c], "、")))
+		aliases += len(byChannel[c])
+	}
+	return fmt.Sprintf("%d 条通道未配置上游地址，但路由里有 %d 个别名指向它们：%s。"+
+		"WB2A_*_URL 由 compose overlay 注入，缺失多半是 console 用缺少对应 overlay 的 compose 链重建所致。",
+		len(order), aliases, strings.Join(parts, "；"))
+}
+
 // adminHealth 返回「网关 + 七通道」总览：请求时即时跑一轮，保证页面看到的是
 // 当前状态而不是上一轮缓存；history 是后台定时探活留存的趋势（含重启后从落盘
 // 历史回放的部分）。只读，不改配置。
@@ -734,10 +782,15 @@ func (h *server) adminHealth(w http.ResponseWriter, r *http.Request) {
 	// HealthProbe 与目录自行门控，未开启时是空操作。
 	h.health.healthInit(h.cfg)
 	round := h.runHealthRound(r.Context())
-	writeJSON(w, 200, map[string]any{
+	payload := map[string]any{
 		"ok":         round.OK,
 		"checked_at": round.CheckedAt,
 		"channels":   round.Channels,
 		"history":    h.health.snapshot(),
-	})
+	}
+	// 只在真有问题时出现，正常配置下这个键完全不存在（前端据此判断要不要提示）。
+	if hint := h.configHint(); hint != "" {
+		payload["config_hint"] = hint
+	}
+	writeJSON(w, 200, payload)
 }

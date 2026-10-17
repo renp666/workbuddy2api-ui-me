@@ -4584,3 +4584,38 @@ test('freellm 状态面板解释「目录有货但不可调用」而不是只报
     assert.ok(body.includes(`session.${key}`),`状态面板没读 session.${key}，会把「没配供应商 key」显示成普通在线`);
   }
 });
+
+test('概览把「通道缺地址」的配置告警显式说出来：静默消失比红灯更危险',async()=>{
+  // channelEnabled 的判据就是「URL 非 nil」，所以用缺少 overlay 的 compose 链重建 console
+  // 后，那些通道不会变红，而是整条从列表里消失。页面只剩几行、没有一条报错，最容易被当成
+  // 「本来就这么几条通道」。config_hint 必须在列表上方显式说出来。
+  const items=[{ts:1000,uid:'u1',account:'a',model:'cn:m',mode:'sync',prompt_tokens:1,completion_tokens:1,credit:0}];
+  const hint='5 条通道未配置上游地址，但路由里有 8 个别名指向它们：autoclaw（2-fast-v1）；raccoon（2-fast-v2）。WB2A_*_URL 由 compose overlay 注入。';
+  const health={ok:false,checked_at:'2026-10-17T22:08:00+08:00',history:[],config_hint:hint,channels:[
+    {channel:'core',enabled:true,reachable:true,latency_ms:3,probe_state:'ok'},
+    {channel:'autoclaw',enabled:false,reachable:false},
+  ]};
+  const {ctx,get}=overviewFixture(items,{enabled:true,reachable:true,model_count:3},null,health);
+  await vm.runInContext("signedIn({csrf:'c',global_enabled:true,zcode_enabled:true,qoder_enabled:true,opencode_enabled:true,autoclaw_enabled:true,trae_enabled:true,raccoon_enabled:true})",ctx);
+  await vm.runInContext('loadHealth()',ctx);
+  await vm.runInContext('loadOverview()',ctx);
+  await new Promise(r=>setImmediate(r));
+  const stamp=get('overview-health-stamp').textContent;
+  assert.match(stamp,/未配置上游地址/,'配置告警没显示出来，通道静默消失会被当成正常');
+  assert.match(stamp,/compose overlay/,'告警没点明成因，用户不知道该改哪');
+});
+
+test('没有 config_hint 时概览时间戳保持干净，不挂空告警',async()=>{
+  const items=[{ts:1000,uid:'u1',account:'a',model:'cn:m',mode:'sync',prompt_tokens:1,completion_tokens:1,credit:0}];
+  const health={ok:true,checked_at:'2026-10-17T22:08:00+08:00',history:[],channels:[
+    {channel:'core',enabled:true,reachable:true,latency_ms:3,probe_state:'ok'},
+  ]};
+  const {ctx,get}=overviewFixture(items,{enabled:true,reachable:true,model_count:3},null,health);
+  await vm.runInContext("signedIn({csrf:'c',global_enabled:true,zcode_enabled:true,qoder_enabled:true,opencode_enabled:true,autoclaw_enabled:true,trae_enabled:true,raccoon_enabled:true})",ctx);
+  await vm.runInContext('loadHealth()',ctx);
+  await vm.runInContext('loadOverview()',ctx);
+  await new Promise(r=>setImmediate(r));
+  const stamp=get('overview-health-stamp').textContent;
+  assert.match(stamp,/最近一轮/,'时间戳丢失');
+  assert.doesNotMatch(stamp,/⚠/,'没有告警却挂了警示符');
+});
