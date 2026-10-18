@@ -527,7 +527,11 @@ func (s *routeStore) setGroupSwitch(model string, enable bool) error {
 	}
 	models := make([]routeEntry, 0, len(current.Models))
 	for _, entry := range current.Models {
-		if entry.publicModel() == model {
+		original := entry
+		if s.circuits != nil {
+			original = s.circuits.originalEntry(entry)
+		}
+		if original.publicModel() == model {
 			entry.Enabled = enable
 		}
 		models = append(models, entry)
@@ -929,14 +933,21 @@ func (h *server) resolveEntry(ctx context.Context, entry routeEntry) routeDecisi
 		entry = h.circuits.originalEntry(entry)
 	}
 	chain := entry.targets()
+	indexes := make([]int, len(chain))
+	for i := range indexes {
+		indexes[i] = i
+	}
 	if h.circuits != nil && !circuitProtected(entry) {
 		filtered := make([]routeTarget, 0, len(chain))
-		for _, target := range chain {
+		filteredIndexes := make([]int, 0, len(chain))
+		for i, target := range chain {
 			if !h.circuits.blocked(target) {
 				filtered = append(filtered, target)
+				filteredIndexes = append(filteredIndexes, indexes[i])
 			}
 		}
 		chain = filtered
+		indexes = filteredIndexes
 		if len(chain) == 0 {
 			return routeDecision{Alias: entry.Alias, Channel: channelCore, RoutedModel: "__circuit_open__", Reason: "候选链全部熔断", TargetIndex: -1}
 		}
@@ -947,8 +958,8 @@ func (h *server) resolveEntry(ctx context.Context, entry routeEntry) routeDecisi
 			RoutedModel: primary.publicModel(),
 			Channel:     primary.Channel,
 			Alias:       entry.Alias,
-			Reason:      "别名命中配置",
-			TargetIndex: 0,
+			Reason:      circuitRouteReason("别名命中配置", indexes[0]),
+			TargetIndex: indexes[0],
 		}
 	}
 	pick, found := h.pickChainTarget(ctx, chain)
@@ -958,17 +969,17 @@ func (h *server) resolveEntry(ctx context.Context, entry routeEntry) routeDecisi
 			Channel:     primary.Channel,
 			Alias:       entry.Alias,
 			Reason:      "别名无可用探测结论，按链序用主目标",
-			TargetIndex: 0,
+			TargetIndex: indexes[0],
 		}
 	}
 	index, band := pick.index, pick.band
-	reason := fmt.Sprintf("别名选中第 %d 跳（%s）", index+1, probeBandLabel(band))
+	reason := fmt.Sprintf("别名选中第 %d 跳（%s）", indexes[index]+1, probeBandLabel(band))
 	switch {
-	case pick.factorDriven && index > 0:
+	case pick.factorDriven && indexes[index] > 0:
 		// 结论被错误率因子改变（不是探测判死的），措辞不能沿用「不可用」。
-		reason = fmt.Sprintf("别名按错误率因子，切第 %d 跳（%s）", index+1, probeBandLabel(band))
-	case index > 0:
-		reason = fmt.Sprintf("别名主目标不可用，切第 %d 跳备用（%s）", index+1, probeBandLabel(band))
+		reason = fmt.Sprintf("别名按错误率因子，切第 %d 跳（%s）", indexes[index]+1, probeBandLabel(band))
+	case indexes[index] > 0:
+		reason = fmt.Sprintf("别名主目标不可用，切第 %d 跳备用（%s）", indexes[index]+1, probeBandLabel(band))
 	}
 	// F6 错误率反哺：因子影响选路时把依据写进 Reason（如「错误率 67%（n=9），降档」）。
 	if pick.note != "" {
@@ -979,7 +990,7 @@ func (h *server) resolveEntry(ctx context.Context, entry routeEntry) routeDecisi
 		Channel:     chain[index].Channel,
 		Alias:       entry.Alias,
 		Reason:      reason,
-		TargetIndex: index,
+		TargetIndex: indexes[index],
 	}
 }
 

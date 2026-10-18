@@ -385,3 +385,54 @@ func TestCircuitReplaysUncommittedIntent(t *testing.T) {
 		t.Fatal("未完成意图没有回放")
 	}
 }
+
+func TestCircuitFallbackKeepsOriginalTargetIndex(t *testing.T) {
+	h, _ := circuitFixture(t)
+	circuitSave(t, h, "daily")
+	for i := 0; i < 3; i++ {
+		circuitFeed(h, false, "upstream_error")
+	}
+	circuitWait(t, func() bool { return len(h.alerts.recentAlerts(10)) == 1 })
+	d := h.resolveEntry(context.Background(), h.routes.snapshotFile().Models[0])
+	if d.RoutedModel != "cn:backup" || d.TargetIndex != 1 {
+		t.Fatalf("备用链索引应为1: %+v", d)
+	}
+}
+
+func TestCircuitGroupSwitchUsesOriginalModel(t *testing.T) {
+	h, advance := circuitFixture(t)
+	circuitSave(t, h, "daily")
+	for i := 0; i < 3; i++ {
+		circuitFeed(h, false, "upstream_error")
+	}
+	circuitWait(t, func() bool { return len(h.alerts.recentAlerts(10)) == 1 })
+	if err := h.routes.setGroupSwitch("cn:bad", false); err != nil {
+		t.Fatal(err)
+	}
+	if h.routes.snapshotFile().Models[0].Enabled {
+		t.Fatal("熔断后关闭原模型没有关闭同组别名")
+	}
+	advance(circuitCooldown)
+	h.circuits.sweep()
+	h.circuits.notify()
+	circuitWait(t, func() bool { return len(h.alerts.recentAlerts(10)) == 2 })
+	e := h.routes.reload().Models[0]
+	if e.Enabled || e.Model != "cn:bad" {
+		t.Fatalf("恢复应保留停用状态: %+v", e)
+	}
+}
+
+func TestCircuitCooldownAutomaticallyRestores(t *testing.T) {
+	h, advance := circuitFixture(t)
+	circuitSave(t, h, "daily")
+	for i := 0; i < 3; i++ {
+		circuitFeed(h, false, "upstream_error")
+	}
+	circuitWait(t, func() bool { return len(h.alerts.recentAlerts(10)) == 1 })
+	advance(circuitCooldown)
+	// 不主动 sweep/notify：必须由后台 cooldown 扫描自行恢复。
+	circuitWait(t, func() bool { return len(h.alerts.recentAlerts(10)) == 2 })
+	if h.circuits.blocked(routeTarget{channelCore, "cn:bad"}) || h.routes.reload().Models[0].Model != "cn:bad" {
+		t.Fatal("后台未自动恢复")
+	}
+}

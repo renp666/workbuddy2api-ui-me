@@ -495,3 +495,10 @@ func (h *server) circuitExitGuard(next http.Handler) http.Handler {
 		next.ServeHTTP(w, r)
 	})
 }
+
+func circuitRouteReason(reason string, index int) string {
+	if index > 0 {
+		return fmt.Sprintf("%s · 熔断切第 %d 跳备用", reason, index+1)
+	}
+	return reason
+}
