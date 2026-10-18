@@ -139,7 +139,8 @@ type server struct {
 	ledger *errorLedger
 	// alerts 是 P1 告警账本（alerts.jsonl 单文件、保留 30 天 + 内存环形缓冲）。
 	// 为 nil 时不做告警检测；与 outcomes/ledger 同一道模块总开关（HealthProbe）。
-	alerts *alertLedger
+	circuits *circuitBreaker
+	alerts   *alertLedger
 	// zcodeQuota 缓存 zcode 账号在 Z.AI 侧的真实模型权益（sidecar GET /quota 的
 	// balances[].showName），GLM 目录按它过滤，不再靠档位名推断。
 	zcodeQuota *zcodeQuotaCache
@@ -277,6 +278,7 @@ func NewServer(cfg Config) (http.Handler, error) {
 		h.ledger.cleanup(time.Now())
 		h.alerts = newAlertLedger(dir)
 		h.alerts.cleanup(time.Now())
+		h.initCircuits(time.Now)
 	}
 	h.zcodeQuota = &zcodeQuotaCache{}
 	assets, err := fs.Sub(webFiles, "web")
@@ -297,7 +299,10 @@ func NewServer(cfg Config) (http.Handler, error) {
 	// 只配了 core 的部署（RouteFile 非空但旁路 URL 全空）同样要挂上，
 	// 否则别名改写与 /v1/models 的 auto 条目会静默失效。
 	if cfg.ZCodeURL != nil || cfg.QoderURL != nil || cfg.OpenCodeURL != nil || cfg.AutoClawURL != nil || cfg.TraeURL != nil || cfg.RaccoonURL != nil || cfg.FreellmURL != nil || cfg.RouteFile != "" {
-		routed := h.publicRouter(public)
+		var routed http.Handler = h.publicRouter(public)
+		if h.circuits != nil {
+			routed = h.circuitExitGuard(routed)
+		}
 		h.mux.Handle("/v1/", h.observePublicExits(routed))
 	} else {
 		h.mux.Handle("/v1/", h.observePublicExits(public))

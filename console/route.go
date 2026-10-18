@@ -464,6 +464,8 @@ func (s *routeStore) modelOverride(model string) (enabled bool, has bool) {
 // 加入启用表；关闭时反之。auto 虚拟模型不受开关约束（它不是真实上游模型）。
 // 返回更新后的两张表副本，供端点回写状态。
 func (s *routeStore) setModelSwitch(model string, enable bool) error {
+	s.saveMu.Lock()
+	defer s.saveMu.Unlock()
 	model = strings.TrimSpace(model)
 	if !validRouteName(model, 128, routeModelChars) {
 		return errors.New("模型名不合法：只允许字母、数字、点、下划线、冒号、连字符、空格、中点和斜杠，长度 1-128")
@@ -488,7 +490,7 @@ func (s *routeStore) setModelSwitch(model string, enable bool) error {
 		return err
 	}
 	next := routeFile{Version: routeFileVersion, Models: current.Models, AutoFallback: current.AutoFallback, DisabledModels: disabled, EnabledModels: enabled}
-	return s.saveFile(next)
+	return s.saveFileLocked(next)
 }
 
 // setGroupSwitch 是「整组启停」的落盘实现：一个真实模型与所有指向它的别名
@@ -498,6 +500,8 @@ func (s *routeStore) setModelSwitch(model string, enable bool) error {
 // 的 Enabled（决定别名调用是否报「已停用」）。分成两次写会出现
 // 「模型开了但别名还关着」的中间态。
 func (s *routeStore) setGroupSwitch(model string, enable bool) error {
+	s.saveMu.Lock()
+	defer s.saveMu.Unlock()
 	model = strings.TrimSpace(model)
 	if !validRouteName(model, 128, routeModelChars) {
 		return errors.New("模型名不合法：只允许字母、数字、点、下划线、冒号、连字符、空格、中点和斜杠，长度 1-128")
@@ -529,7 +533,7 @@ func (s *routeStore) setGroupSwitch(model string, enable bool) error {
 		models = append(models, entry)
 	}
 	next := routeFile{Version: routeFileVersion, Models: models, AutoFallback: current.AutoFallback, DisabledModels: disabled, EnabledModels: enabled}
-	return s.saveFile(next)
+	return s.saveFileLocked(next)
 }
 
 // removeModel 返回去掉某个模型名后的新切片（不改原切片）。
@@ -546,6 +550,12 @@ func removeModel(list []string, model string) []string {
 // saveFile 原子落盘整份配置并替换内存快照，复用与 save() 相同的临时文件 +
 // rename 语义，只是入参已是组装好的 routeFile。
 func (s *routeStore) saveFile(next routeFile) error {
+	s.saveMu.Lock()
+	defer s.saveMu.Unlock()
+	return s.saveFileLocked(next)
+}
+
+func (s *routeStore) saveFileLocked(next routeFile) error {
 	if next.Models == nil {
 		next.Models = []routeEntry{}
 	}
@@ -585,9 +595,11 @@ func (s *routeStore) saveFile(next routeFile) error {
 // routeStore 持有当前生效的路由配置快照。管理端点写入后原子替换内存快照并
 // 落盘，公共 /v1/* 每次解析都读这份快照——保存即生效，不需要重启容器。
 type routeStore struct {
-	mu   sync.RWMutex
-	path string
-	file routeFile
+	mu       sync.RWMutex
+	circuits *circuitBreaker
+	saveMu   sync.Mutex // 整个读-改-写事务串行，包括熔断与 enabled_models。
+	path     string
+	file     routeFile
 }
 
 func newRouteStore(path string) *routeStore {
@@ -601,6 +613,8 @@ func newRouteStore(path string) *routeStore {
 // 其他读取或解析失败都退回上一次可用快照，只打日志，不让一次手滑的编辑
 // 把正在服务的公共出口整个掀翻。
 func (s *routeStore) reload() routeFile {
+	s.saveMu.Lock()
+	defer s.saveMu.Unlock()
 	raw, err := os.ReadFile(s.path)
 	if err != nil {
 		if !errors.Is(err, os.ErrNotExist) {
@@ -622,7 +636,13 @@ func (s *routeStore) reload() routeFile {
 	}
 	// 磁盘上的配置是页面写出来的，仍然按同一套规则复核一次：手工编辑过的
 	// 文件也不允许把非法别名塞进公共出口。
-	if err := validateRouteEntries(file.Models); err != nil {
+	validationModels := append([]routeEntry(nil), file.Models...)
+	if s.circuits != nil {
+		for i, e := range validationModels {
+			validationModels[i] = s.circuits.originalEntry(e)
+		}
+	}
+	if err := validateRouteEntries(validationModels); err != nil {
 		logRouteWarn("路由配置校验失败，沿用上一份配置：", err)
 		return s.snapshotFile()
 	}
@@ -662,6 +682,8 @@ func (s *routeStore) snapshotFile() routeFile {
 // save 校验后原子落盘。写临时文件再 rename，避免进程在写入中途退出时留下
 // 一个被 reload 读成空配置的半截文件。
 func (s *routeStore) save(models []routeEntry, autoFallback string) error {
+	s.saveMu.Lock()
+	defer s.saveMu.Unlock()
 	normalized := normalizeRoutes(models)
 	if err := validateRouteEntries(normalized); err != nil {
 		return err
@@ -677,37 +699,7 @@ func (s *routeStore) save(models []routeEntry, autoFallback string) error {
 	// 会把模型开关的全部人工覆盖静默清空。
 	current := s.snapshotFile()
 	next := routeFile{Version: routeFileVersion, Models: normalized, AutoFallback: fallback, DisabledModels: current.DisabledModels, EnabledModels: current.EnabledModels}
-	encoded, err := json.MarshalIndent(next, "", "  ")
-	if err != nil {
-		return errors.New("路由配置序列化失败")
-	}
-	encoded = append(encoded, '\n')
-	if err := os.MkdirAll(filepath.Dir(s.path), 0o700); err != nil {
-		return errors.New("路由配置目录不可创建")
-	}
-	tmp, err := os.CreateTemp(filepath.Dir(s.path), ".routes-*.json")
-	if err != nil {
-		return errors.New("路由配置临时文件不可创建")
-	}
-	tmpName := tmp.Name()
-	defer os.Remove(tmpName)
-	if _, err := tmp.Write(encoded); err != nil {
-		tmp.Close()
-		return errors.New("路由配置写入失败")
-	}
-	if err := tmp.Close(); err != nil {
-		return errors.New("路由配置写入失败")
-	}
-	if err := os.Chmod(tmpName, 0o600); err != nil {
-		return errors.New("路由配置文件权限设置失败")
-	}
-	if err := os.Rename(tmpName, s.path); err != nil {
-		return errors.New("路由配置替换失败")
-	}
-	s.mu.Lock()
-	s.file = next
-	s.mu.Unlock()
-	return nil
+	return s.saveFileLocked(next)
 }
 
 // snapshot 返回当前生效配置的副本，调用方可以安全遍历。
@@ -933,7 +925,22 @@ func (h *server) resolveAlias(ctx context.Context, model string) (routeDecision,
 // priority 恒取链首，不看探测结论——这是「我就要这条链路」的显式表达，不能被
 // 探测抖动改变。health 才引入探测结论，且只在链内比较，不会跳到链外。
 func (h *server) resolveEntry(ctx context.Context, entry routeEntry) routeDecision {
+	if h.circuits != nil && !circuitProtected(entry) {
+		entry = h.circuits.originalEntry(entry)
+	}
 	chain := entry.targets()
+	if h.circuits != nil && !circuitProtected(entry) {
+		filtered := make([]routeTarget, 0, len(chain))
+		for _, target := range chain {
+			if !h.circuits.blocked(target) {
+				filtered = append(filtered, target)
+			}
+		}
+		chain = filtered
+		if len(chain) == 0 {
+			return routeDecision{Alias: entry.Alias, Channel: channelCore, RoutedModel: "__circuit_open__", Reason: "候选链全部熔断", TargetIndex: -1}
+		}
+	}
 	primary := chain[0]
 	if entry.strategy() != strategyHealth {
 		return routeDecision{
@@ -1184,6 +1191,9 @@ func probeBandFor(candidates map[routeChannel][]probeCandidate, target routeTarg
 
 func (h *server) resolveAuto(ctx context.Context) routeDecision {
 	fallback := h.routes.autoFallback()
+	if h.circuits != nil && h.circuits.blocked(routeTarget{Channel: channelCore, Model: fallback}) {
+		fallback = "__circuit_open__"
+	}
 	candidates, haveData := h.probes.get(ctx, h)
 	// 只收「可用」和「仅对话」两档：把探测失败的模型放进回退链等于把 auto
 	// 变成随机故障源；未探测的模型也不收——没有任何证据说它能跑。
@@ -1195,6 +1205,9 @@ func (h *server) resolveAuto(ctx context.Context) routeDecision {
 		factors := h.routeErrorFactors()
 		for _, list := range candidates {
 			for _, candidate := range list {
+				if h.circuits != nil && h.circuits.blocked(routeTarget{Channel: candidate.Channel, Model: candidate.Model}) {
+					continue
+				}
 				if candidate.Band != 0 && candidate.Band != 1 {
 					continue
 				}

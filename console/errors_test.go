@@ -17,9 +17,9 @@ import (
 // §4 红线、§5 判据 1）。这两条路径只在生产配置（HealthProbe=true + 可写 RouteFile）
 // 下才会打开，测试里显式打开以覆盖真实落盘与聚合口径。
 
-// errorConsole 建一个开启了健康检查模块（错误账本 + 出口观测）的 console。
+// errorConsole 建一个显式开启 M1 错误账本与出口观测的 console。
 //
-// HealthProbe=true 是错误账本的总开关（见 NewServer）：生产由 configFromEnv 置真。
+// 生产由 HealthProbe=true 接线；fixture 不启动后台探活或 F3 worker。
 // RouteFile 指向临时目录，账本与 routes.json 同目录（容器内是 /app/console-data）。
 func errorConsole(t *testing.T, core http.HandlerFunc) (http.Handler, *server, string) {
 	t.Helper()
@@ -28,12 +28,17 @@ func errorConsole(t *testing.T, core http.HandlerFunc) (http.Handler, *server, s
 	cfg := testConfig(coreTS.URL)
 	dir := t.TempDir()
 	cfg.RouteFile = filepath.Join(dir, "routes.json")
-	cfg.HealthProbe = true
+	cfg.HealthProbe = false
 	h, err := NewServer(cfg)
 	if err != nil {
 		t.Fatal(err)
 	}
-	return h, h.(*server), dir
+	srv := h.(*server)
+	// M1 fixture 显式接线账本，避免启动永久后台探活协程与临时目录清理赛跑。
+	srv.outcomes = newOutcomeWindow()
+	srv.ledger = newErrorLedger(dir)
+	srv.alerts = newAlertLedger(dir)
+	return h, srv, dir
 }
 
 // readErrorRawLines 读出账本目录下所有 errors-*.jsonl 的原始行（按行解码成 map，
@@ -505,5 +510,24 @@ func TestExitObservationPassesResponseThrough(t *testing.T) {
 	}
 	if rec.Header().Get("X-Custom") != "kept" {
 		t.Fatalf("响应头被观测改动：%q", rec.Header().Get("X-Custom"))
+	}
+}
+
+func TestCircuitAlertsDoNotSuppressM1(t *testing.T) {
+	dir := t.TempDir()
+	l := newAlertLedger(dir)
+	now := time.Now().UnixMilli()
+	for _, rule := range []string{"circuit_open", "circuit_closed", alertRuleAliasErrorRate, "circuit_open"} {
+		if !l.record(alertEvent{Ts: now, Rule: rule, Level: "P1", Channel: "core", Category: "upstream_error"}) {
+			t.Fatalf("规则 %s 被误抑制", rule)
+		}
+	}
+	if l.record(alertEvent{Ts: now, Rule: alertRuleAliasErrorRate, Channel: "core", Category: "upstream_error"}) {
+		t.Fatal("M1 抑制失效")
+	}
+	replay := newAlertLedger(dir)
+	replay.cleanup(time.Now())
+	if replay.record(alertEvent{Ts: now, Rule: alertRuleAliasErrorRate, Channel: "core", Category: "upstream_error"}) {
+		t.Fatal("回放 M1 抑制失效")
 	}
 }

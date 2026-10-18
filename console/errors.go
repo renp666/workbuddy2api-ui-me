@@ -350,7 +350,8 @@ type outcomeWindow struct {
 	mu      sync.Mutex
 	now     func() time.Time
 	samples []outcomeSample
-	recent  []errorEvent // 最近失败事件，新在前
+	onAdd   func(errorEvent, bool) // 仅入队，按观测顺序保留成功夹隔。
+	recent  []errorEvent           // 最近失败事件，新在前
 }
 
 func newOutcomeWindow() *outcomeWindow {
@@ -366,6 +367,9 @@ func (w *outcomeWindow) add(ev errorEvent, ok bool) {
 		ts: time.UnixMilli(ev.Ts), alias: ev.Alias, channel: routeChannel(ev.Channel), model: ev.ModelResolved,
 		ok: ok, category: ev.Category,
 	})
+	if w.onAdd != nil {
+		w.onAdd(ev, ok)
+	}
 	if !ok {
 		w.recent = append([]errorEvent{ev}, w.recent...)
 		if len(w.recent) > errorRecentKeep {
@@ -741,11 +745,13 @@ func (l *alertLedger) record(ev alertEvent) bool {
 	key := alertSuppressKey(ev.Channel, ev.Category)
 	now := time.UnixMilli(ev.Ts)
 	l.mu.Lock()
-	if last, ok := l.suppressed[key]; ok && now.Sub(last) < alertSuppressWindow {
+	if last, ok := l.suppressed[key]; ok && now.Sub(last) < alertSuppressWindow && ev.Rule != "circuit_open" && ev.Rule != "circuit_closed" {
 		l.mu.Unlock()
 		return false
 	}
-	l.suppressed[key] = now
+	if ev.Rule != "circuit_open" && ev.Rule != "circuit_closed" {
+		l.suppressed[key] = now
+	}
 	l.recent = append([]alertEvent{ev}, l.recent...)
 	if len(l.recent) > alertRecentKeep {
 		l.recent = l.recent[:alertRecentKeep]
@@ -795,7 +801,7 @@ func (l *alertLedger) cleanup(now time.Time) {
 		}
 		kept = append(kept, line)
 		recent = append(recent, ev)
-		if ts.After(suppressed[alertSuppressKey(ev.Channel, ev.Category)]) {
+		if ev.Rule != "circuit_open" && ev.Rule != "circuit_closed" && ts.After(suppressed[alertSuppressKey(ev.Channel, ev.Category)]) {
 			suppressed[alertSuppressKey(ev.Channel, ev.Category)] = ts
 		}
 	}

@@ -1839,3 +1839,29 @@ func TestAutoFallsBackWhenAllCandidatesDemoted(t *testing.T) {
 		t.Fatalf("Reason 应注明降权依据：%q", reason)
 	}
 }
+
+// M2 F3 baseline: priority also has to skip a circuit-open target.
+func TestCircuitThreeFailuresBaseline(t *testing.T) {
+	_, srv := routeConsoleWithOutcomes(t, nil)
+	srv.initCircuits(time.Now)
+	t.Cleanup(func() { close(srv.circuits.stop); <-srv.circuits.done })
+	entry := routeEntry{Alias: "daily", Channel: channelCore, Model: "cn:bad", Enabled: true,
+		Fallbacks: []routeTarget{{Channel: channelCore, Model: "cn:backup"}}}
+	if err := srv.routes.save([]routeEntry{entry}, ""); err != nil {
+		t.Fatal(err)
+	}
+	for i := 0; i < 3; i++ {
+		srv.finishExitObserve(exitObservation{model: "daily", prismChannel: "core", routedModel: "cn:bad", status: 503, body: "upstream failed"})
+	}
+	deadline := time.Now().Add(time.Second)
+	for {
+		decision, _ := srv.resolveAlias(httptest.NewRequest("GET", "/", nil).Context(), "daily")
+		if decision.RoutedModel == "cn:backup" {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("连续3失败后仍选中 %s", decision.RoutedModel)
+		}
+		time.Sleep(time.Millisecond)
+	}
+}
