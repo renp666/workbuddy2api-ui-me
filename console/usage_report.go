@@ -16,6 +16,7 @@ import (
 // Prompt/Completion 为 -1 表示上游未回报；Credit 仅在显式出现时记录（缺失≠0）。
 // Src 传原始对端地址、Client 传原始 User-Agent，脱敏与白名单由 core 落账前完成。
 type usageReportEntry struct {
+	DurationMs int64    `json:"duration_ms"`
 	UID        string   `json:"uid"`
 	Account    string   `json:"account"`
 	Model      string   `json:"model"`
@@ -73,13 +74,21 @@ func (r *usageReporter) report(ctx context.Context, entries []usageReportEntry) 
 }
 
 // reportUsageAsync 独立协程上报（5 秒上限），绝不阻塞或影响调用主链路。
-func (h *server) reportUsageAsync(entries []usageReportEntry) {
-	if len(entries) == 0 || h.cfg.BridgeKey == "" {
+func (h *server) reportUsageAsync(entries []usageReportEntry, captures ...*usageCaptureWriter) {
+	if (len(entries) == 0 && len(captures) == 0) || h.cfg.BridgeKey == "" {
 		return
 	}
 	go func() {
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
+		for _, c := range captures {
+			if e, ok := c.finish(); ok {
+				entries = append(entries, e)
+			}
+		}
+		if ctx.Err() != nil {
+			return
+		}
 		(&usageReporter{client: h.client, coreURL: h.cfg.CoreURL.String(), key: h.cfg.BridgeKey}).report(ctx, entries)
 	}()
 }
@@ -90,10 +99,12 @@ func (h *server) reportUsageAsync(entries []usageReportEntry) {
 // 失败保持沉默——统计是尽力而为，不是调用契约。
 type usageCaptureWriter struct {
 	http.ResponseWriter
-	entry usageReportEntry // UID/Account/Model/Mode 预填，tokens 在 finish 时填充
-	buf   []byte
-	mode  string // "json" | "sse" | ""（未识别则不扫描）
-	set   bool   // 已根据 Content-Type 完成一次模式判定
+	started time.Time
+	ended   time.Time        // 请求结束时冻结，排除异步调度和上报耗时
+	entry   usageReportEntry // UID/Account/Model/Mode 预填，tokens 在 finish 时填充
+	buf     []byte
+	mode    string // "json" | "sse" | ""（未识别则不扫描）
+	set     bool   // 已根据 Content-Type 完成一次模式判定
 }
 
 // newUsageCapture 以通道占位身份（zcode=GLM 通道 / qoder=Qoder 通道 / opencode=OpenCode 通道）构造捕获器。
@@ -130,7 +141,7 @@ func (h *server) newUsageCapture(w http.ResponseWriter, r *http.Request, model, 
 	default:
 		e.Account = "GLM 通道"
 	}
-	return &usageCaptureWriter{ResponseWriter: w, entry: e}
+	return &usageCaptureWriter{ResponseWriter: w, entry: e, started: time.Now()}
 }
 
 // Flush 透传给底层 writer；ReverseProxy 的流式冲刷依赖该接口，缺失会破坏 SSE 实时性。
@@ -169,10 +180,18 @@ func (c *usageCaptureWriter) Write(p []byte) (int, error) {
 	return c.ResponseWriter.Write(p)
 }
 
-// finish 在响应拷贝完成后调用；仅当解析出 usage 时才产出观测（失败调用不计入）。
+// finish 计算成功失败同口径时延；bool 仍表示 usage 存在，不伪造失败用量。
 func (c *usageCaptureWriter) finish() (usageReportEntry, bool) {
+	e := c.entry
+	end := c.ended
+	if end.IsZero() {
+		end = time.Now()
+	}
+	if !c.started.IsZero() {
+		e.DurationMs = end.Sub(c.started).Milliseconds()
+	}
 	if len(c.buf) == 0 {
-		return usageReportEntry{}, false
+		return e, false
 	}
 	var prompt, completion int
 	var credit *float64
@@ -184,18 +203,16 @@ func (c *usageCaptureWriter) finish() (usageReportEntry, bool) {
 		prompt, completion, credit, hasCredit, ok = usageFromSSEBody(c.buf)
 	}
 	if !ok {
-		return usageReportEntry{}, false
+		return e, false
 	}
-	e := c.entry
 	e.Prompt, e.Completion, e.Credit, e.HasCredit = prompt, completion, credit, hasCredit
 	return e, true
 }
 
 // finishUsageCapture 在代理返回后提交捕获结果并异步上报。
 func (h *server) finishUsageCapture(c *usageCaptureWriter) {
-	if e, ok := c.finish(); ok {
-		h.reportUsageAsync([]usageReportEntry{e})
-	}
+	c.ended = time.Now()
+	h.reportUsageAsync(nil, c)
 }
 
 // usageFromJSONBody 从聚合 JSON 响应提取 usage 观测，与 core usagelog 同语义：

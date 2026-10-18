@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bufio"
 	"encoding/json"
 	"fmt"
 	"log"
@@ -326,6 +327,45 @@ func (l *errorLedger) record(ev errorEvent) {
 	}
 }
 
+// daily429 读取既有当日账本；不受查询窗口、重启、内存裁剪影响。
+// I/O 只在管理查询中执行，调用链路仍异步追加，不新增文件。
+func (l *errorLedger) daily429(now time.Time) []rateLimitDailyStat {
+	out := []rateLimitDailyStat{}
+	l.store.mu.Lock()
+	defer l.store.mu.Unlock()
+	f, err := os.Open(l.store.pathFor(now.Format("20060102")))
+	if err != nil {
+		return out
+	}
+	defer f.Close()
+	start := dayStart(now.Format("20060102"))
+	end := start.AddDate(0, 0, 1)
+	counts := map[[2]string]int{}
+	scanner := bufio.NewScanner(f)
+	scanner.Buffer(make([]byte, 4096), 1<<20)
+	for scanner.Scan() {
+		var ev errorEvent
+		if json.Unmarshal(scanner.Bytes(), &ev) != nil || ev.Category != "rate_limit" {
+			continue
+		}
+		ts := time.UnixMilli(ev.Ts)
+		if ts.Before(start) || !ts.Before(end) {
+			continue
+		}
+		counts[[2]string{ev.Channel, ev.ModelResolved}]++
+	}
+	for key, count := range counts {
+		out = append(out, rateLimitDailyStat{Channel: key[0], Model: key[1], Count: count})
+	}
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].Channel != out[j].Channel {
+			return out[i].Channel < out[j].Channel
+		}
+		return out[i].Model < out[j].Model
+	})
+	return out
+}
+
 // cleanup 清理过期账本（启动时调用一次）。
 func (l *errorLedger) cleanup(now time.Time) {
 	l.store.cleanup(now)
@@ -338,12 +378,13 @@ func (l *errorLedger) cleanup(now time.Time) {
 // 否则重启后只剩失败样本，错误率会被虚高成 100%。
 
 type outcomeSample struct {
-	ts       time.Time
-	alias    string // 命中别名时的客户端原名（未命中留空）
-	channel  routeChannel
-	model    string // 通道原生模型名
-	ok       bool
-	category string // 失败时的归类
+	ts         time.Time
+	alias      string // 命中别名时的客户端原名（未命中留空）
+	channel    routeChannel
+	model      string // 通道原生模型名
+	ok         bool
+	category   string // 失败时的归类
+	durationMs int64  // 成功失败共用出口时延，usage 不重复计样本
 }
 
 type outcomeWindow struct {
@@ -365,7 +406,7 @@ func (w *outcomeWindow) add(ev errorEvent, ok bool) {
 	defer w.mu.Unlock()
 	w.samples = append(w.samples, outcomeSample{
 		ts: time.UnixMilli(ev.Ts), alias: ev.Alias, channel: routeChannel(ev.Channel), model: ev.ModelResolved,
-		ok: ok, category: ev.Category,
+		ok: ok, category: ev.Category, durationMs: ev.DurationMs,
 	})
 	if w.onAdd != nil {
 		w.onAdd(ev, ok)
@@ -418,9 +459,10 @@ type outcomeAggregate struct {
 	models            map[routeChannel]map[string]windowStats
 	categories        map[string]int
 	channelCategories map[routeChannel]map[string]int
+	durations         map[routeChannel]map[string][]int64
 }
 
-// collect 汇总窗口内的样本。倒序遍历，遇到窗口外的样本即可停（样本按时间追加）。
+// collect 汇总窗口内样本；并发请求可能不按观测时间入队。
 func (w *outcomeWindow) collect(window time.Duration) outcomeAggregate {
 	cutoff := w.now().Add(-window)
 	agg := outcomeAggregate{
@@ -428,13 +470,20 @@ func (w *outcomeWindow) collect(window time.Duration) outcomeAggregate {
 		models:            map[routeChannel]map[string]windowStats{},
 		categories:        map[string]int{},
 		channelCategories: map[routeChannel]map[string]int{},
+		durations:         map[routeChannel]map[string][]int64{},
 	}
 	w.mu.Lock()
 	defer w.mu.Unlock()
 	for i := len(w.samples) - 1; i >= 0; i-- {
 		sample := w.samples[i]
 		if sample.ts.Before(cutoff) {
-			break
+			continue
+		}
+		if sample.durationMs >= 0 {
+			if agg.durations[sample.channel] == nil {
+				agg.durations[sample.channel] = map[string][]int64{}
+			}
+			agg.durations[sample.channel][sample.model] = append(agg.durations[sample.channel][sample.model], sample.durationMs)
 		}
 		agg.channels[sample.channel] = agg.channels[sample.channel].plus(sample)
 		if sample.ok {
@@ -505,6 +554,45 @@ func (w *outcomeWindow) recentFailures(n int) []errorEvent {
 
 // —— 聚合响应模型（/admin/errors）————————————————
 
+type rateLimitDailyStat struct {
+	Channel string `json:"channel"`
+	Model   string `json:"model"`
+	Count   int    `json:"count"`
+}
+
+type modelLatencyStat struct {
+	Channel string `json:"channel"`
+	Model   string `json:"model"`
+	Samples int    `json:"samples"`
+	P50Ms   *int64 `json:"p50_ms"`
+	P95Ms   *int64 `json:"p95_ms"`
+}
+
+// buildModelLatencyStats 输出全部模型，不受 top3 截断。
+// nearest-rank：ceil(N*p) 的样本；不足五条明确输出 null。
+func buildModelLatencyStats(agg outcomeAggregate) []modelLatencyStat {
+	out := []modelLatencyStat{}
+	for channel, models := range agg.durations {
+		for model, values := range models {
+			row := modelLatencyStat{Channel: string(channel), Model: model, Samples: len(values)}
+			if len(values) >= 5 {
+				sort.Slice(values, func(i, j int) bool { return values[i] < values[j] })
+				p50 := values[(len(values)*50+99)/100-1]
+				p95 := values[(len(values)*95+99)/100-1]
+				row.P50Ms, row.P95Ms = &p50, &p95
+			}
+			out = append(out, row)
+		}
+	}
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].Channel != out[j].Channel {
+			return out[i].Channel < out[j].Channel
+		}
+		return out[i].Model < out[j].Model
+	})
+	return out
+}
+
 type errorModelStat struct {
 	Model     string  `json:"model"`
 	OK        int     `json:"ok"`
@@ -555,6 +643,11 @@ func (h *server) adminErrors(w http.ResponseWriter, r *http.Request) {
 		"channels":     []errorChannelStat{},
 		"categories":   []errorCategoryStat{},
 		"recent":       []errorEvent{},
+		"r429_daily":   []rateLimitDailyStat{},
+		"latency":      []modelLatencyStat{},
+	}
+	if h.ledger != nil {
+		out["r429_daily"] = h.ledger.daily429(time.Now())
 	}
 	if h.outcomes != nil {
 		agg := h.outcomes.collect(window)
@@ -562,6 +655,7 @@ func (h *server) adminErrors(w http.ResponseWriter, r *http.Request) {
 		out["fail"] = agg.total.fail
 		out["error_rate"] = roundRate(agg.total.rate())
 		out["channels"] = buildErrorChannelStats(agg)
+		out["latency"] = buildModelLatencyStats(agg)
 		out["categories"] = buildErrorCategoryStats(agg.categories, agg.total.fail)
 		out["recent"] = h.outcomes.recentFailures(errorRecentLimit)
 	}

@@ -441,3 +441,76 @@ func TestUsageReportCorePathDoesNotDoubleCount(t *testing.T) {
 		t.Fatalf("core path must not produce usage reports, got %d", got)
 	}
 }
+
+func TestM2UsageDurationCapture(t *testing.T) {
+	h := &server{}
+	for _, body := range []string{`{"usage":{"prompt_tokens":1}}`, `{"error":"rate limit"}`} {
+		c := h.newUsageCapture(httptest.NewRecorder(), httptest.NewRequest("POST", "/v1/chat/completions", nil), "qoder-native", "qoder", false)
+		c.Header().Set("Content-Type", "application/json")
+		time.Sleep(20 * time.Millisecond)
+		_, _ = c.Write([]byte(body))
+		e, ok := c.finish()
+		raw, _ := json.Marshal(e)
+		var got map[string]any
+		_ = json.Unmarshal(raw, &got)
+		duration, exists := got["duration_ms"].(float64)
+		if !exists || duration < 20 || duration > 2000 {
+			t.Fatalf("duration: %s", raw)
+		}
+		if ok != strings.Contains(body, "usage") {
+			t.Fatalf("usage presence changed: %v", ok)
+		}
+	}
+}
+
+func TestM2UsageDurationAsync(t *testing.T) {
+	started, release, received := make(chan struct{}), make(chan struct{}), make(chan usageReportEntry, 1)
+	core := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		close(started)
+		<-release
+		var payload struct {
+			Entries []usageReportEntry `json:"entries"`
+		}
+		_ = json.NewDecoder(r.Body).Decode(&payload)
+		if len(payload.Entries) == 1 {
+			received <- payload.Entries[0]
+		}
+		w.WriteHeader(202)
+	}))
+	defer core.Close()
+	defer close(release)
+	h := &server{cfg: testConfig(core.URL), client: core.Client()}
+	c := h.newUsageCapture(httptest.NewRecorder(), httptest.NewRequest("POST", "/v1/chat/completions", nil), "qoder-native", "qoder", false)
+	c.started = time.Now().Add(-50 * time.Millisecond)
+	c.Header().Set("Content-Type", "application/json")
+	_, _ = c.Write([]byte(`{"usage":{"prompt_tokens":1}}`))
+	done := make(chan struct{})
+	go func() { h.finishUsageCapture(c); close(done) }()
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("usage blocked main response")
+	}
+	select {
+	case <-started:
+	case <-time.After(time.Second):
+		t.Fatal("report did not start")
+	}
+	// 延迟上报不应增加已冻结的调用时延。
+	time.Sleep(30 * time.Millisecond)
+	e, _ := c.finish()
+	want := c.ended.Sub(c.started).Milliseconds()
+	if e.DurationMs != want {
+		t.Fatalf("duration=%d want=%d", e.DurationMs, want)
+	}
+	// 解锁后校验实际桥接 payload。
+	release <- struct{}{}
+	select {
+	case got := <-received:
+		if got.DurationMs != want {
+			t.Fatalf("reported duration=%d want=%d", got.DurationMs, want)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("report not received")
+	}
+}

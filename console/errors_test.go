@@ -531,3 +531,98 @@ func TestCircuitAlertsDoNotSuppressM1(t *testing.T) {
 		t.Fatal("回放 M1 抑制失效")
 	}
 }
+
+// M2 A2：日计数不随查询窗口、进程重启或内存样本裁剪丢失。
+func TestM2RateLimitDaily(t *testing.T) {
+	l := newErrorLedger(t.TempDir())
+	now := time.Now()
+	for _, ev := range []errorEvent{
+		{Ts: now.UnixMilli(), Channel: "qoder", ModelResolved: "native", Category: "rate_limit", UpstreamStatus: 429},
+		{Ts: now.UnixMilli(), Channel: "qoder", ModelResolved: "native", Category: "rate_limit", UpstreamStatus: 429},
+		{Ts: now.UnixMilli(), Channel: "core", ModelResolved: "native", Category: "rate_limit", UpstreamStatus: 429},
+		{Ts: now.UnixMilli(), Channel: "core", ModelResolved: "native", Category: "upstream", UpstreamStatus: 500},
+		{Ts: now.AddDate(0, 0, -1).UnixMilli(), Channel: "qoder", ModelResolved: "native", Category: "rate_limit", UpstreamStatus: 429},
+	} {
+		l.record(ev)
+	}
+	f, err := os.OpenFile(l.store.pathFor(now.Format("20060102")), os.O_APPEND|os.O_WRONLY, 0o600)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, _ = f.WriteString("broken json\n")
+	_ = f.Close()
+	// 新实例、没有 outcomes：只读既有错误账本。
+	h := &server{ledger: newErrorLedger(l.store.dir)}
+	for _, window := range []string{"15m", "1h", "24h"} {
+		w := httptest.NewRecorder()
+		h.adminErrors(w, httptest.NewRequest("GET", "/admin/errors?window="+window, nil))
+		var got map[string]json.RawMessage
+		_ = json.Unmarshal(w.Body.Bytes(), &got)
+		if string(got["r429_daily"]) != `[{"channel":"core","model":"native","count":1},{"channel":"qoder","model":"native","count":2}]` {
+			t.Fatalf("daily=%s", got["r429_daily"])
+		}
+	}
+}
+
+func TestM2LatencyMixedWindows(t *testing.T) {
+	w := newOutcomeWindow()
+	now := time.Now()
+	w.now = func() time.Time { return now }
+	// 按时间追加；不同窗口各纳入五条成功失败混合样本。
+	for _, age := range []time.Duration{2 * time.Hour, 30 * time.Minute, time.Minute} {
+		for i := 1; i <= 5; i++ {
+			w.add(errorEvent{Ts: now.Add(-age).UnixMilli(), Channel: "qoder", ModelResolved: "native", DurationMs: int64(i * 100)}, i%2 == 0)
+		}
+	}
+	for i := 0; i < 4; i++ {
+		w.add(errorEvent{Ts: now.UnixMilli(), Channel: "core", ModelResolved: "small", DurationMs: 0}, true)
+	}
+	h := &server{outcomes: w}
+	for _, window := range []string{"15m", "1h", "24h"} {
+		rr := httptest.NewRecorder()
+		h.adminErrors(rr, httptest.NewRequest("GET", "/admin/errors?window="+window, nil))
+		var got struct {
+			Latency []struct {
+				Channel string `json:"channel"`
+				Model   string `json:"model"`
+				Samples int    `json:"samples"`
+				P50     *int64 `json:"p50_ms"`
+				P95     *int64 `json:"p95_ms"`
+			} `json:"latency"`
+		}
+		if err := json.Unmarshal(rr.Body.Bytes(), &got); err != nil {
+			t.Fatal(err)
+		}
+		if len(got.Latency) != 2 {
+			t.Fatalf("latency=%s", rr.Body)
+		}
+		small, mixed := got.Latency[0], got.Latency[1]
+		if small.Samples != 4 || small.P50 != nil || small.P95 != nil {
+			t.Fatalf("small=%+v", small)
+		}
+		wantSamples := map[string]int{"15m": 5, "1h": 10, "24h": 15}[window]
+		if mixed.Channel != "qoder" || mixed.Model != "native" || mixed.Samples != wantSamples || mixed.P50 == nil || *mixed.P50 != 300 || mixed.P95 == nil || *mixed.P95 != 500 {
+			t.Fatalf("mixed=%+v", mixed)
+		}
+	}
+}
+
+func TestM2LatencyEmptyZeroAndOutOfOrder(t *testing.T) {
+	h := &server{}
+	rr := httptest.NewRecorder()
+	h.adminErrors(rr, httptest.NewRequest("GET", "/admin/errors", nil))
+	if !strings.Contains(rr.Body.String(), `"latency":[]`) || !strings.Contains(rr.Body.String(), `"r429_daily":[]`) {
+		t.Fatalf("empty=%s", rr.Body)
+	}
+	w := newOutcomeWindow()
+	now := time.Now()
+	w.now = func() time.Time { return now }
+	for i := 0; i < 5; i++ {
+		w.add(errorEvent{Ts: now.UnixMilli(), Channel: "core", ModelResolved: "zero"}, true)
+	}
+	w.add(errorEvent{Ts: now.Add(-2 * time.Hour).UnixMilli(), Channel: "core", ModelResolved: "old", DurationMs: 900}, false)
+	stats := buildModelLatencyStats(w.collect(15 * time.Minute))
+	if len(stats) != 1 || stats[0].Samples != 5 || stats[0].P50Ms == nil || *stats[0].P50Ms != 0 || stats[0].P95Ms == nil || *stats[0].P95Ms != 0 {
+		t.Fatalf("stats=%+v", stats)
+	}
+}
