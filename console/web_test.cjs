@@ -1291,7 +1291,7 @@ test('core model table groups rows by owning account when accounts are present',
   assert.equal(rows.length,6,'grouped rows missing');
   assert.equal(rows[0].className,'model-group-head');
   assert.match(rows[0].children[0].textContent,/一号 · 2 个模型/);
-  assert.equal(rows[0].children[0].colSpan,10);
+  assert.equal(rows[0].children[0].colSpan,11);
   assert.equal(rows[1].children[0].textContent,'cn:alpha');
   assert.equal(rows[2].children[0].textContent,'cn:beta');
   assert.match(rows[3].children[0].textContent,/二号 · 2 个模型/);
@@ -1439,7 +1439,7 @@ test('autoclaw model table groups by owning account, badges agent tier and notes
   assert.equal(rows.length,6,'autoclaw grouped rows missing');
   assert.equal(rows[0].className,'model-group-head');
   assert.match(rows[0].children[0].textContent,/一号 · 3 个模型/);
-  assert.equal(rows[0].children[0].colSpan,9,'autoclaw 分组头要跨满 9 列（含新增的开关列）');
+  assert.equal(rows[0].children[0].colSpan,10,'autoclaw 分组头要跨满 10 列（含新增的开关列）');
   assert.equal(rows[0].children[0].children[0].textContent,'含 global: 前缀的模型实际由国内版账号承接');
   assert.equal(rows[1].children[0].textContent,'autoclaw-cn:alpha');
   assert.equal(rows[2].children[0].textContent,'autoclaw-cn:beta');
@@ -2421,9 +2421,9 @@ test('credit column shows the multiplier, switches default open, and sorts cheap
   assert.deepEqual(rows.map(tr=>tr.children[9].children[0].textContent),['已启用','已启用','已启用'],'switch badge must default to enabled');
   assert.deepEqual(rows.map(tr=>tr.children[9].children[2].dataset.action),['disable-model','disable-model','disable-model'],'switch button must offer the opposite action');
   assert.deepEqual(rows.map(tr=>tr.children[9].children[2].dataset.model),['cn:free','cn:paid','cn:unknown'],'switch button must carry the public model name');
-  // 免费通道不加积分列，但有开关列（共 9 列）。
+  // 免费通道不加积分列，但有开关与健康列（共 10 列）。
   await vm.runInContext("renderModelTable('opencode',[{id:'opencode-OC · Free'}],{modelResults:{}})",ctx);
-  assert.equal(get('opencode-models-body').children[0].children.length,9,'opencode must carry the switch column without a credit column');
+  assert.equal(get('opencode-models-body').children[0].children.length,10,'opencode must carry the switch column without a credit column');
   assert.equal(get('opencode-models-body').children[0].children[8].children[0].textContent,'已启用','free channel switch must also default to enabled');
   // 点击委托：默认启用的模型点「停用」应 POST 一次开关（closest 按选择器区分 pin 与开关两条委托）。
   const switchButton=rows[1].children[9].children[2];
@@ -2440,7 +2440,7 @@ test('trae 有倍率但默认全启用：补出积分与开关两列，只认显
   const {ctx,get}=taskFixture(()=>new Promise(()=>{}));
   await vm.runInContext("renderModelTable('trae',[{id:'trae-GLM-5.3',credits:'x0.78'},{id:'trae-Seed-Code',credits:'x0.06'},{id:'trae-unknown'}])",ctx);
   const rows=get('trae-models-body').children;
-  assert.deepEqual(rows.map(tr=>tr.children.length),[10,10,10],'trae 模型表要补出「积分消耗」「操作」两列，共 10 列');
+  assert.deepEqual(rows.map(tr=>tr.children.length),[11,11,11],'trae 模型表含「积分消耗」「操作」「健康」，共 11 列');
   assert.deepEqual(rows.map(tr=>tr.children[0].textContent),['trae-Seed-Code','trae-GLM-5.3','trae-unknown'],'trae 按倍率升序，未知倍率排最后');
   assert.deepEqual(rows.map(tr=>tr.children[8].textContent),['×0.06','×0.78','未知'],'积分消耗列要显示上游倍率，未公布的写「未知」而不是 0');
   assert.deepEqual(rows.map(tr=>tr.children[9].children[0].textContent),['已启用','已启用','已启用'],'trae 模型默认必须全部启用，倍率不参与判定');
@@ -2451,7 +2451,7 @@ test('trae 有倍率但默认全启用：补出积分与开关两列，只认显
   assert.deepEqual(get('trae-models-body').children.map(tr=>tr.children[9].children[0].textContent),['已启用','已停用'],'显式停用必须盖过默认启用');
   // 免费三家没有倍率数据（缺失不等于 0），不设积分列，但开关列照常存在。
   await vm.runInContext("renderModelTable('autoclaw',[{id:'autoclaw-auto'}])",ctx);
-  assert.equal(get('autoclaw-models-body').children[0].children.length,9,'autoclaw 免费通道没有积分列但要有开关列');
+  assert.equal(get('autoclaw-models-body').children[0].children.length,10,'autoclaw 免费通道没有积分列但要有开关与健康列');
 });
 
 test('cn: and global: variants of the same name stay separate rows with their own credits and accounts',async()=>{
@@ -4618,4 +4618,127 @@ test('没有 config_hint 时概览时间戳保持干净，不挂空告警',async
   const stamp=get('overview-health-stamp').textContent;
   assert.match(stamp,/最近一轮/,'时间戳丢失');
   assert.doesNotMatch(stamp,/⚠/,'没有告警却挂了警示符');
+});
+
+
+// M2-B fixture 留在死清单内；Go 测试用 overlay 注入，临时文件只写系统临时目录。
+test('M2-B backend health and global Top fixtures', () => {
+  const fs=require('node:fs'),os=require('node:os'),path=require('node:path');
+  const {spawnSync}=require('node:child_process');
+  const dir=fs.mkdtempSync(path.join(os.tmpdir(),'prism-m2b-'));
+  try {
+    const fixture=path.join(dir,'fixture_test.go');
+    fs.writeFileSync(fixture,`package main
+import ("encoding/json"; "net/http"; "testing"; "time")
+func TestM2BFixture(t *testing.T) {
+ h0,_:=testConsole(t,func(w http.ResponseWriter,r *http.Request){if !mockInfo(w,r){w.Write([]byte(\x60{"data":[{"id":"cn:ok","extra":"kept"},{"id":"cn:degraded"},{"id":"cn:boundary"},{"id":"cn:fail"},{"id":"cn:unknown"},{"id":"cn:probe-ok"},{"id":"cn:probe-fail"},{"id":"cn:probe-unknown"}]}\x60))}})
+ h:=h0.(*server)
+ h.outcomes=newOutcomeWindow();h.probe=newProbeRunner()
+ now:=time.Now()
+ for _,row:=range []struct{model string;fail int}{{"cn:ok",1},{"cn:degraded",2},{"cn:boundary",8},{"cn:fail",9}} {
+  for i:=0;i<10;i++{h.outcomes.add(errorEvent{Ts:now.UnixMilli(),Channel:"core",ModelResolved:row.model,DurationMs:int64(i)},i>=row.fail)}
+ }
+ h.outcomes.add(errorEvent{Ts:now.Add(-25*time.Hour).UnixMilli(),Channel:"core",ModelResolved:"cn:unknown"},false)
+ h.probe.record(channelCore,"cn:probe-ok",map[string]any{"ok":true})
+ h.probe.record(channelCore,"cn:probe-fail",map[string]any{"ok":false})
+ h.probe.record(channelCore,"cn:probe-unknown",map[string]any{"category":"unknown"})
+ h.probe.record(channelCore,"cn:ok",map[string]any{"ok":false})
+ cookie,csrf:=login(t,h)
+ w:=adminRequest(h,"GET","/admin/models","",cookie,csrf)
+ var models struct{Data []map[string]any \x60json:"data"\x60}
+ if w.Code!=200||json.Unmarshal(w.Body.Bytes(),&models)!=nil{t.Fatal(w.Code,w.Body)}
+ expected:=[]string{"fail","degraded","degraded","fail","unknown","ok","fail","unknown"}
+ for i,row:=range models.Data{if row["health"]!=expected[i]{t.Fatalf("health row %d: %+v",i,row)}}
+ if models.Data[0]["extra"]!="kept"||models.Data[0]["health_samples"]!=float64(10)||models.Data[4]["health_error_rate"]!=nil{t.Fatal(models.Data)}
+ // 全局前五必须包含同通道第四名（通道 top3 不足以拼全局榜），零失败不入榜。
+ h.outcomes=newOutcomeWindow()
+ for _,c:=range []string{"core","qoder"}{for i,n:=range []int{10,9,8,7,0}{for j:=0;j<n+2;j++{h.outcomes.add(errorEvent{Ts:now.UnixMilli(),Channel:c,ModelResolved:string(rune('a'+i))},j>=n)}}}
+ w=adminRequest(h,"GET","/admin/errors?window=24h","",cookie,csrf)
+ var errors struct{OK,Fail int;Top []struct{Model,Channel string;Fail int;Rate float64 \x60json:"error_rate"\x60} \x60json:"top_models"\x60}
+ if json.Unmarshal(w.Body.Bytes(),&errors)!=nil||len(errors.Top)!=5{t.Fatal(w.Body)}
+ for i,row:=range errors.Top{if row.Fail!=[]int{10,10,9,9,8}[i]||row.Channel!=[]string{"core","qoder","core","qoder","core"}[i]{t.Fatal(errors.Top)}}
+ h.outcomes=newOutcomeWindow()
+ for i,n:=range []int{10,9,8,7,6,0}{for j:=0;j<n+2;j++{h.outcomes.add(errorEvent{Ts:now.UnixMilli(),Channel:"core",ModelResolved:string(rune('a'+i))},j>=n)}}
+ w=adminRequest(h,"GET","/admin/errors?window=15m","",cookie,csrf)
+ if json.Unmarshal(w.Body.Bytes(),&errors)!=nil||len(errors.Top)!=5||errors.Top[3].Model!="d"||errors.Top[4].Rate!=0.75{t.Fatal(w.Body)}
+ h.outcomes=nil
+ w=adminRequest(h,"GET","/admin/errors","",cookie,csrf)
+ if json.Unmarshal(w.Body.Bytes(),&errors)!=nil||len(errors.Top)!=0{t.Fatal(w.Body)}
+}
+`);
+    const overlay=path.join(dir,'overlay.json');
+    fs.writeFileSync(overlay,JSON.stringify({Replace:{[path.join(__dirname,'m2b_fixture_test.go')]:fixture}}));
+    const result=spawnSync('go',['test','-overlay',overlay,'-count=1','-run','^TestM2BFixture$','.'],{cwd:__dirname,encoding:'utf8',timeout:120000});
+    assert.equal(result.status,0,result.error?.message||result.stdout+result.stderr);
+  } finally {fs.rmSync(dir,{recursive:true,force:true});}
+});
+
+test('M2-B model health badges and alias health use exact identities, unknown stays unscored', () => {
+  const {ctx,get}=taskFixture(()=>new Promise(()=>{}));
+  ctx.healthFixture={data:[{id:'cn:a',health:'ok',health_samples:10,health_error_rate:0.1},{id:'global:a',health:'degraded',health_samples:10,health_error_rate:0.8},{id:'cn:b',health:'fail',health_samples:5,health_error_rate:1},{id:'cn:c',health:'unknown',health_samples:0,health_error_rate:null}],health_models:[{channel:'qoder',model:'a',health:'degraded',health_samples:5,health_error_rate:0.4}]};
+  vm.runInContext("applyModelHealth(healthFixture);renderModelTable('core',healthFixture.data,null)",ctx);
+  const badges=get('core-models-body').children.map(tr=>tr.children.at(-1).children[0]);
+  assert.deepEqual(badges.map(b=>b.className),['badge ok','badge warn','badge bad','badge unknown']);
+  assert.match(badges[0].title,/10\.0%.*10/);
+  assert.match(badges[3].title,/—.*0/);
+  vm.runInContext("renderRouteAliases([{alias:'same',channel:'qoder',model:'a',enabled:true}])",ctx);
+  assert.equal(get('routes-alias-body').children[0].children.at(-1).children[0].textContent,'degraded');
+});
+
+test('M2-B global Top, latency and daily 429 render server facts with empty/null states', () => {
+  const {ctx,get}=taskFixture(()=>new Promise(()=>{}));
+  ctx.errorsFixture={ok:10,fail:20,error_rate:2/3,top_models:Array.from({length:6},(_,i)=>({model:'<model>'+i,channel:'qoder',fail:9-i,error_rate:0.5})),latency:[{channel:'qoder',model:'a',p50_ms:0,p95_ms:123},{channel:'core',model:'b',p50_ms:null,p95_ms:null}],r429_daily:[{channel:'qoder',model:'a',count:12},{channel:'core',model:'b',count:20}]};
+  vm.runInContext('errorsState=errorsFixture;renderErrorStats()',ctx);
+  assert.equal(get('errors-top-body').children.length,5);
+  assert.equal(get('errors-top-body').children[0].children[0].textContent,'<model>0');
+  assert.equal(get('errors-top-body').children[0].children[3].textContent,'50.0%');
+  assert.deepEqual(get('errors-latency-body').children.map(tr=>tr.children.slice(2).map(td=>td.textContent)),[['0 ms','123 ms'],['—','—']]);
+  assert.equal(get('errors-429-count').textContent,'32');
+  assert.equal(get('errors-429-body').children[0].children[0].textContent,'b');
+  vm.runInContext('errorsState={};renderErrorStats()',ctx);
+  for(const id of ['errors-top-empty','errors-latency-empty','errors-429-empty'])assert.equal(get(id).hidden,false);
+  assert.equal(get('errors-429-count').textContent,'0');
+});
+
+
+test('M2-B window switches discard stale Top and latency responses', async () => {
+  const pending=new Map();
+  const {ctx,get}=taskFixture(url=>{
+    if(url.startsWith('/admin/errors?'))return new Promise(resolve=>pending.set(url,resolve));
+    return new Promise(()=>{});
+  });
+  vm.runInContext("page='overview'",ctx);
+  const first=vm.runInContext('loadErrorStats()',ctx);
+  vm.runInContext("setErrorsWindow('1h')",ctx);
+  pending.get('/admin/errors?window=1h')({ok:true,status:200,json:async()=>({window:'1h',top_models:[{model:'new',channel:'core',fail:2,error_rate:0.5}],latency:[{model:'new',channel:'core',p50_ms:10,p95_ms:20}]})});
+  await new Promise(resolve=>setImmediate(resolve));
+  pending.get('/admin/errors?window=15m')({ok:true,status:200,json:async()=>({window:'15m',top_models:[{model:'stale',channel:'core',fail:9,error_rate:1}]})});
+  await first;
+  assert.equal(get('errors-top-body').children[0].children[0].textContent,'new');
+  assert.equal(get('errors-latency-body').children[0].children[2].textContent,'10 ms');
+  vm.runInContext("setErrorsWindow('24h')",ctx);
+  assert.ok(pending.has('/admin/errors?window=24h'));
+});
+
+test('M2-B HTML headers match model health columns and all errors views', () => {
+  const html=readFileSync(__dirname+'/web/index.html','utf8');
+  for(const channel of ['core','zcode','qoder','opencode','freellm','autoclaw','trae','traeai','raccoon']) {
+    const head=html.match(new RegExp('<thead><tr>([^\\n]*?)</tr></thead><tbody id="'+channel+'-models-body"'))[1];
+    assert.match(head,/<th>健康<\/th>/);
+    assert.equal((head.match(/<th(?: |>)/g)||[]).length,['core','zcode','qoder','trae','traeai'].includes(channel)?11:10);
+  }
+  for(const id of ['errors-top-body','errors-latency-body','errors-429-body','errors-429-count'])assert.ok(html.includes('id="'+id+'"'));
+  assert.equal((html.match(/<h2>最近错误事件<\/h2>/g)||[]).length,1);
+});
+
+
+test('M2-B health query failure does not hide the alias configuration', async () => {
+  const {ctx,get}=taskFixture(url=>{
+    if(url==='/admin/models')return Promise.reject(new Error('core offline'));
+    if(url==='/admin/route')return Promise.resolve({ok:true,status:200,json:async()=>({enabled:true,aliases:[{alias:'a',channel:'core',model:'cn:a',enabled:true}],channels:[]})});
+    return new Promise(()=>{});
+  });
+  await vm.runInContext('loadRoutes()',ctx);
+  assert.equal(get('routes-content').hidden,false);
+  assert.equal(get('routes-alias-body').children.length,1);
 });

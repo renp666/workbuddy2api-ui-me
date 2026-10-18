@@ -600,6 +600,11 @@ type errorModelStat struct {
 	ErrorRate float64 `json:"error_rate"`
 }
 
+type errorTopModelStat struct {
+	Channel string `json:"channel"`
+	errorModelStat
+}
+
 type errorChannelStat struct {
 	Channel    string           `json:"channel"`
 	OK         int              `json:"ok"`
@@ -641,6 +646,7 @@ func (h *server) adminErrors(w http.ResponseWriter, r *http.Request) {
 		"fail":         0,
 		"error_rate":   0,
 		"channels":     []errorChannelStat{},
+		"top_models":   []errorTopModelStat{},
 		"categories":   []errorCategoryStat{},
 		"recent":       []errorEvent{},
 		"r429_daily":   []rateLimitDailyStat{},
@@ -655,6 +661,7 @@ func (h *server) adminErrors(w http.ResponseWriter, r *http.Request) {
 		out["fail"] = agg.total.fail
 		out["error_rate"] = roundRate(agg.total.rate())
 		out["channels"] = buildErrorChannelStats(agg)
+		out["top_models"] = buildGlobalTopErrorModels(agg)
 		out["latency"] = buildModelLatencyStats(agg)
 		out["categories"] = buildErrorCategoryStats(agg.categories, agg.total.fail)
 		out["recent"] = h.outcomes.recentFailures(errorRecentLimit)
@@ -993,4 +1000,30 @@ func (h *server) adminAlerts(w http.ResponseWriter, r *http.Request) {
 		out["alerts"] = h.alerts.recentAlerts(alertRecentKeep)
 	}
 	writeJSON(w, 200, out)
+}
+
+// buildGlobalTopErrorModels 从完整模型计数取前五，不拼已截断的通道 top3。
+func buildGlobalTopErrorModels(agg outcomeAggregate) []errorTopModelStat {
+	out := []errorTopModelStat{}
+	for channel, models := range agg.models {
+		for model, stat := range models {
+			if stat.fail == 0 {
+				continue
+			}
+			out = append(out, errorTopModelStat{Channel: string(channel), errorModelStat: errorModelStat{Model: model, OK: stat.ok, Fail: stat.fail, ErrorRate: roundRate(stat.rate())}})
+		}
+	}
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].Fail != out[j].Fail {
+			return out[i].Fail > out[j].Fail
+		}
+		if out[i].Channel != out[j].Channel {
+			return out[i].Channel < out[j].Channel
+		}
+		return out[i].Model < out[j].Model
+	})
+	if len(out) > 5 {
+		out = out[:5]
+	}
+	return out
 }

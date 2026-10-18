@@ -37,7 +37,13 @@
    <div class="panel table-wrap"><table><thead><tr><th>类别</th><th class="num">失败次数</th><th>占比</th></tr></thead><tbody id="errors-categories-body"></tbody></table><p id="errors-categories-empty" class="empty">窗口内没有失败调用。</p></div>
    <div class="section-title"><h2>按通道错误数</h2><span class="muted small">每个通道一行：成功 / 失败 / 错误率与失败最多的模型</span></div>
    <div class="panel table-wrap"><table><thead><tr><th>通道</th><th class="num">成功</th><th class="num">失败</th><th class="num">错误率</th><th>类别</th><th>失败最多的模型</th></tr></thead><tbody id="errors-channels-body"></tbody></table><p id="errors-channels-empty" class="empty">窗口内没有调用样本。</p></div>
-   <div class="section-title"><h2>最近错误事件</h2><span class="muted small">窗口内最近 20 条失败调用；展开可看脱敏后的上游摘要</span></div>
+   <div class="section-title"><h2>Top 错误模型</h2><span class="muted small">当前窗口全局前 5 · 模型 / 通道 / 次数 / 错误率</span></div>
+   <div class="panel table-wrap"><table><thead><tr><th>模型</th><th>通道</th><th class="num">失败次数</th><th class="num">错误率</th></tr></thead><tbody id="errors-top-body"></tbody></table><p id="errors-top-empty" class="empty">窗口内没有失败模型。</p></div>
+   <div class="section-title"><h2>模型时延</h2><span class="muted small">跟随当前窗口 · 成功 + 失败 · 样本不足 5 条显示 —</span></div>
+   <div class="panel table-wrap"><table><thead><tr><th>模型</th><th>通道</th><th class="num">p50</th><th class="num">p95</th></tr></thead><tbody id="errors-latency-body"></tbody></table><p id="errors-latency-empty" class="empty">窗口内没有时延样本。</p></div>
+   <div class="section-title"><h2>当日 429</h2><span class="muted small">合计 <strong id="errors-429-count">0</strong> 次 · 当日模型 Top 5，不随窗口切换</span></div>
+   <div class="panel table-wrap"><table><thead><tr><th>模型</th><th>通道</th><th class="num">429 次数</th></tr></thead><tbody id="errors-429-body"></tbody></table><p id="errors-429-empty" class="empty">当日没有 429 记录。</p></div>
+   <div class="section-title"><h2>最近错误事件</h2><span class="muted small">最近 20 条</span></div>
    <div id="errors-recent" class="task-grid"></div><p id="errors-recent-empty" class="empty">窗口内没有失败事件。</p>
   </section>
   <section class="page" data-page="workbuddy" hidden><div class="page-heading"><div><h1>WorkBuddy 通道</h1><p class="muted">本网关的核心通道：账号授权、自动任务、模型列表与对话测试。上游为 WorkBuddy / CodeBuddy，账号池与调度器由 core 自持。全通道调用统计在左侧「调用统计」页。</p></div></div>
@@ -60,7 +66,7 @@
    <div id="workbuddy-pane-models" hidden>
     <div class="section-title"><h2>模型列表</h2><span class="muted small">来自 core 的 <code>/v1/models</code>；core 不提供探测结论，需点「测速探测」手工触发</span><button id="models-group-toggle" class="secondary" aria-pressed="true">▤ 按账号分层</button><button id="probe-core" class="secondary">⚡ 测速探测</button></div>
     <p id="probe-core-progress" class="muted small" role="status" aria-live="polite" hidden></p>
-    <div class="panel table-wrap"><table><thead><tr><th>模型 ID</th><th>能力</th><th>状态</th><th class="num">耗时</th><th class="num">速度</th><th>说明</th><th>热度</th><th>全球热度</th><th class="num">积分消耗</th><th>操作</th></tr></thead><tbody id="core-models-body"></tbody></table><p id="core-models-empty" class="empty">暂无模型。</p></div>
+    <div class="panel table-wrap"><table><thead><tr><th>模型 ID</th><th>能力</th><th>状态</th><th class="num">耗时</th><th class="num">速度</th><th>说明</th><th>热度</th><th>全球热度</th><th class="num">积分消耗</th><th>操作</th><th>健康</th></tr></thead><tbody id="core-models-body"></tbody></table><p id="core-models-empty" class="empty">暂无模型。</p></div>
    </div>
    <div id="workbuddy-pane-chat" hidden>
     <div class="section-title"><h2>对话测试</h2><span class="muted small">真实请求经过同一账号池；对话只保留在当前页面，刷新即清空</span><button id="clear-chat" class="secondary">清空对话</button></div>
@@ -88,7 +94,7 @@
     <div id="zcode-pane-models" hidden>
     <div class="section-title" id="zcode-models-title"><h2>GLM 模型</h2><span class="muted small">来自 zcode-proxy 的 <code>/v1/models</code>；zcode 不提供探测结论，需点「测速探测」手工触发</span><button id="probe-zcode" class="secondary">⚡ 测速探测</button></div>
     <p id="probe-zcode-progress" class="muted small" role="status" aria-live="polite" hidden></p>
-    <div class="panel table-wrap" id="zcode-models-table"><table><thead><tr><th>模型 ID</th><th>能力</th><th>状态</th><th class="num">耗时</th><th class="num">速度</th><th>说明</th><th>热度</th><th>全球热度</th><th class="num">积分消耗</th><th>操作</th></tr></thead><tbody id="zcode-models-body"></tbody></table><p id="zcode-models-empty" class="empty">暂无模型。</p></div>
+    <div class="panel table-wrap" id="zcode-models-table"><table><thead><tr><th>模型 ID</th><th>能力</th><th>状态</th><th class="num">耗时</th><th class="num">速度</th><th>说明</th><th>热度</th><th>全球热度</th><th class="num">积分消耗</th><th>操作</th><th>健康</th></tr></thead><tbody id="zcode-models-body"></tbody></table><p id="zcode-models-empty" class="empty">暂无模型。</p></div>
     <p id="zcode-models-note" class="muted small" hidden>列表已按账号在 Z.AI 侧的真实权益过滤（<code>/quota</code> 的 <code>balances[].showName</code>），只展示当前套餐真正能调通的模型；权益不可达时退回按档位判断。</p>
     </div>
     <div id="zcode-pane-chat" hidden>
@@ -117,7 +123,7 @@
     <div id="qoder-pane-models" hidden>
     <div class="section-title"><h2>Qoder 模型</h2><span class="muted small">来自 qoder-proxy 的 <code>/v1/models</code>；qoder 不提供探测结论，需点「测速探测」手工触发</span><button id="probe-qoder" class="secondary">⚡ 测速探测</button></div>
     <p id="probe-qoder-progress" class="muted small" role="status" aria-live="polite" hidden></p>
-    <div class="panel table-wrap"><table><thead><tr><th>模型 ID</th><th>能力</th><th>状态</th><th class="num">耗时</th><th class="num">速度</th><th>说明</th><th>热度</th><th>全球热度</th><th class="num">积分消耗</th><th>操作</th></tr></thead><tbody id="qoder-models-body"></tbody></table><p id="qoder-models-empty" class="empty">暂无模型。</p></div>
+    <div class="panel table-wrap"><table><thead><tr><th>模型 ID</th><th>能力</th><th>状态</th><th class="num">耗时</th><th class="num">速度</th><th>说明</th><th>热度</th><th>全球热度</th><th class="num">积分消耗</th><th>操作</th><th>健康</th></tr></thead><tbody id="qoder-models-body"></tbody></table><p id="qoder-models-empty" class="empty">暂无模型。</p></div>
     </div>
     <div id="qoder-pane-chat" hidden>
     <div class="section-title"><h2>对话测试</h2><span class="muted small">OpenAI 流式协议，真实请求转发给 qoder-proxy</span></div>
@@ -137,7 +143,7 @@
     </div>
     <div id="opencode-pane-models" hidden>
     <div class="section-title"><h2>OpenCode 模型</h2><span class="muted small">来自 OW Bridge 的 <code>/v1/models</code>，并合并 <code>/health</code> 的探测结论（含探测未通过的模型）</span></div>
-    <div class="panel table-wrap"><table><thead><tr><th>模型 ID</th><th>能力</th><th>状态</th><th class="num">耗时</th><th class="num">速度</th><th>说明</th><th>热度</th><th>全球热度</th></tr></thead><tbody id="opencode-models-body"></tbody></table><p id="opencode-models-empty" class="empty">暂无模型。</p></div>
+    <div class="panel table-wrap"><table><thead><tr><th>模型 ID</th><th>能力</th><th>状态</th><th class="num">耗时</th><th class="num">速度</th><th>说明</th><th>热度</th><th>全球热度</th><th>操作</th><th>健康</th></tr></thead><tbody id="opencode-models-body"></tbody></table><p id="opencode-models-empty" class="empty">暂无模型。</p></div>
     <p id="opencode-models-note" class="muted small">免费通道：不采集积分倍率（缺失不等于 0）；模型默认启用，可用操作列开关停用，停用后调用返回「已停用」；同时免登录，没有账号池可锁。</p>
     </div>
     <div id="opencode-pane-chat" hidden>
@@ -157,7 +163,7 @@
      <div class="panel table-wrap" id="freellm-health-wrap" hidden><table><thead><tr><th>字段</th><th>值</th></tr></thead><tbody id="freellm-health-body"></tbody></table></div></article>
    </div>
     <div id="freellm-pane-models" hidden>
-    <div class="panel table-wrap"><table><thead><tr><th>模型 ID</th><th>能力</th><th>状态</th><th class="num">耗时</th><th class="num">速度</th><th>说明</th><th>热度</th><th>全球热度</th></tr></thead><tbody id="freellm-models-body"></tbody></table><p id="freellm-models-empty" class="empty">暂无模型。</p></div>
+    <div class="panel table-wrap"><table><thead><tr><th>模型 ID</th><th>能力</th><th>状态</th><th class="num">耗时</th><th class="num">速度</th><th>说明</th><th>热度</th><th>全球热度</th><th>操作</th><th>健康</th></tr></thead><tbody id="freellm-models-body"></tbody></table><p id="freellm-models-empty" class="empty">暂无模型。</p></div>
     <p id="freellm-models-note" class="muted small">免费通道：不采集积分倍率（缺失不等于 0）；清单已按 sidecar 的 execution_status 裁剪，只列此刻真能调用的条目（缺供应商 key 或正在冷却的不在此列，全集条数见「通道状态」）；模型默认启用，可用操作列开关停用；池内路由、熔断、key 轮换、缓存与提示压缩全部下放 sidecar，棱镜不重复策略。</p>
     <div class="section-title"><h2>FreeLLMAPI 模型</h2><span class="muted small">来自 FreeLLMAPI 的 <code>/v1/models</code>；探测结论需点「测速探测」手工触发</span><button id="probe-freellm" class="secondary">⚡ 测速探测</button></div>
     <p id="probe-freellm-progress" class="muted small" role="status" aria-live="polite" hidden></p>
@@ -207,7 +213,7 @@
     <div id="autoclaw-pane-models" hidden>
     <div class="section-title"><h2>AutoClaw 模型</h2><span class="muted small">来自 autoclaw2api 的 <code>/v1/models</code>；探测结论需点「测速探测」手工触发</span><button id="probe-autoclaw" class="secondary">⚡ 测速探测</button></div>
     <p id="probe-autoclaw-progress" class="muted small" role="status" aria-live="polite" hidden></p>
-    <div class="panel table-wrap"><table><thead><tr><th>模型 ID</th><th>能力</th><th>状态</th><th class="num">耗时</th><th class="num">速度</th><th>说明</th><th>热度</th><th>全球热度</th></tr></thead><tbody id="autoclaw-models-body"></tbody></table><p id="autoclaw-models-empty" class="empty">暂无模型。</p></div>
+    <div class="panel table-wrap"><table><thead><tr><th>模型 ID</th><th>能力</th><th>状态</th><th class="num">耗时</th><th class="num">速度</th><th>说明</th><th>热度</th><th>全球热度</th><th>操作</th><th>健康</th></tr></thead><tbody id="autoclaw-models-body"></tbody></table><p id="autoclaw-models-empty" class="empty">暂无模型。</p></div>
     <p id="autoclaw-models-note" class="muted small">免费通道：不采集积分倍率（缺失不等于 0）；模型默认启用，可用操作列开关停用，停用后调用返回「已停用」。</p>
     </div>
     <div id="autoclaw-pane-chat" hidden>
@@ -251,7 +257,7 @@
     <div id="trae-pane-models" hidden>
     <div class="section-title"><h2>Trae 模型</h2><span class="muted small">来自 trae2api 的 <code>/v1/models</code>；探测结论需点「测速探测」手工触发</span><button id="probe-trae" class="secondary">⚡ 测速探测</button></div>
     <p id="probe-trae-progress" class="muted small" role="status" aria-live="polite" hidden></p>
-    <div class="panel table-wrap"><table><thead><tr><th>模型 ID</th><th>能力</th><th>状态</th><th class="num">耗时</th><th class="num">速度</th><th>说明</th><th>热度</th><th>全球热度</th><th class="num">积分消耗</th><th>操作</th></tr></thead><tbody id="trae-models-body"></tbody></table><p id="trae-models-empty" class="empty">暂无模型。</p></div>
+    <div class="panel table-wrap"><table><thead><tr><th>模型 ID</th><th>能力</th><th>状态</th><th class="num">耗时</th><th class="num">速度</th><th>说明</th><th>热度</th><th>全球热度</th><th class="num">积分消耗</th><th>操作</th><th>健康</th></tr></thead><tbody id="trae-models-body"></tbody></table><p id="trae-models-empty" class="empty">暂无模型。</p></div>
     <p id="trae-models-note" class="muted small">倍率来自上游 <code>consumption_rate</code>，语义是「套餐额度的消耗率」，不是单次扣费：只用于展示与排序，模型默认启用，只有显式停用才停用。在 Trae 客户端里手动添加的自定义模型不会列在这里——它们是网关自己的别名，列出来会指向网关形成套娃。</p>
     </div>
     <div id="trae-pane-chat" hidden>
@@ -300,7 +306,7 @@
     <div id="traeai-pane-models" hidden>
     <div class="section-title"><h2>Trae 国际版模型</h2><span class="muted small">来自 trae2api intl 实例的 <code>/v1/models</code>；探测结论需点「测速探测」手工触发</span><button id="probe-traeai" class="secondary">⚡ 测速探测</button></div>
     <p id="probe-traeai-progress" class="muted small" role="status" aria-live="polite" hidden></p>
-    <div class="panel table-wrap"><table><thead><tr><th>模型 ID</th><th>能力</th><th>状态</th><th class="num">耗时</th><th class="num">速度</th><th>说明</th><th>热度</th><th>全球热度</th><th class="num">积分消耗</th><th>操作</th></tr></thead><tbody id="traeai-models-body"></tbody></table><p id="traeai-models-empty" class="empty">暂无模型。</p></div>
+    <div class="panel table-wrap"><table><thead><tr><th>模型 ID</th><th>能力</th><th>状态</th><th class="num">耗时</th><th class="num">速度</th><th>说明</th><th>热度</th><th>全球热度</th><th class="num">积分消耗</th><th>操作</th><th>健康</th></tr></thead><tbody id="traeai-models-body"></tbody></table><p id="traeai-models-empty" class="empty">暂无模型。</p></div>
     <p id="traeai-models-note" class="muted small">倍率来自上游 <code>consumption_rate</code>，语义是「订阅额度的消耗率」，不是单次扣费：只用于展示与排序，模型默认启用，只有显式停用才停用。国际版保留上游目录里的自定义与 BYOK 槽位条目（国内版会剔除网关别名回流），列出的即上游实际可路由的名字。</p>
     </div>
     <div id="traeai-pane-chat" hidden>
@@ -338,7 +344,7 @@
     <div id="raccoon-pane-models" hidden>
     <div class="section-title"><h2>小浣熊模型</h2><span class="muted small">来自 raccoon2api 的 <code>/v1/models</code>；探测结论需点「测速探测」手工触发</span><button id="probe-raccoon" class="secondary">⚡ 测速探测</button></div>
     <p id="probe-raccoon-progress" class="muted small" role="status" aria-live="polite" hidden></p>
-    <div class="panel table-wrap"><table><thead><tr><th>模型 ID</th><th>能力</th><th>状态</th><th class="num">耗时</th><th class="num">速度</th><th>说明</th><th>热度</th><th>全球热度</th></tr></thead><tbody id="raccoon-models-body"></tbody></table><p id="raccoon-models-empty" class="empty">暂无模型。</p></div>
+    <div class="panel table-wrap"><table><thead><tr><th>模型 ID</th><th>能力</th><th>状态</th><th class="num">耗时</th><th class="num">速度</th><th>说明</th><th>热度</th><th>全球热度</th><th>操作</th><th>健康</th></tr></thead><tbody id="raccoon-models-body"></tbody></table><p id="raccoon-models-empty" class="empty">暂无模型。</p></div>
     <p id="raccoon-models-note" class="muted small">免费通道：不采集积分倍率（缺失不等于 0）；模型默认启用，可用操作列开关停用，停用后调用返回「已停用」。</p>
     </div>
     <div id="raccoon-pane-chat" hidden>
@@ -376,7 +382,7 @@
      <p class="muted small">模型名填 <code>gateway-auto</code> 时，网关会自动挑一个当前最好用的（优先挑能正常干活的，其次只支持对话的；同档里挑响应最快的）。如果一个都挑不出来，就走上面那个兜底模型。想拿到最新结论，去各通道模型页点「测速探测」。</p></article>
     <div class="section-title"><h2>我的别名表</h2><span class="muted small">名字只能用字母、数字和 <code>._:-</code>；另外 <code>glm-</code> / <code>qoder-</code> / <code>opencode-</code> / <code>autoclaw-</code> / <code>trae-</code> / <code>traeai-</code> / <code>raccoon-</code> / <code>freellm-</code> / <code>cn:</code> / <code>global:</code> 开头以及 <code>gateway-auto</code> 已被系统占用，不能重名。用 ↑↓ 调整顺序；「测试」会真发一条最小对话，失败原因直接显示在提示里；「一键测试」把当前启用的别名逐个跑一遍（多个别名指向同一个模型时只测一次，已停用的跳过），跑完状态列会一起刷新</span><button id="routes-alias-test-all" class="secondary">⚡ 一键测试</button></div>
     <p id="routes-alias-test-progress" class="muted small" role="status" aria-live="polite" hidden></p>
-    <div class="panel table-wrap"><table><thead><tr><th>别名</th><th>通道</th><th>真实模型</th><th>状态</th><th class="num">速度</th><th>说明</th><th>操作</th></tr></thead><tbody id="routes-alias-body"></tbody></table><p id="routes-alias-empty" class="empty">还没有别名。用下面的表单添加第一个吧。</p></div>
+    <div class="panel table-wrap"><table><thead><tr><th>别名</th><th>通道</th><th>真实模型</th><th>状态</th><th class="num">速度</th><th>说明</th><th>操作</th><th>健康</th></tr></thead><tbody id="routes-alias-body"></tbody></table><p id="routes-alias-empty" class="empty">还没有别名。用下面的表单添加第一个吧。</p></div>
     <article class="panel" id="routes-alias-panel"><div class="section-title"><h2>添加 / 修改别名</h2><span class="badge warn" id="routes-alias-editing" hidden></span></div>
      <form id="routes-alias-form" class="inline-form"><label for="routes-alias-name">起个名字</label><input id="routes-alias-name" placeholder="my-fast" autocomplete="off" required><label for="routes-alias-channel">走哪个通道</label><select id="routes-alias-channel"></select><label for="routes-alias-model">指向哪个模型</label><select id="routes-alias-model" required></select><input id="routes-alias-model-custom" placeholder="手动填模型名" autocomplete="off" hidden><label for="routes-alias-note">备注</label><input id="routes-alias-note" placeholder="可选，方便自己记" autocomplete="off"><button id="routes-alias-save" class="primary" type="submit">保存别名</button><button id="routes-alias-reset" class="secondary" type="button">取消编辑</button></form>
      <p class="muted small">「指向哪个模型」只列当前通道的模型，换通道会自动跟着换；清单里没有的模型选「自定义…（手动填）」自己写。</p></article>

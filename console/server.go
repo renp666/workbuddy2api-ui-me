@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"crypto/rand"
 	"crypto/sha256"
@@ -15,6 +16,7 @@ import (
 	"net"
 	"net/http"
 	"net/url"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -408,6 +410,7 @@ func NewServer(cfg Config) (http.Handler, error) {
 	h.mux.HandleFunc("GET /admin/probe", h.withAdmin(h.adminProbeState))
 	// 常态健康检查：GET 即时跑一轮「网关 + 七通道」总览并附后台探活历史（只读）。
 	h.mux.HandleFunc("GET /admin/health", h.withAdmin(h.adminHealth))
+	h.mux.HandleFunc("GET /admin/models", h.withAdmin(h.adminModels))
 	// 错误统计：GET 聚合窗口内的成功/失败样本（健康检查 M1 · F1），供健康页
 	// 「错误统计」区块消费；数据源是内存滚动窗口，不读失败账本（避免错误率虚高）。
 	h.mux.HandleFunc("GET /admin/errors", h.withAdmin(h.adminErrors))
@@ -423,7 +426,6 @@ func NewServer(cfg Config) (http.Handler, error) {
 	}))
 	for _, route := range []struct{ pattern, method, path string }{
 		{"GET /admin/status", "GET", "/internal/v1/status"},
-		{"GET /admin/models", "GET", "/internal/v1/models"},
 		{"POST /admin/chat", "POST", "/internal/v1/chat"},
 		{"POST /admin/messages", "POST", "/internal/v1/messages"},
 		{"POST /admin/oauth", "POST", "/internal/v1/oauth"},
@@ -694,4 +696,124 @@ func (h *server) adminLogout(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, 200, map[string]bool{"ok": true})
+}
+
+// modelHealthRows 只读 24h 调用窗口与 /admin/health 共用的逐模型探测缓存。
+// 探测结论不混入调用分母；无 bool 结论不等于失败，通道历史也不能冒充模型结论。
+func (h *server) modelHealthRows() []map[string]any {
+	stats := map[routeChannel]map[string]windowStats{}
+	if h.outcomes != nil {
+		stats = h.outcomes.collect(24 * time.Hour).models
+	}
+	probes := map[routeChannel]map[string]map[string]any{}
+	for _, channel := range routeChannelOrder {
+		if h.probe != nil {
+			probes[channel] = map[string]map[string]any{}
+			for public, result := range h.probe.channelResults(channel) {
+				probes[channel][nativeModelName(channel, public)] = result
+			}
+		}
+		for model := range probes[channel] {
+			if stats[channel] == nil {
+				stats[channel] = map[string]windowStats{}
+			}
+			if _, exists := stats[channel][model]; !exists {
+				stats[channel][model] = windowStats{}
+			}
+		}
+	}
+	rows := []map[string]any{}
+	for channel, models := range stats {
+		for model, stat := range models {
+			state := "unknown"
+			var rate any
+			samples := stat.ok + stat.fail
+			if samples > 0 {
+				rate = roundRate(stat.rate())
+				switch {
+				case stat.rate() < 0.2:
+					state = "ok"
+				case stat.rate() <= 0.8:
+					state = "degraded"
+				default:
+					state = "fail"
+				}
+			}
+			if ok, known := probes[channel][model]["ok"].(bool); known {
+				if !ok {
+					state = "fail"
+				} else if samples == 0 {
+					state = "ok"
+				}
+			}
+			rows = append(rows, map[string]any{"channel": string(channel), "model": model, "health": state, "health_samples": samples, "health_error_rate": rate})
+		}
+	}
+	return rows
+}
+
+// adminModels 保留既有管理代理的鉴权/owner 与目录字段，只补内存健康快照。
+func (h *server) adminModels(w http.ResponseWriter, r *http.Request) {
+	if _, err := h.coreInfo(r.Context()); err != nil {
+		adminError(w, 503, err.Error())
+		return
+	}
+	if !h.sessionActive(r) {
+		adminError(w, 401, "管理会话已过期，请重新登录")
+		return
+	}
+	proxy := h.proxy(true)
+	proxy.ModifyResponse = func(resp *http.Response) error {
+		if resp.StatusCode != http.StatusOK {
+			return nil
+		}
+		raw, err := io.ReadAll(resp.Body)
+		resp.Body.Close()
+		if err != nil {
+			return err
+		}
+		var payload map[string]any
+		if json.Unmarshal(raw, &payload) == nil {
+			if models, ok := payload["data"].([]any); ok {
+				healthRows := h.modelHealthRows()
+				byModel := map[string]map[string]any{}
+				for _, row := range healthRows {
+					if row["channel"] == string(channelCore) {
+						byModel[row["model"].(string)] = row
+					}
+				}
+				for _, item := range models {
+					row, ok := item.(map[string]any)
+					if !ok {
+						continue
+					}
+					id, _ := row["id"].(string)
+					row["health"], row["health_samples"], row["health_error_rate"] = "unknown", 0, nil
+					if health := byModel[id]; health != nil {
+						for _, key := range []string{"health", "health_samples", "health_error_rate"} {
+							row[key] = health[key]
+						}
+					}
+				}
+				// 旁路与别名表复用同一快照，不新增接口或持久化文件。
+				payload["health_models"] = healthRows
+				raw, err = json.Marshal(payload)
+				if err != nil {
+					return err
+				}
+				resp.Header.Del("ETag")
+				resp.Header.Set("Content-Type", "application/json")
+			}
+		}
+		resp.Body = io.NopCloser(bytes.NewReader(raw))
+		resp.ContentLength = int64(len(raw))
+		resp.Header.Set("Content-Length", strconv.Itoa(len(raw)))
+		return nil
+	}
+	req := r.Clone(r.Context())
+	req.URL.Path, req.URL.RawPath, req.RequestURI = "/internal/v1/models", "", ""
+	req.Body, req.ContentLength, req.TransferEncoding = nil, 0, nil
+	req.Header.Del("Content-Length")
+	req.Header.Del("Content-Type")
+	proxy.ServeHTTP(w, req)
 }

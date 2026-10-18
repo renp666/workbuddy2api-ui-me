@@ -29,6 +29,7 @@ let healthState = null, healthGeneration = 0, healthPollTimer;
 // errorsWindow 是错误统计区块当前的窗口档（15m/1h/24h，默认 15m，与后端默认一致）；
 // errorsState 是 GET /admin/errors 的最近一份聚合（成功+失败样本，重启从零累计）。
 let errorsWindow = '15m', errorsState = null, errorsGeneration = 0;
+let modelHealth = new Map();
 let selectedTaskRun, historyGeneration = 0, historyLoading = false, taskHistoryKey;
 const taskIntents = new Map(), taskReads = new Set();
 function newConversation() { return `web-${Date.now()}-${Math.random().toString(36).slice(2)}`; }
@@ -77,7 +78,7 @@ function signedOut() {
  probeSnapshot={running:false,done:0,total:0,channels:{}};probeTarget='';probeBusy=false;clearTimeout(probeTimer);probeTimer=undefined;for(const n of Object.keys(probeChannelNames)){$('probe-'+n+'-progress').hidden=true;$('probe-'+n+'-progress').textContent='';}
 $('refresh-stamp').hidden=true;$('refresh-stamp').textContent='';
  overviewUsageItems=[];overviewGeneration++;healthState=null;healthGeneration++;clearTimeout(healthPollTimer);healthPollTimer=undefined;
- errorsState=null;errorsGeneration++;errorsWindow='15m';setErrorsWindowButtons();
+ modelHealth.clear();errorsState=null;errorsGeneration++;errorsWindow='15m';setErrorsWindowButtons();
  pinState={cn:null,global:null};lastStatus=null;renderPinBanner();
 }
 async function signedIn(session) {
@@ -418,7 +419,7 @@ function renderModelTable(channel,list,health){
  const body=$(config.body);body.replaceChildren();
  const rows=channelModelRows(channel,list,health);
  const hasCredits=channelHasCredits(channel);
- const cols=hasCredits?10:9;
+ const cols=hasCredits?11:10;
  const appendRow=row=>{
   const tr=document.createElement('tr');
   // 只有异常行抬底色：可用/未知是常态，整表染色等于没染色，失败行反而被淹掉。
@@ -429,7 +430,7 @@ function renderModelTable(channel,list,health){
   // 所有通道都追加「操作」开关列：停用=对话请求返回已停用；采集倍率的通道再加
   // 「积分消耗」列，免费三通道没有倍率数据，不设该列（缺失不等于 0）。
   if(hasCredits){ tr.append(creditCell(row)); }
-  tr.append(switchOpCell(row));
+  tr.append(switchOpCell(row),modelHealthCell(channel,row.id,health&&health.modelResults&&health.modelResults[row.id]));
   body.append(tr);
  };
  if(modelTableGroupsByAccount(channel)&&modelsGroupByAccount&&rows.some(row=>Array.isArray(row.accounts)&&row.accounts.length)){
@@ -716,12 +717,12 @@ function setErrorsWindowButtons(){
 // setErrorsWindow 切换三档窗口：只改档位并重取聚合，样本切片由后端做（前端不缓存各档）。
 function setErrorsWindow(key){
  if(key===errorsWindow||!errorsWindowButtons.some(entry=>entry[0]===key))return;
- errorsWindow=key;setErrorsWindowButtons();
+ errorsWindow=key;errorsGeneration++;setErrorsWindowButtons();
  if(page==='overview')void loadErrorStats();
 }
 async function loadErrorStats(quiet){
  if(!csrf)return;
- const generation=errorsGeneration;
+ const generation=++errorsGeneration;
  try{
   const data=await jsonAPI('errors?window='+errorsWindow);
   if(generation!==errorsGeneration)return;
@@ -746,6 +747,7 @@ function renderErrorStats(){
  renderErrorCategories(data);
  renderErrorChannels(data);
  renderErrorRecent(data);
+ renderErrorModels(data);
 }
 // renderErrorCategories 类别分布：失败次数 + 占比条（占比分母是窗口内失败总数）。
 function renderErrorCategories(data){
@@ -1077,7 +1079,8 @@ function renderAccessModelSelect() {
 }
 async function refreshModels() {
  try {
-  const models=(await jsonAPI('models')).data||[];if(activeRequest)return;
+  const data=await jsonAPI('models');if(activeRequest)return;
+  applyModelHealth(data);const models=data.data||[];
   const previous=$('model').value;modelList=models;$('model').replaceChildren();
   for (const model of modelList) { $('model').append(new Option(modelOption(model),model.id)); }
   if (modelList.some(m=>m.id===previous)) $('model').value=previous;
@@ -2342,8 +2345,8 @@ function routeChannelLabel(channel){return routeChannelLabels[channel]||channel|
 async function loadRoutes(){
  if(!csrf)return;
  try{
-  const state=await jsonAPI('route');
-  renderRoutes(state);
+  const [state,models]=await Promise.all([jsonAPI('route'),jsonAPI('models').catch(()=>null)]);
+  if(models)applyModelHealth(models);renderRoutes(state);
   // 榜单只在别名页用得上，跟着这条路走懒加载；服务端 24h 缓存，重复点「刷新」不会打穿外网。
   if(state.enabled)void loadCapabilities();
  }catch(error){notice(error.message);}
@@ -2438,7 +2441,7 @@ function renderRouteAliases(aliases){
    if(!removeArmed){removeArmed=true;remove.textContent='再次点击确认删除';return;}
    saveRouteAliases(currentRouteAliases().filter(item=>item.alias!==entry.alias));
   });
-  actions.append(toggle,test,edit,remove);tr.append(actions);body.append(tr);
+  actions.append(toggle,test,edit,remove);tr.append(actions,modelHealthCell(entry.channel,entry.public_model||entry.model,entry.probe));body.append(tr);
  });
 }
 // moveRouteAlias 上下移动一条别名并整表保存；越界直接忽略（按钮本身也已禁用）。
@@ -3976,3 +3979,49 @@ $('raccoon-form').addEventListener('submit',async event=>{
 });
 
 jsonAPI('session').then(signedIn).catch(()=>{});
+
+// 健康只读 24h 快照；不要用 modelKey 折叠 cn/global 或不同通道的原生模型。
+function modelHealthKey(channel,model){
+ const c=channel==='zcode'?'glm':channel==='workbuddy'?'core':channel;
+ const prefixes={qoder:'qoder-',opencode:'opencode-',autoclaw:'autoclaw-',trae:'trae-',traeai:'traeai-',raccoon:'raccoon-',freellm:'freellm-'};
+ const prefix=prefixes[c];const name=String(model||'');
+ return JSON.stringify([c,prefix&&name.startsWith(prefix)?name.slice(prefix.length):name]);
+}
+function applyModelHealth(data){
+ modelHealth.clear();
+ for(const row of data.health_models||[])modelHealth.set(JSON.stringify([row.channel,row.model]),row);
+ for(const row of data.data||[])if(row.health)modelHealth.set(modelHealthKey('core',row.id),row);
+ for(const [channel,source] of Object.entries(modelHeatSources))renderModelTable(channel,source.list,source.health);
+ if(routesState&&Array.isArray(routesState.aliases))renderRouteAliases(routesState.aliases);
+}
+function modelHealthCell(channel,model,probe){
+ const row=modelHealth.get(modelHealthKey(channel,model));
+ const state=row?row.health:probe&&typeof probe.ok==='boolean'?(probe.ok?'ok':'fail'):'unknown';
+ const tones={ok:'ok',degraded:'warn',fail:'bad',unknown:'unknown'};
+ const td=badgeCell(tones[state]?state:'unknown',tones[state]||'unknown');
+ const samples=row?row.health_samples:0;
+ td.children[0].title=`24h 错误率 ${samples>0?formatErrorRate(row.health_error_rate):'—'} · 样本 ${samples||0} 次（unknown 不计分母）`;
+ return td;
+}
+function formatLatency(value){return typeof value==='number'&&Number.isFinite(value)&&value>=0?`${value} ms`:'—';}
+function renderErrorModels(data){
+ const top=$('errors-top-body');top.replaceChildren();
+ const topRows=(data.top_models||[]).slice(0,5);$('errors-top-empty').hidden=topRows.length>0;
+ for(const row of topRows){
+  const tr=document.createElement('tr');
+  tr.append(cell(row.model),channelCell(routeChannelLabel(row.channel),row.channel),numCell(String(row.fail)),numCell(formatErrorRate(row.error_rate)));top.append(tr);
+ }
+ const latency=$('errors-latency-body');latency.replaceChildren();
+ const latencyRows=data.latency||[];$('errors-latency-empty').hidden=latencyRows.length>0;
+ for(const row of latencyRows){
+  const tr=document.createElement('tr');
+  tr.append(cell(row.model),channelCell(routeChannelLabel(row.channel),row.channel),numCell(formatLatency(row.p50_ms)),numCell(formatLatency(row.p95_ms)));latency.append(tr);
+ }
+ const daily=$('errors-429-body');daily.replaceChildren();
+ const dailyRows=(data.r429_daily||[]).slice().sort((a,b)=>b.count-a.count||String(a.channel).localeCompare(String(b.channel))||String(a.model).localeCompare(String(b.model)));
+ $('errors-429-empty').hidden=dailyRows.length>0;
+ $('errors-429-count').textContent=String(dailyRows.reduce((sum,row)=>sum+row.count,0));
+ for(const row of dailyRows.slice(0,5)){
+  const tr=document.createElement('tr');tr.append(cell(row.model),channelCell(routeChannelLabel(row.channel),row.channel),numCell(String(row.count)));daily.append(tr);
+ }
+}
