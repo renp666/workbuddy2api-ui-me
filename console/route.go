@@ -916,7 +916,7 @@ func (h *server) resolveAlias(ctx context.Context, model string) (routeDecision,
 }
 
 // resolveAliasChain 是 resolveAlias 的带链版本：别名命中时额外返回完整候选链
-//（已选跳在链首、其余按原链序跟随）与各跳在原链中的下标，供请求内重试逐跳尝试。
+// （已选跳在链首、其余按原链序跟随）与各跳在原链中的下标，供请求内重试逐跳尝试。
 // auto 与未命中场景没有候选链（链为 nil），调用方按单跳处理。
 func (h *server) resolveAliasChain(ctx context.Context, model string) (routeDecision, []routeTarget, []int, bool) {
 	if h.routes == nil || model == "" {
@@ -943,8 +943,8 @@ func (h *server) resolveEntry(ctx context.Context, entry routeEntry) routeDecisi
 }
 
 // resolveEntryChain 在 resolveEntry 的结论之上返回完整候选链：已选跳在链首，其余
-// 按原链序跟随，indexes 记录各跳在原链中的下标（0=主目标）。熔断跳已被过滤；
-// 候选链全部熔断时返回 __circuit_open__ 决策与空链。
+// 按原链序跟随，indexes 记录各跳在原链中的下标（0=主目标）。熔断跳与观察态
+// （半开，试探并发=1）跳已被过滤；候选链全部不可用时返回 __circuit_open__ 决策与空链。
 func (h *server) resolveEntryChain(ctx context.Context, entry routeEntry) (routeDecision, []routeTarget, []int) {
 	if h.circuits != nil && !circuitProtected(entry) {
 		entry = h.circuits.originalEntry(entry)
@@ -958,7 +958,9 @@ func (h *server) resolveEntryChain(ctx context.Context, entry routeEntry) (route
 		filtered := make([]routeTarget, 0, len(chain))
 		filteredIndexes := make([]int, 0, len(chain))
 		for i, target := range chain {
-			if !h.circuits.blocked(target) {
+			// routeGate：熔断跳拒绝；观察态（半开）跳仅在无在途试探租约时放行并
+			// 认领租约，其余请求视该跳不可用，试探并发 = 1。
+			if h.circuits.routeGate(target) {
 				filtered = append(filtered, target)
 				filteredIndexes = append(filteredIndexes, indexes[i])
 			}
@@ -1230,7 +1232,7 @@ func probeBandFor(candidates map[routeChannel][]probeCandidate, target routeTarg
 
 func (h *server) resolveAuto(ctx context.Context) routeDecision {
 	fallback := h.routes.autoFallback()
-	if h.circuits != nil && h.circuits.blocked(routeTarget{Channel: channelCore, Model: fallback}) {
+	if h.circuits != nil && h.circuits.unavailable(routeTarget{Channel: channelCore, Model: fallback}) {
 		fallback = "__circuit_open__"
 	}
 	candidates, haveData := h.probes.get(ctx, h)
@@ -1244,7 +1246,7 @@ func (h *server) resolveAuto(ctx context.Context) routeDecision {
 		factors := h.routeErrorFactors()
 		for _, list := range candidates {
 			for _, candidate := range list {
-				if h.circuits != nil && h.circuits.blocked(routeTarget{Channel: candidate.Channel, Model: candidate.Model}) {
+				if h.circuits != nil && h.circuits.unavailable(routeTarget{Channel: candidate.Channel, Model: candidate.Model}) {
 					continue
 				}
 				if candidate.Band != 0 && candidate.Band != 1 {
