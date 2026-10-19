@@ -289,6 +289,10 @@ func wrapCore(ctx context.Context, cfg *Config, p *pool.Pool, up *upstream.Clien
 	if err != nil {
 		return nil, err
 	}
+	// 周期余额刷新（对标 panel 的 balance_refresh）：硬冷却（402 余额耗尽）账号余额
+	// 恢复后自动解冻回池，不再等下一次签到或次日 04:00。WB2A_BALANCE_REFRESH_MINUTES
+	// 覆盖周期（分钟），<=0 关闭，默认 5；跟随主 ctx 生命周期。
+	go sch.RunBalanceRefresh(ctx, sch.BalanceRefreshInterval())
 	// 调用统计账本：成功调用的用量观测按天落在数据目录 usage/ 下。
 	// 打不开只降级（不记录、查询回 503），不影响网关服务本身。
 	usage, usageErr := usagelog.Open(filepath.Join(filepath.Dir(cfg.StateFile), "usage"))

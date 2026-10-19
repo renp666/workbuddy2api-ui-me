@@ -45,7 +45,7 @@
 | # | 功能 | 来源 | 描述 | 建议 | 落点 | 成本/风险 | 优先级 |
 | --- | --- | --- | --- | --- | --- | --- | --- |
 | 1 | **工具调用标记还原** | panel | 上游 DeepSeek 系把工具调用写成带全角竖线的标记文本，仅当请求声明 `tools` 时才被上游解析；中转丢失 tools 声明时标记以纯文本落进 content，Codex/pi 类只认结构化 tool_calls 的客户端工具链直接断。网关在响应侧识别标记并还原为 tool_calls（流式+非流式） | **仿照** | core 出站响应（补丁/扩展） | 中 / 保守匹配防误还原；需真实上游实测样本 | **P1** |
-| 2 | **余额后台刷新+冷却自动解冻** | panel | 周期（默认 5min）查余额更新池；处于硬冷却（余额耗尽）的账号余额恢复后自动解冻回池 | **仿照** | core 调度（扩展/补丁） | 中低 / 本仓 pick.go CoolHard 语义已在，只补刷新与解冻 | **P1** |
+| 2 | **余额后台刷新+冷却自动解冻** | panel | 周期（默认 5min）查余额更新池；处于硬冷却（余额耗尽）的账号余额恢复后自动解冻回池 | **仿照（已落地 2026-10-19，见 §六）** | core 调度（扩展/补丁） | 中低 / 本仓 pick.go CoolHard 语义已在，只补刷新与解冻 | **P1** |
 | 3 | **调用来源 IP·UA 归因** | panel + hub 按Key归因思想 | 账本每条记录补 client_ip / UA 摘要，多客户端区分排障 | **仿照** | console usagelog | 低 / 注意脱敏口径沿用 error_snippet 惯例 | **P1** |
 | 4 | 客户端 X-Request-Id + 成功率双口径 | panel | 响应头带请求 ID 并贯穿账本；面板展示「完成成功率 / HTTP 成功率 / 平均耗时」 | 仿照 | console 出口+账本 | 中低 / 公共面改动需过九通道枚举点清单 | P2 |
 | 5 | 多 API Key + 用量按 Key 归因 + Key 级模型限制 | hub | 每客户端独立 Key，可限模型（通配符）、可启停删除；用量按 Key 出报表 | 仿照 | console auth 层+账本 | 中 / 涉及鉴权面，需回归测试兜底 | P2 |
@@ -82,6 +82,18 @@
 - 素材：panel README（163 行）、hub README（160 行）全文经 WebFetch 获取并落盘；星数经 GitHub API 核实。
 - 本地核对（grep 断言，均实际执行）：`｜` 在 upstream/ 无匹配（缺响应侧还原）；`balance_refresh` 全仓无匹配（缺余额刷新）；console/ 无 `APIKeys`（单 Key 确认）；`ConstantTimeCompare` 命中 5 文件（已有）；`6004`/`sanitize tool_calls`/`reasoning_content`/`sticky` 均命中（已有）。
 - 未做：代码级 diff（网络不通，标待核对）、真实上游调用验证、任何代码修改。
+
+### §三 #2 落地记录（2026-10-19，余额后台刷新+冷却自动解冻）
+
+实现：`extensions/internal/pool/balance.go`（`HardCooledUIDs`/`ReviveHardCooledIfCredits`，零补丁）+ `extensions/internal/scheduler/balance.go`（周期循环，默认 5 分钟，`WB2A_BALANCE_REFRESH_MINUTES` 覆盖/关闭）+ `extension.go` 一行接线；10 个回归测试全绿，Docker race 通过。无补丁（全部新文件）。
+
+与 panel 的有意偏差：
+1. **只刷硬冷却号，不刷全池**——panel 每轮刷新全部账号；本仓只外呼处于 402 硬冷却的账号（通常 0~N 个）。理由：解冻是核心目标，软冷却/熔断由时间机制自恢复，正常账号余额由签到（每日两次）与对话路径保持新鲜；全池刷新对个人账号多出数百次/日的 billing 外呼，风控面不划算。
+2. **解冻判据比签到解冻更严**——签到用的 `ReenableIfCredits` 不区分冷却类型；余额刷新场景只有硬冷却（`coolKind==CoolHard`）可解冻，软冷却（429 限流窗口未过）与熔断（chat 通道健康未证明）不得因「余额>0」被提前打回轮换。
+
+通道统一性结论（八条旁路通道不适用本能力）：
+- 旁路通道（zcode/qoder/opencode/autoclaw/trae/traeai/raccoon/freellm）的账号状态管理在各自 sidecar 进程内自洽，无「硬冷却等外部事件解锁」缺口：zcode/qoder/trae 系失败由自身重试与重启恢复；raccoon/autoclaw 的账号启停是显式控制动作；opencode/freellm 是供应商 key 池自轮换。core 的 402 CoolHard 是唯一「余额耗尽→等恢复」语义，余额刷新只在 core 有意义。
+- sidecar 均无周期余额刷新同类行为（trae/autoclaw 有积分查询但为页签手动触发，非自动解冻闭环；上游权益到期时 zcode/trae 模型数归 0 是上游侧状态，非账号冷却，刷新无对象）。
 
 ## 七、待拍板事项
 
