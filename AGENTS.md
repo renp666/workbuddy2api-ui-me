@@ -249,6 +249,16 @@ bash scripts/local-release.sh            # 脏工作区默认拒绝
 bash scripts/local-release.sh --allow-dirty
 ```
 
+同机还有一套可选**演练环境** `prism-lab`（`deploy/compose.lab.yml`，默认不启动），用来在改生产码时当安全垫：把 core/console 钉到 `:lab` 标签（`pull_policy: never`）、宿主端口 7864（容器内监听仍是镜像内置 `:7863`）、数据与密钥落在 `runtime/lab/`、默认不含任何旁路 overlay。产出 `:lab` 复用同一个发版脚本，只是走 `--tag` 分叉（不滚动 `:local`/`:local-prev`、不重启生产）：
+
+```bash
+bash scripts/local-release.sh --allow-dirty --tag lab
+docker compose -p prism-lab -f docker-compose.yml -f deploy/compose.lab.yml up -d
+docker compose -p prism-lab -f docker-compose.yml -f deploy/compose.lab.yml down
+```
+
+`-p prism-lab` 不能省（省了会挂进生产 project）。lab 与生产是两套独立 project，互不共用 `runtime/wb2api/`；要验证某条通道时再叠加该通道的 overlay，并使用 lab 专属凭据。用 `-f` 叠加（不是 `include`）时相对路径按 project 目录解析，实测 `./runtime/lab/keys` 落在 `<root>/runtime/lab/keys`。
+
 构建上下文是 `git archive HEAD`，未提交的改动不进镜像，所以先提交再发版。标签滚动为 `:local`（在用）+ `:local-prev`（上一个可回退），其余 dangling 由脚本末尾 `docker image prune -f` 清掉。回退：
 
 ```bash

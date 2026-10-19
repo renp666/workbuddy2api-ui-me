@@ -194,6 +194,7 @@ type exitObservation struct {
 	client       string
 	durationMs   int64
 	retryCount   int
+	retryAfter   string
 }
 
 // observedExitPath 判定该请求是否属于要观测的对话出口。只看三个对话端点：
@@ -260,6 +261,7 @@ func (h *server) observePublicExits(next http.Handler) http.Handler {
 			client:       strings.TrimSpace(h.clientAddress(r) + " " + r.Header.Get("User-Agent")),
 			durationMs:   time.Since(observer.start).Milliseconds(),
 			retryCount:   retryCountFromHeader(observer.Header()),
+			retryAfter:   observer.Header().Get("Retry-After"),
 		})
 	})
 }
@@ -391,16 +393,20 @@ func streamFromRequestPrefix(prefix []byte) (bool, bool) {
 	return string(m[1]) == "true", true
 }
 
-// retryCountFromHeader 取上游回报的重试跳数。console 不掌握 core 内部的重试计数，
-// 只有旁路上游（如 FreeLLMAPI 的 X-Fallback-Attempts）会回报，取不到就留 0。
+// retryCountFromHeader 取重试跳数。优先读本网关请求内重试写的 X-Prism-Attempts
+//（实际服务客户端的那次尝试序号）；回落读旁路上游回报的 X-Fallback-Attempts
+//（console 不掌握 core 内部的重试计数，只有旁路上游会报），取不到就留 0。
 func retryCountFromHeader(header http.Header) int {
-	raw := strings.TrimSpace(header.Get("X-Fallback-Attempts"))
-	if raw == "" {
-		return 0
+	for _, name := range []string{"X-Prism-Attempts", "X-Fallback-Attempts"} {
+		raw := strings.TrimSpace(header.Get(name))
+		if raw == "" {
+			continue
+		}
+		n, err := strconv.Atoi(raw)
+		if err != nil || n < 0 || n > 100 {
+			continue
+		}
+		return n
 	}
-	n, err := strconv.Atoi(raw)
-	if err != nil || n < 0 || n > 100 {
-		return 0
-	}
-	return n
+	return 0
 }

@@ -50,6 +50,15 @@ func (h *server) zcodeProxy() *httputil.ReverseProxy {
 	}
 }
 
+// traeDispatch 是一条 Trae 区域通道在公共分流里的条目（国内 trae-* / 国际
+// traeai-*）。两条通道的公共面由 console/trae.go 的 traeChannel 描述符循环注册；
+// 提升到包级供请求内重试的通道派发（retryDeps）复用。
+type traeDispatch struct {
+	prefix string
+	uid    string
+	proxy  *httputil.ReverseProxy
+}
+
 // publicRouter dispatches the public /v1/* surface: glm-* model chat/messages/responses requests
 // go to zcode-proxy, qoder-* model requests go to qoder-proxy, opencode-* model requests go to
 // the opencode sidecar, autoclaw-* model requests go to the autoclaw2api sidecar,
@@ -58,13 +67,7 @@ func (h *server) zcodeProxy() *httputil.ReverseProxy {
 // sidecar, everything else stays on core.
 func (h *server) publicRouter(core *httputil.ReverseProxy) http.HandlerFunc {
 	var zcode, qoder, opencode, autoclaw, raccoon, freellm *httputil.ReverseProxy
-	// 两条 Trae 区域通道（国内 trae-* / 国际 traeai-*）在同一处按前缀表分流。
 	// 前缀必须互不包含：traeai-gpt-5.4 不以 trae- 开头，所以两条分支不会互相剥错名字。
-	type traeDispatch struct {
-		prefix string
-		uid    string
-		proxy  *httputil.ReverseProxy
-	}
 	var traeRoutes []traeDispatch
 	if h.cfg.ZCodeURL != nil {
 		zcode = h.zcodeProxy()
@@ -87,6 +90,7 @@ func (h *server) publicRouter(core *httputil.ReverseProxy) http.HandlerFunc {
 	if h.cfg.FreellmURL != nil {
 		freellm = h.freellmProxy()
 	}
+	deps := retryDeps{core: core, zcode: zcode, qoder: qoder, opencode: opencode, autoclaw: autoclaw, trae: traeRoutes, raccoon: raccoon, freellm: freellm}
 	return func(w http.ResponseWriter, r *http.Request) {
 		switch r.Method + " " + r.URL.Path {
 		case "GET /v1/models":
@@ -117,7 +121,13 @@ func (h *server) publicRouter(core *httputil.ReverseProxy) http.HandlerFunc {
 			// 别名与 auto 虚拟模型在这一步解析：命中就把 model 改写成该链路的
 			// 公共形态（带通道前缀），下面的既有前缀分流就能原样复用。未命中
 			// 时 envelope.Model 不变，出口行为与没有该功能时完全一致。
-			if decision, ok := h.resolveAlias(r.Context(), envelope.Model); ok {
+			// 有效候选链 ≥2 跳时进入请求内重试（§九 9.2）：链序已按选路结论排好，
+			// 只在首字节前换跳；单跳别名与 auto 维持既有单跳直发，行为零变化。
+			if decision, chain, indexes, ok := h.resolveAliasChain(r.Context(), envelope.Model); ok {
+				if len(chain) >= 2 {
+					h.serveAliasChain(w, r, deps, decision, chain, indexes, body, envelope.Stream)
+					return
+				}
 				if rewritten, changed := rewriteModelField(body, decision.RoutedModel); changed {
 					body = rewritten
 				}

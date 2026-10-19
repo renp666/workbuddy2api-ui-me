@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -403,6 +404,52 @@ func failureCategory(status int, body string) string {
 	default:
 		return "error"
 	}
+}
+
+// cooldownCategory 是「可自动冷却 / 可请求内重试」失败类别的唯一判据（§九 9.3
+// 拍板口径）：rate_limit / upstream_error / timeout 是「过一会儿可能自己好」的
+// 暂时性失败，走熔断冷却并在请求内换跳重试；auth（凭据失效）、model_error（模型
+// 下架/名字漂移）、pin（严格 pin 账号被锁）需要人工处理，自动恢复只会掩盖问题——
+// 只告警不冷却，请求内也不切换（原样透传给客户端）。重试资格与熔断冷却共用这一个
+// 判据，禁止出现两套口径。
+func cooldownCategory(category string) bool {
+	switch category {
+	case "rate_limit", "upstream_error", "timeout":
+		return true
+	}
+	return false
+}
+
+// maxRetryAfterSeconds 封顶 Retry-After 解析结果，防止上游异常大值参与冷却运算。
+const maxRetryAfterSeconds = 24 * 3600
+
+// parseRetryAfter 解析 Retry-After 响应头（延迟秒数或 HTTP-date），取不到或非法
+// 返回 0。时间超过 maxRetryAfterSeconds 时截断。
+func parseRetryAfter(raw string) int {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return 0
+	}
+	if n, err := strconv.Atoi(raw); err == nil {
+		if n < 0 {
+			return 0
+		}
+		if n > maxRetryAfterSeconds {
+			return maxRetryAfterSeconds
+		}
+		return n
+	}
+	if t, err := http.ParseTime(raw); err == nil {
+		d := int(time.Until(t).Seconds()) + 1
+		if d < 0 {
+			return 0
+		}
+		if d > maxRetryAfterSeconds {
+			return maxRetryAfterSeconds
+		}
+		return d
+	}
+	return 0
 }
 
 func readProbeError(body io.Reader) string {

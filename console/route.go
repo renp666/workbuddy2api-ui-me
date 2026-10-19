@@ -911,17 +911,26 @@ type routeDecision struct {
 //
 // 路由功能未启用（未配置可写配置文件）时一律返回 false，出口与现状完全一致。
 func (h *server) resolveAlias(ctx context.Context, model string) (routeDecision, bool) {
+	decision, _, _, ok := h.resolveAliasChain(ctx, model)
+	return decision, ok
+}
+
+// resolveAliasChain 是 resolveAlias 的带链版本：别名命中时额外返回完整候选链
+//（已选跳在链首、其余按原链序跟随）与各跳在原链中的下标，供请求内重试逐跳尝试。
+// auto 与未命中场景没有候选链（链为 nil），调用方按单跳处理。
+func (h *server) resolveAliasChain(ctx context.Context, model string) (routeDecision, []routeTarget, []int, bool) {
 	if h.routes == nil || model == "" {
-		return routeDecision{}, false
+		return routeDecision{}, nil, nil, false
 	}
 	if model == autoModelName {
-		return h.resolveAuto(ctx), true
+		return h.resolveAuto(ctx), nil, nil, true
 	}
 	entry, ok := h.routes.lookup(model)
 	if !ok {
-		return routeDecision{}, false
+		return routeDecision{}, nil, nil, false
 	}
-	return h.resolveEntry(ctx, entry), true
+	decision, chain, indexes := h.resolveEntryChain(ctx, entry)
+	return decision, chain, indexes, true
 }
 
 // resolveEntry 在一条别名自己的候选链上选一跳。
@@ -929,6 +938,14 @@ func (h *server) resolveAlias(ctx context.Context, model string) (routeDecision,
 // priority 恒取链首，不看探测结论——这是「我就要这条链路」的显式表达，不能被
 // 探测抖动改变。health 才引入探测结论，且只在链内比较，不会跳到链外。
 func (h *server) resolveEntry(ctx context.Context, entry routeEntry) routeDecision {
+	decision, _, _ := h.resolveEntryChain(ctx, entry)
+	return decision
+}
+
+// resolveEntryChain 在 resolveEntry 的结论之上返回完整候选链：已选跳在链首，其余
+// 按原链序跟随，indexes 记录各跳在原链中的下标（0=主目标）。熔断跳已被过滤；
+// 候选链全部熔断时返回 __circuit_open__ 决策与空链。
+func (h *server) resolveEntryChain(ctx context.Context, entry routeEntry) (routeDecision, []routeTarget, []int) {
 	if h.circuits != nil && !circuitProtected(entry) {
 		entry = h.circuits.originalEntry(entry)
 	}
@@ -949,7 +966,7 @@ func (h *server) resolveEntry(ctx context.Context, entry routeEntry) routeDecisi
 		chain = filtered
 		indexes = filteredIndexes
 		if len(chain) == 0 {
-			return routeDecision{Alias: entry.Alias, Channel: channelCore, RoutedModel: "__circuit_open__", Reason: "候选链全部熔断", TargetIndex: -1}
+			return routeDecision{Alias: entry.Alias, Channel: channelCore, RoutedModel: "__circuit_open__", Reason: "候选链全部熔断", TargetIndex: -1}, nil, nil
 		}
 	}
 	primary := chain[0]
@@ -960,7 +977,7 @@ func (h *server) resolveEntry(ctx context.Context, entry routeEntry) routeDecisi
 			Alias:       entry.Alias,
 			Reason:      circuitRouteReason("别名命中配置", indexes[0]),
 			TargetIndex: indexes[0],
-		}
+		}, chain, indexes
 	}
 	pick, found := h.pickChainTarget(ctx, chain)
 	if !found {
@@ -970,7 +987,7 @@ func (h *server) resolveEntry(ctx context.Context, entry routeEntry) routeDecisi
 			Alias:       entry.Alias,
 			Reason:      "别名无可用探测结论，按链序用主目标",
 			TargetIndex: indexes[0],
-		}
+		}, chain, indexes
 	}
 	index, band := pick.index, pick.band
 	reason := fmt.Sprintf("别名选中第 %d 跳（%s）", indexes[index]+1, probeBandLabel(band))
@@ -985,13 +1002,24 @@ func (h *server) resolveEntry(ctx context.Context, entry routeEntry) routeDecisi
 	if pick.note != "" {
 		reason = fmt.Sprintf("%s · %s", reason, pick.note)
 	}
+	// 已选跳提到链首，其余按原链序跟随，重试从已选跳开始逐跳向后。
+	ordered := make([]routeTarget, 0, len(chain))
+	orderedIndexes := make([]int, 0, len(chain))
+	ordered = append(ordered, chain[index])
+	orderedIndexes = append(orderedIndexes, indexes[index])
+	for i := range chain {
+		if i != index {
+			ordered = append(ordered, chain[i])
+			orderedIndexes = append(orderedIndexes, indexes[i])
+		}
+	}
 	return routeDecision{
 		RoutedModel: chain[index].publicModel(),
 		Channel:     chain[index].Channel,
 		Alias:       entry.Alias,
 		Reason:      reason,
 		TargetIndex: indexes[index],
-	}
+	}, ordered, orderedIndexes
 }
 
 // —— F6 错误率反哺选路（PRD §2-F6）————————————————
@@ -1373,19 +1401,30 @@ func withPrismHeaders(w http.ResponseWriter, decision routeDecision) http.Respon
 }
 
 func (p *prismHeaderWriter) WriteHeader(code int) {
-	header := p.Header()
-	header.Set("X-Prism-Routed-Model", p.decision.RoutedModel)
-	header.Set("X-Prism-Channel", string(p.decision.Channel))
-	header.Set("X-Prism-Reason", p.decision.Reason)
+	// attempts 传 0：单跳路径不下发 X-Prism-Attempts，响应头形态与引入请求内
+	// 重试之前完全一致，该头只在真正发生多跳尝试时出现。
+	writePrismHeaders(p.Header(), p.decision, 0)
+	p.ResponseWriter.WriteHeader(code)
+}
+
+// writePrismHeaders 是路由决策响应头的唯一写入点：请求内重试（retry.go）与单跳
+// 路径（prismHeaderWriter）共用，禁止出现两份拼装逻辑。attempts>0 时附带
+// X-Prism-Attempts（实际服务客户端的尝试序号）。
+func writePrismHeaders(header http.Header, decision routeDecision, attempts int) {
+	header.Set("X-Prism-Routed-Model", decision.RoutedModel)
+	header.Set("X-Prism-Channel", string(decision.Channel))
+	header.Set("X-Prism-Reason", decision.Reason)
 	// TargetIndex 只在别名候选链上有意义（0=主目标，>0=第几条备用）；auto 用 -1
 	// 表示不适用，此时不下发该头，避免调用方把 auto 也当成一条链去解释。
-	if p.decision.TargetIndex >= 0 {
-		header.Set("X-Prism-Target-Index", strconv.Itoa(p.decision.TargetIndex))
+	if decision.TargetIndex >= 0 {
+		header.Set("X-Prism-Target-Index", strconv.Itoa(decision.TargetIndex))
 	}
-	if p.decision.Fallback {
+	if decision.Fallback {
 		header.Set("X-Prism-Fallback", "core")
 	}
-	p.ResponseWriter.WriteHeader(code)
+	if attempts > 0 {
+		header.Set("X-Prism-Attempts", strconv.Itoa(attempts))
+	}
 }
 
 // Flush 与 Unwrap 一起保证流式响应不被本包装截断。嵌入的是接口，接口方法

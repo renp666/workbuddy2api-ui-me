@@ -1,0 +1,35 @@
+# 可选：同机第二套「演练环境」（prism-lab），给生产改码时当安全垫用。
+# 生产入口完全不变：`docker compose up -d` 仍只读 docker-compose.yml（外加本机 override）。
+#
+# 用法（先产出 :lab 标签，再只起演练环境）：
+#   bash scripts/local-release.sh --tag lab
+#   docker compose -p prism-lab -f docker-compose.yml -f deploy/compose.lab.yml up -d
+#   浏览器 http://127.0.0.1:7864/
+# 停止：docker compose -p prism-lab -f docker-compose.yml -f deploy/compose.lab.yml down
+#
+# 隔离点，缺一不可（写错任一处就会串到生产）：
+#   - project prism-lab：独立网络与容器名，与控制台生产 project 不共用；
+#   - 宿主端口 7864：不碰生产的 7863（7863 已被 Windows 永久排除，7864 不在保留区间）；
+#   - 数据落在 ./runtime/lab/：绝不复用生产的 ./runtime/wb2api/，密钥随之自动另生成一份；
+#   - 镜像 :lab + pull_policy: never：不复用生产的 :local，也绝不会静默回退到已发布标签；
+#   - 默认只含 core+console：需要验证某通道时再叠加该通道的 overlay，且用 lab 专属凭据。
+#
+# !override 是必需的，不是装饰：ports/volumes 按容器内 target 合并时，基类的
+# ./runtime/wb2api/* 挂载会被保留下来，于是演练环境直接读写生产账号与路由配置。
+services:
+  core:
+    image: workbuddy2api-core:lab
+    pull_policy: never
+    volumes: !override
+      - ./runtime/lab/auths:/app/auths
+      - ./runtime/lab/data:/app/data
+      - ./runtime/lab/keys:/run/wb2a
+
+  console:
+    image: workbuddy2api-console:lab
+    pull_policy: never
+    ports: !override
+      - "0.0.0.0:7864:7863"
+    volumes: !override
+      - ./runtime/lab/keys:/run/wb2a:ro
+      - ./runtime/lab/console:/app/console-data

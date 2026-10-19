@@ -36,7 +36,10 @@ type circuitState struct {
 	Snippet   string          `json:"error_snippet,omitempty"`
 	Samples   int             `json:"samples"`
 	Fail      int             `json:"fail"`
-	Changes   []circuitChange `json:"changes,omitempty"`
+	// CooldownMs 是本次熔断的冷却时长：429 带 Retry-After 头时按头定时（封顶
+	// circuitCooldown），其余维持固定窗口。旧状态无该字段时 sweep 回落 circuitCooldown。
+	CooldownMs int64           `json:"cooldown_ms,omitempty"`
+	Changes    []circuitChange `json:"changes,omitempty"`
 }
 
 type circuitBreaker struct {
@@ -81,7 +84,14 @@ func (h *server) initCircuits(now func() time.Time) {
 	h.routes.circuits = c
 	h.routes.reload()
 	for _, state := range c.states {
-		if state.Open && !state.Committed && now().Sub(time.UnixMilli(state.Ts)) < circuitCooldown {
+		if !state.Open || state.Committed {
+			continue
+		}
+		cooldown := time.Duration(state.CooldownMs) * time.Millisecond
+		if cooldown <= 0 {
+			cooldown = circuitCooldown
+		}
+		if now().Sub(time.UnixMilli(state.Ts)) < cooldown {
 			c.pending = append(c.pending, state)
 		}
 	}
@@ -97,7 +107,13 @@ func (h *server) initCircuits(now func() time.Time) {
 
 // observe 在 outcomeWindow 锁内执行，仅短暂更新内存并通知 worker，无 I/O。
 func (c *circuitBreaker) observe(ev errorEvent, ok bool) {
-	if ev.ModelResolved == "" || (ev.Category == "pin" || ev.Category == "pinned_account_unavailable") {
+	if ev.ModelResolved == "" {
+		return
+	}
+	// 冷却准入（§九 9.3）：只有 429/5xx/超时类失败计 streak、进窗口分母；auth /
+	// model_error 等需要人工处理的失败只走告警账本，不触发熔断（pin 的排除被该
+	// 判据覆盖，不用再单列）。
+	if !ok && !cooldownCategory(ev.Category) {
 		return
 	}
 	key := circuitKey(routeTarget{routeChannel(ev.Channel), ev.ModelResolved})
@@ -115,7 +131,7 @@ func (c *circuitBreaker) observe(ev errorEvent, ok bool) {
 	stats := windowStats{}
 	cutoff := c.now().Add(-routeErrorWindow)
 	for _, sample := range c.h.outcomes.samples {
-		if sample.ts.Before(cutoff) || (state.Observing && sample.ts.UnixMilli() < state.Ts) || (sample.category == "pin" || sample.category == "pinned_account_unavailable") {
+		if sample.ts.Before(cutoff) || (state.Observing && sample.ts.UnixMilli() < state.Ts) || (!sample.ok && !cooldownCategory(sample.category)) {
 			continue
 		}
 		if circuitKey(routeTarget{sample.channel, sample.model}) == key {
@@ -133,10 +149,36 @@ func (c *circuitBreaker) observe(ev errorEvent, ok bool) {
 	}
 	// 观察期只看恢复后的样本，恢复前的失败不得立即再次触发。
 	state = circuitState{Ts: c.now().UnixMilli(), Channel: key.Channel, Model: key.Model, Alias: ev.Alias, Open: true,
-		Reason: reason, Category: ev.Category, Snippet: sanitizeSnippet(ev.ErrorSnippet), Samples: stats.ok + stats.fail, Fail: stats.fail}
+		Reason: reason, Category: ev.Category, Snippet: sanitizeSnippet(ev.ErrorSnippet), Samples: stats.ok + stats.fail, Fail: stats.fail,
+		CooldownMs: retryAfterCooldown(ev.RetryAfterSec)}
 	c.states[key] = state
 	c.pending = append(c.pending, state)
 	c.notify()
+}
+
+// retryAfterCooldown 把 Retry-After 换算成冷却时长：有头用头（封顶 circuitCooldown），
+// 无头维持固定窗口。
+func retryAfterCooldown(retryAfterSec int) int64 {
+	cooldown := circuitCooldown
+	if retryAfterSec > 0 {
+		if v := time.Duration(retryAfterSec) * time.Second; v < cooldown {
+			cooldown = v
+		}
+	}
+	return int64(cooldown / time.Millisecond)
+}
+
+// cooldownLabel 把冷却时长渲染成人读标签（30min / 120s），供熔断恢复告警；旧状态
+// 无 CooldownMs 字段（0）时回落固定窗口的展示值。
+func cooldownLabel(ms int64) string {
+	d := time.Duration(ms) * time.Millisecond
+	if d <= 0 {
+		d = circuitCooldown
+	}
+	if d%time.Minute == 0 {
+		return fmt.Sprintf("%dmin", int(d/time.Minute))
+	}
+	return fmt.Sprintf("%ds", int((d+time.Second-1)/time.Second))
 }
 
 func (c *circuitBreaker) notify() {
@@ -191,7 +233,14 @@ func (c *circuitBreaker) sweep() {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	for key, state := range c.states {
-		if !state.Open || c.now().Sub(time.UnixMilli(state.Ts)) < circuitCooldown {
+		if !state.Open {
+			continue
+		}
+		cooldown := time.Duration(state.CooldownMs) * time.Millisecond
+		if cooldown <= 0 {
+			cooldown = circuitCooldown
+		}
+		if c.now().Sub(time.UnixMilli(state.Ts)) < cooldown {
 			continue
 		}
 		// 恢复完成前继续硬摘除。worker 成功合并配置后才放行。
@@ -243,7 +292,7 @@ func (c *circuitBreaker) drain() {
 		if c.h.alerts != nil {
 			rule, message := "circuit_open", "熔断："
 			if !state.Open {
-				rule, message = "circuit_closed", "冷却 30min 后恢复："
+				rule, message = "circuit_closed", "冷却 "+cooldownLabel(state.CooldownMs)+" 后恢复："
 			}
 			rate := float64(0)
 			if state.Samples > 0 {

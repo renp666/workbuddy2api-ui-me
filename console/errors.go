@@ -112,6 +112,7 @@ type errorEvent struct {
 	Client         string `json:"client,omitempty"`
 	RoutedVia      string `json:"routed_via,omitempty"`
 	RetryCount     int    `json:"retry_count,omitempty"`
+	RetryAfterSec  int    `json:"retry_after_sec,omitempty"`
 }
 
 // usageChannelToRoute 把用量账本的通道身份翻译成路由通道名。两套名字只在 GLM 通道上
@@ -767,6 +768,8 @@ func (h *server) finishExitObserve(obs exitObservation) {
 		ev.UpstreamStatus = status
 		ev.Category = failureCategory(status, obs.body)
 		ev.ErrorSnippet = sanitizeSnippet(obs.body)
+		// 上游明确给出重试指引时记进事件，供熔断的 429 感知冷却使用（§九 9.3）。
+		ev.RetryAfterSec = parseRetryAfter(obs.retryAfter)
 	}
 	h.outcomes.add(ev, ok)
 	if !ok {
