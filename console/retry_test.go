@@ -58,6 +58,53 @@ func (u *retryUpstream) model() string {
 	return u.seenModel
 }
 
+// TestCircuitOpenNotFedBack 回归：全链熔断后的自产 circuit_open 503 不得被出口
+// 观察器喂回熔断器（自反馈会把熔断钉死、污染错误率窗口）。生产事故 2026-10-19：
+// 11:28-11:45 core 29 条「候选链全部熔断」503 全部被记为 upstream_error 样本。
+func TestCircuitOpenNotFedBack(t *testing.T) {
+	core, oc := &retryUpstream{}, &retryUpstream{}
+	_, srv := retryFixture(t, core, oc)
+	// retryFixture 走 NewServer 时 outcomes 尚未就位，circuits 未初始化（mux 里的
+	// guard 也因此未挂）；本测试直接组装同一条子链，验证「熔断拦截 + 观察器跳过」
+	// 的组合行为，不依赖 NewServer 的接线时序（worker 随测试结束关闭）。
+	srv.initCircuits(srv.outcomes.now)
+	t.Cleanup(func() { close(srv.circuits.stop); <-srv.circuits.done })
+	for i := 0; i < 3; i++ {
+		ts := srv.outcomes.now().UnixMilli()
+		srv.outcomes.add(errorEvent{Ts: ts, Alias: "daily", Channel: "core", ModelResolved: "cn:bad", Category: "upstream_error"}, false)
+		srv.outcomes.add(errorEvent{Ts: ts, Alias: "daily", Channel: "opencode", ModelResolved: "OC · Backup", Category: "upstream_error"}, false)
+	}
+	circuitWait(t, func() bool {
+		return srv.circuits.blocked(routeTarget{channelCore, "cn:bad"}) && srv.circuits.blocked(routeTarget{channelOpenCode, "OC · Backup"})
+	})
+	srv.outcomes.mu.Lock()
+	before := len(srv.outcomes.samples)
+	srv.outcomes.mu.Unlock()
+
+	nextHits := 0
+	next := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		nextHits++
+		w.WriteHeader(http.StatusOK)
+	})
+	wrapped := srv.observePublicExits(srv.circuitExitGuard(next))
+	req := httptest.NewRequest("POST", "/v1/chat/completions", strings.NewReader(`{"model":"daily","messages":[{"role":"user","content":"hi"}]}`))
+	rec := httptest.NewRecorder()
+	wrapped.ServeHTTP(rec, req)
+	if rec.Code != http.StatusServiceUnavailable || !strings.Contains(rec.Body.String(), "circuit_open") {
+		t.Fatalf("自产 503 缺失: code=%d body=%s", rec.Code, rec.Body.String())
+	}
+
+	srv.outcomes.mu.Lock()
+	after := len(srv.outcomes.samples)
+	srv.outcomes.mu.Unlock()
+	if after != before {
+		t.Fatalf("自产 503 被喂回熔断器: 样本 %d -> %d", before, after)
+	}
+	if nextHits != 0 {
+		t.Fatalf("熔断拦截后仍触达下游 %d 次", nextHits)
+	}
+}
+
 // retryFixture 建一个 core + opencode 双通道 console，别名 daily = core/cn:bad
 // （主）+ opencode/OC · Backup（备用），两跳构成最小可重试候选链。
 func retryFixture(t *testing.T, core, oc *retryUpstream) (http.Handler, *server) {

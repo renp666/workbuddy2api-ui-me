@@ -771,7 +771,12 @@ func (h *server) finishExitObserve(obs exitObservation) {
 		// 上游明确给出重试指引时记进事件，供熔断的 429 感知冷却使用（§九 9.3）。
 		ev.RetryAfterSec = parseRetryAfter(obs.retryAfter)
 	}
-	h.outcomes.add(ev, ok)
+	// 网关自产的 circuit_open 503 不是上游失败：不进熔断输入窗口，防止
+	// 「熔断 → 自产 503 → 再喂熔断器」的自反馈把熔断钉死；错误账本照常落账，
+	// 保留风暴观察证据。
+	if !obs.selfOpen {
+		h.outcomes.add(ev, ok)
+	}
 	if !ok {
 		h.recordErrorAsync(ev)
 	}

@@ -518,6 +518,10 @@ func patchCircuitJSON(raw []byte, changes []circuitChange) ([]byte, error) {
 	return out, nil
 }
 
+// headerPrismCircuitOpen 标记本次 503 是网关自产的熔断拦截（非上游失败），
+// 出口观察器据此把它排除在熔断输入之外，防止「自产 503 喂回熔断器」的自反馈。
+const headerPrismCircuitOpen = "X-Prism-Circuit-Open"
+
 // 全链熔断的内部占位符只在本地返回 503，禁止当成真实模型发给上游。
 func (h *server) circuitExitGuard(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -537,6 +541,7 @@ func (h *server) circuitExitGuard(next http.Handler) http.Handler {
 				decision, matched = h.resolveAlias(r.Context(), envelope.Model)
 			}
 			if matched && decision.RoutedModel == "__circuit_open__" {
+				w.Header().Set(headerPrismCircuitOpen, "1")
 				writeJSON(w, http.StatusServiceUnavailable, map[string]any{"error": map[string]string{"type": "circuit_open", "message": "候选链全部熔断，请稍后重试"}})
 				return
 			}

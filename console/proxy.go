@@ -189,6 +189,7 @@ type exitObservation struct {
 	api          string
 	mode         string
 	model        string
+	selfOpen     bool
 	prismChannel string
 	routedModel  string
 	client       string
@@ -256,6 +257,7 @@ func (h *server) observePublicExits(next http.Handler) http.Handler {
 			api:          apiForPath(r.URL.Path),
 			mode:         mode,
 			model:        modelFromRequestPrefix(prefix),
+			selfOpen:     observer.Header().Get(headerPrismCircuitOpen) != "",
 			prismChannel: observer.Header().Get("X-Prism-Channel"),
 			routedModel:  observer.Header().Get("X-Prism-Routed-Model"),
 			client:       strings.TrimSpace(h.clientAddress(r) + " " + r.Header.Get("User-Agent")),
