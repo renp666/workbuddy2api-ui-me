@@ -202,7 +202,7 @@ func TestStreamRejectsInvalidOrTruncatedOutput(t *testing.T) {
 func TestActualUpstreamStreamCannotManufactureSuccess(t *testing.T) {
 	for _, raw := range []string{"", firstText, "data: {\"error\":{\"message\":\"secret\"}}\n\n", firstText + stopFrame} {
 		w := httptest.NewRecorder()
-		New(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { _ = upstream.Stream(w, strings.NewReader(raw)) }), "fixture-api", 0).ServeHTTP(w, request(streamRequest))
+		New(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { _ = upstream.Stream(w, strings.NewReader(raw), nil) }), "fixture-api", 0).ServeHTTP(w, request(streamRequest))
 		completed := strings.Contains(w.Body.String(), "event: message_stop")
 		if completed != strings.Contains(raw, `"finish_reason":"stop"`) {
 			t.Fatalf("manufactured/lost completion for %q: %s", raw, w.Body)

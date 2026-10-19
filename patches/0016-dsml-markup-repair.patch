@@ -1,0 +1,286 @@
+上游正文工具调用标记还原（补丁 0016）：上游 DeepSeek 系模型把工具调用写成带两个全角竖线（U+FF5C）分隔的 DSML 标记文本，仅在请求声明 tools 时才被上游解析成结构化 tool_calls；tools 声明丢失时（中转/客户端丢失是常态）标记以纯文本落进 content，只认结构化 tool_calls 的客户端（Codex/pi）工具链直接断。本补丁在 core 出站响应侧识别标记并还原为标准 tool_calls（流式 delta + 非流式 message），实现放 extensions/internal/upstream/dsml.go（移植自 panel dsml.go），判定两级：tools 名单命中（含会话历史 tool_calls 恢复的名单）严格判定；名单缺失时按 markup_repair_allow_unknown（默认 true）弱判定。硬前提：块结构完美闭合、无结构化 tool_calls、finish_reason=stop（非流式）、256KB 超限原文回吐——绝不吞字节。Stream 增加第三参 repair（nil = 行为与现状完全一致）；所有既有测试调用点补 nil。
+
+diff --git a/internal/upstream/sse.go b/internal/upstream/sse.go
+index 19cb459..d0f193c 100644
+--- a/internal/upstream/sse.go
++++ b/internal/upstream/sse.go
+@@ -333,7 +333,12 @@ func normalizeFrame(obj map[string]any) map[string]any {
+ //   - 无 [DONE] 且未见 finish_reason（EOF/读错误）：流被中断——写显式 error 帧、
+ //     不补 [DONE]、返回非 nil error。半截流不再伪装成正常结束，客户端（pi 等）
+ //     据「缺终止标记 + error 帧」感知失败并自行重试。
+-func Stream(w http.ResponseWriter, r io.Reader) error {
++//
++// 补丁 0016：repair 非 nil 且启用时，正文中的模型原生工具调用标记（DSML）在本层
++// 还原为标准 delta.tool_calls：content 先经 MarkupRepair.Feed 改写，还原出的调用
++// 作为合成帧紧跟本帧写出，流结束前回吐未判定尾部。repair 为 nil / 禁用时行为与
++// 现状完全一致（零回归）。
++func Stream(w http.ResponseWriter, r io.Reader, repair *MarkupRepair) error {
+ 	h := w.Header()
+ 	h.Set("Content-Type", "text/event-stream")
+ 	h.Set("Cache-Control", "no-cache")
+@@ -345,6 +350,9 @@ func Stream(w http.ResponseWriter, r io.Reader) error {
+ 	// 供逐 chunk 透传时收敛 name 为「每 index 一次」（对齐 OpenAI 官方流）。
+ 	toolCallSeen := map[int]bool{}
+ 
++	// 补丁 0016：合成 tool_calls 帧的 index 基准（避开上游已用的 index）。
++	markupMaxIdx := -1
++
+ 	// firstID 透传流的消息级 id 基准：缓存首个非空上游 id，后续帧缺失/空串时复用
+ 	// （issue #35：同一条 SSE 消息所有帧共用一个真实 id，后台按 id 归并；此前中间帧
+ 	// 一律补 chatcmpl-wb2api 哨兵，造成同流 id 分裂）。全流无真实 id → 才出现哨兵。
+@@ -352,10 +360,18 @@ func Stream(w http.ResponseWriter, r io.Reader) error {
+ 
+ 	// writeFrame 把 payload 按规范白名单重建后以 data: 帧写出并 flush。
+ 	// 仅 JSON 解析成功时计数记为一次有效转发（JSON 解析失败照常降级原样写出，但不计数）。
+-	writeFrame := func(payload string) (int, error) {
++	// 补丁 0016：合成帧递归复用本函数，需 var 先声明再赋值（:= 闭包内无法自引用）。
++	var writeFrame func(payload string) (int, error)
++	writeFrame = func(payload string) (int, error) {
+ 		var obj map[string]any
+ 		valid := 0
++		var extras []map[string]any
+ 		if json.Unmarshal([]byte(payload), &obj) == nil {
++			// 补丁 0016：正文标记还原先于 name 收敛——Feed 改写 content 并产出合成
++			// tool_calls 帧（完整 name+arguments，index 避开上游已用值）；strip 只
++			// 收敛上游自带的分片，不影响合成帧。converted>0 时本层还会把流内 stop
++			// 改写为 tool_calls（修复层保证不覆盖真实调用）。
++			extras = RepairStreamFrame(obj, repair, &markupMaxIdx)
+ 			// 先按 index 收敛 tool_calls name（每 index 仅首片保留，后续分片删 name 键），再规范化透传。
+ 			stripToolCallNames(obj, toolCallSeen)
+ 			// id 续传：首帧非空真实 id 缓存；后续帧缺 id / 空 id 一律用缓存值，
+@@ -380,6 +396,19 @@ func Stream(w http.ResponseWriter, r io.Reader) error {
+ 		if fl != nil {
+ 			fl.Flush()
+ 		}
++		// 补丁 0016：合成帧紧跟宿主帧按序写出（走 writeFrame 复用规范化与 id 续传；
++		// 合成帧无 content，递归进入不会触发二次转换）。
++		for _, extra := range extras {
++			raw, err := json.Marshal(extra)
++			if err != nil {
++				continue
++			}
++			n, werr := writeFrame(string(raw))
++			if werr != nil {
++				return 0, werr
++			}
++			valid += n
++		}
+ 		return valid, nil
+ 	}
+ 
+@@ -444,6 +473,17 @@ readLoop:
+ 			break readLoop
+ 		}
+ 	}
++	// 补丁 0016：流结束回吐修复器未判定的尾部（被增量边界截断的标记块等），
++	// 先于空流判断——尾部帧计为有效帧，避免「上游只发了半个标记块」被误判空流。
++	if tail := RepairFlushFrame(repair); tail != nil {
++		if raw, err := json.Marshal(tail); err == nil {
++			n, werr := writeFrame(string(raw))
++			validFrames += n
++			if werr != nil {
++				return werr
++			}
++		}
++	}
+ 	// 空流（0 有效帧）：保持既有语义——写一帧 error（绕过 normalizeFrame 保留 error
+ 	// 字段）+ 补 [DONE] 让客户端正常收尾 + 返回非 nil error 供调用方记录。
+ 	if validFrames == 0 {
+diff --git a/internal/upstream/sse_test.go b/internal/upstream/sse_test.go
+index a293f4b..100a602 100644
+--- a/internal/upstream/sse_test.go
++++ b/internal/upstream/sse_test.go
+@@ -380,7 +380,7 @@ func TestStreamToolCallOverwriteClientSemantics(t *testing.T) {
+ func streamFrames(t *testing.T, raw string) (frames []map[string]any, doneCount int) {
+ 	t.Helper()
+ 	rec := httptest.NewRecorder()
+-	if err := Stream(rec, strings.NewReader(raw)); err != nil {
++	if err := Stream(rec, strings.NewReader(raw), nil); err != nil { // 补丁 0016：nil = 不启用标记还原
+ 		t.Fatal(err)
+ 	}
+ 	body := rec.Body.String()
+@@ -558,7 +558,7 @@ func TestStreamDoneFallback(t *testing.T) {
+ 	// 补丁 0012a 语义反转：上游流在无 [DONE] 且无 finish_reason 时 EOF = 流被中断，
+ 	// Stream 必须写显式 error 帧、**不补 [DONE]**、返回非 nil error——半截流不再伪装成功。
+ 	rec := httptest.NewRecorder()
+-	err := Stream(rec, strings.NewReader("data: {\"id\":\"x1\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"hi\"}}]}\n\n"))
++	err := Stream(rec, strings.NewReader("data: {\"id\":\"x1\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"hi\"}}]}\n\n"), nil)
+ 	if err == nil {
+ 		t.Fatal("truncated stream must return error")
+ 	}
+@@ -572,7 +572,7 @@ func TestStreamDoneFallback(t *testing.T) {
+ 
+ 	// 已有 [DONE] 时只写一次，不重复
+ 	rec2 := httptest.NewRecorder()
+-	if err := Stream(rec2, strings.NewReader("data: {\"id\":\"x1\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"hi\"}}]}\n\ndata: [DONE]\n\n")); err != nil {
++	if err := Stream(rec2, strings.NewReader("data: {\"id\":\"x1\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"hi\"}}]}\n\ndata: [DONE]\n\n"), nil); err != nil {
+ 		t.Fatal(err)
+ 	}
+ 	if n := strings.Count(rec2.Body.String(), "data: [DONE]"); n != 1 {
+@@ -582,7 +582,7 @@ func TestStreamDoneFallback(t *testing.T) {
+ 
+ func TestStreamPassthrough(t *testing.T) {
+ 	rec := httptest.NewRecorder()
+-	err := Stream(rec, strings.NewReader(sseFixture))
++	err := Stream(rec, strings.NewReader(sseFixture), nil)
+ 	if err != nil {
+ 		t.Fatal(err)
+ 	}
+@@ -693,7 +693,7 @@ func TestStreamEmptyFramesCase(t *testing.T) {
+ 	for _, c := range cases {
+ 		t.Run(c.name, func(t *testing.T) {
+ 			rec := httptest.NewRecorder()
+-			err := Stream(rec, strings.NewReader(c.raw))
++			err := Stream(rec, strings.NewReader(c.raw), nil)
+ 			if err == nil {
+ 				t.Fatalf("expected error, got nil")
+ 			}
+@@ -731,7 +731,7 @@ func TestStreamGarbageAfterDone(t *testing.T) {
+ 		"data: [DONE]\n\n" +
+ 		"data: {\"should\":\"not appear\"}\n\n"
+ 	rec := httptest.NewRecorder()
+-	if err := Stream(rec, strings.NewReader(raw)); err != nil {
++	if err := Stream(rec, strings.NewReader(raw), nil); err != nil { // 补丁 0016：nil = 不启用标记还原
+ 		t.Fatal(err)
+ 	}
+ 	body := rec.Body.String()
+@@ -761,7 +761,7 @@ func TestStreamNormalPassthroughRegression(t *testing.T) {
+ 	for _, c := range cases {
+ 		t.Run(c.name, func(t *testing.T) {
+ 			rec := httptest.NewRecorder()
+-			if err := Stream(rec, strings.NewReader(c.raw)); err != nil {
++			if err := Stream(rec, strings.NewReader(c.raw), nil); err != nil {
+ 				t.Fatal(err)
+ 			}
+ 			body := rec.Body.String()
+diff --git a/internal/upstream/stream_interrupt_test.go b/internal/upstream/stream_interrupt_test.go
+index 65c160a..9a1af48 100644
+--- a/internal/upstream/stream_interrupt_test.go
++++ b/internal/upstream/stream_interrupt_test.go
+@@ -16,7 +16,7 @@ func TestStreamFinishReasonWithoutDoneTolerated(t *testing.T) {
+ 	raw := "data: {\"id\":\"x1\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"hi\"}}]}\n\n" +
+ 		"data: {\"id\":\"x1\",\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"stop\"}]}\n\n"
+ 	rec := httptest.NewRecorder()
+-	if err := Stream(rec, strings.NewReader(raw)); err != nil {
++	if err := Stream(rec, strings.NewReader(raw), nil); err != nil { // 补丁 0016：nil = 不启用标记还原
+ 		t.Fatalf("complete content without sentinel must stay success: %v", err)
+ 	}
+ 	body := rec.Body.String()
+@@ -32,7 +32,7 @@ func TestStreamFinishReasonWithoutDoneTolerated(t *testing.T) {
+ // 同样走中断收尾：写 error 帧、不补 [DONE]、返回原读错误。
+ func TestStreamReadErrorInterrupts(t *testing.T) {
+ 	rec := httptest.NewRecorder()
+-	err := Stream(rec, &errAfterFrameReader{})
++	err := Stream(rec, &errAfterFrameReader{}, nil)
+ 	if err == nil || err.Error() != "boom" {
+ 		t.Fatalf("must return original read error, got %v", err)
+ 	}
+diff --git a/internal/server/handler.go b/internal/server/handler.go
+index 50fdf37..a4e8c4e 100644
+--- a/internal/server/handler.go
++++ b/internal/server/handler.go
+@@ -66,6 +66,11 @@ type Config struct {
+ 	// 重发期间不喂冷却/熔断（成功即无副作用；耗尽后才按既有策略罚账号）。
+ 	RetrySameAccount int
+ 	RetryBackoff     time.Duration
++
++	// 补丁 0016：正文工具调用标记（DSML）还原。MarkupAllowUnknown 控制 tools 名单
++	// 缺失时的弱判定（见 upstream.NewMarkupRepair）；名单本身每请求从请求体提取
++	// （tools 声明 + 会话历史 tool_calls），无配置面。
++	MarkupAllowUnknown bool
+ }
+ 
+ // Pinner 查询某 realm 当前人工锁定的账号 UID（空串 = 未锁定）。
+@@ -516,6 +521,17 @@ func (h *Handler) chatCompletions(w http.ResponseWriter, r *http.Request) {
+ 		turnKey = session.TurnKey(body)
+ 	}
+ 
++	// 补丁 0016：正文工具调用标记（DSML）修复的每请求状态。
++	// allowed 从**原始请求体**提取（tools 声明 + 会话历史 tool_calls/function_call），
++	// 必须在任何 body 改写（prompt.Rewrite）之前——历史里出现过的工具名天然可信，
++	// 覆盖 tools 声明在中转环节丢失的主泄漏场景。名单与弱判定开关全空 → 修复器
++	// 整体禁用（Enabled=false），出站零改动零分配。
++	markupAllowed := upstream.ToolNameAllowlist(body)
++	var markupRepair *upstream.MarkupRepair
++	if markupAllowed != nil || h.cfg.MarkupAllowUnknown {
++		markupRepair = upstream.NewMarkupRepair(markupAllowed, h.cfg.MarkupAllowUnknown)
++	}
++
+ 	// 在途租约：成功选中即占名额；函数出口（含成功 return 与 panic）统一释放。
+ 	var heldUID string
+ 	defer func() {
+@@ -795,7 +811,8 @@ func (h *Handler) chatCompletions(w http.ResponseWriter, r *http.Request) {
+ 			// 补丁 0012a：Stream 返回非 nil = 流被中断（EOF 无 [DONE]/finish_reason、
+ 			// 空闲超时或读错误）。此时 200 头与部分帧已下发，不能改状态码也不换号重发
+ 			// （会造成重复内容），但必须记 WARN 让失败可观测——此前错误被 `_ =` 丢弃。
+-			if serr := upstream.Stream(w, stats); serr != nil {
++			// 补丁 0016：markupRepair 非 nil 时正文中的 DSML 标记在本层还原为 tool_calls。
++			if serr := upstream.Stream(w, stats, markupRepair); serr != nil {
+ 				log.Printf("WARN: [server] stream interrupted uid=%s model=%s: %v", logfmt.UID8(acct.UID), bareModel, serr)
+ 			}
+ 			st.ttfb = stats.TTFB()
+@@ -827,6 +844,11 @@ func (h *Handler) chatCompletions(w http.ResponseWriter, r *http.Request) {
+ 			st.status = http.StatusBadGateway
+ 			return
+ 		}
++		// 补丁 0016：非流式正文标记还原（无结构化 tool_calls 且 finish_reason=stop
++		// 才生效；修复器禁用时零改动）。还原数记观测。
++		if mr := upstream.RepairAggregatedResponse(resp, markupAllowed, h.cfg.MarkupAllowUnknown); mr.Converted() > 0 {
++			log.Printf("INFO: [server] dsml markup repaired uid=%s model=%s converted=%d seen=%d", logfmt.UID8(acct.UID), bareModel, mr.Converted(), mr.Seen())
++		}
+ 		writeJSON(w, http.StatusOK, resp)
+ 		st.status = http.StatusOK
+ 		st.toks = completionTokens(resp)
+diff --git a/cmd/server/config.go b/cmd/server/config.go
+index d784ddf..ff28dd1 100644
+--- a/cmd/server/config.go
++++ b/cmd/server/config.go
+@@ -89,6 +89,12 @@ type Config struct {
+ 		// PassthroughIP 是否透传客户端 IP（X-Forwarded-For/X-Real-IP 首段）给上游。
+ 		// 缺省 false（反代安全边界：不把内网/代理 IP 暴露给上游）；true 才透传。
+ 		PassthroughIP bool `json:"passthrough_ip"`
++
++		// 补丁 0016：正文工具调用标记（DSML）还原的弱判定开关。
++		// 客户端 tools 名单缺失（中转/客户端丢失 tools 声明）时，true 才对「结构完美
++		// 闭合 + 工具名形如标识符」的标记块做还原。缺省 true：还原仅在正文出现完整
++		// 标记块时才触发，正常文本零影响；显式 false 关闭弱判定（只认名单内的工具名）。
++		MarkupRepairAllowUnknown bool `json:"markup_repair_allow_unknown"`
+ 	} `json:"upstream"`
+ 
+ 	Features struct {
+@@ -167,6 +173,9 @@ func Default() *Config {
+ 	// 显式 client_name="SaaS" 还原旧行为。
+ 	c.Upstream.ClientName = "WorkBuddy"
+ 	c.Features.SanitizeBlacklistFingerprints = true
++	// 补丁 0016：DSML 标记还原弱判定缺省开（还原仅在正文出现完整标记块时触发，
++	// 正常文本零影响；显式 false/环境变量关闭）。
++	c.Upstream.MarkupRepairAllowUnknown = true
+ 	c.Prompt.Mode = "passthrough" // 缺省 passthrough：默认透传客户端原始 system；显式配置 custom 仍可覆盖回替换
+ 	c.Pool.MaxInFlight = 3
+ 	c.Pool.BreakerThreshold = 3
+@@ -262,6 +271,12 @@ func applyEnv(c *Config) {
+ 			c.Upstream.PassthroughIP = b
+ 		}
+ 	}
++	// 补丁 0016：DSML 弱判定环境变量覆盖。
++	if v := os.Getenv("WB2A_MARKUP_REPAIR_ALLOW_UNKNOWN"); v != "" {
++		if b, err := strconv.ParseBool(v); err == nil {
++			c.Upstream.MarkupRepairAllowUnknown = b
++		}
++	}
+ 	if v := os.Getenv("WB2A_SANITIZE_FINGERPRINTS"); v != "" {
+ 		if b, err := strconv.ParseBool(v); err == nil {
+ 			c.Features.SanitizeBlacklistFingerprints = b
+diff --git a/cmd/server/main.go b/cmd/server/main.go
+index 3d31899..704f559 100644
+--- a/cmd/server/main.go
++++ b/cmd/server/main.go
+@@ -206,6 +206,8 @@ func main() {
+ 		// 补丁 0012b：流前瞬态失败同号短退避重试（内置固定参数，不进 JSON/env）。
+ 		// 同一账号最多 2 次尝试、间隔 300ms，覆盖单账号池与粘性号的上游抖动场景。
+ 		RetrySameAccount: 2,
++		// 补丁 0016：DSML 标记还原弱判定开关（名单每请求从请求体提取，无配置面）。
++		MarkupAllowUnknown: cfg.Upstream.MarkupRepairAllowUnknown,
+ 	})
+ 
+ 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
