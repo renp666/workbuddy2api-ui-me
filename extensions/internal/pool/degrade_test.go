@@ -34,12 +34,12 @@ func TestNoteFailuresDegradesAtThreshold(t *testing.T) {
 	// 前两次：仍在池
 	p.NoteFailures("u1")
 	p.NoteFailures("u1")
-	if _, ok := p.Pick(); !ok {
+	if p.Pick("") == nil {
 		t.Fatal("未达阈值不应降权")
 	}
 	// 第三次达阈：临时出池
 	p.NoteFailures("u1")
-	if _, ok := p.Pick(); ok {
+	if p.Pick("") != nil {
 		t.Fatal("达阈后应临时出池（坏号显示健康、每次被选中都失败的修复）")
 	}
 	st, ok := p.Status("u1")
@@ -64,12 +64,12 @@ func TestNoteSuccessClearsDegrade(t *testing.T) {
 
 	p.NoteFailures("u1")
 	p.NoteFailures("u1")
-	if _, ok := p.Pick(); ok {
+	if p.Pick("") != nil {
 		t.Fatal("前置：已达阈降权")
 	}
 	// 账号被证明恢复（成功调用）→ 立即回池，不等降权到期。
 	p.NoteSuccess("u1")
-	if _, ok := p.Pick(); !ok {
+	if p.Pick("") == nil {
 		t.Fatal("NoteSuccess 后应立即回池")
 	}
 	st, _ := p.Status("u1")
@@ -102,7 +102,7 @@ func TestDegradeUnknownUIDIsNoop(t *testing.T) {
 	SetDegrade(1, time.Minute, time.Hour)
 	p := newDegradePool(t, "u1")
 	p.NoteFailures("ghost") // 不存在：不得 panic、不得影响他号
-	if _, ok := p.Pick(); !ok {
+	if p.Pick("") == nil {
 		t.Fatal("未知 UID 的失败不应影响真实账号")
 	}
 }
