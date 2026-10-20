@@ -39,7 +39,7 @@
 
 ### 缺失（候选增强，见第四节建议表）
 
-响应侧 tool_calls 还原、余额后台刷新+解冻、客户端 X-Request-Id 响应头+成功率面板、多 API Key+按 Key 归因、每日限额护栏、成长任务一键完成 17/18、OpenRouter 价估算、404 短冷却 60s（待核对）、X-Device-Token 设备风控头（待核对）、积分到期分布、core 配置热生效。
+响应侧 tool_calls 还原、余额后台刷新+解冻、客户端 X-Request-Id 响应头+成功率面板、多 API Key+按 Key 归因、每日限额护栏、成长任务一键完成 17/18、OpenRouter 价估算、X-Device-Token 设备风控头（待核对）、积分到期分布、core 配置热生效。
 
 ## 三、逐项仿照建议表（核心交付）
 
@@ -50,7 +50,7 @@
 | 3 | ~~调用来源 IP·UA 归因~~ | panel + hub 按Key归因思想 | 账本每条记录补 client_ip / UA 摘要，多客户端区分排障 | **已有（勘误：调研时误判为缺失，见 §六）** | 补丁 0008 + extensions/internal/usagelog | — / 本仓实现比 panel 更严：IP 收敛网段（/24、/64 主机位不落盘）、UA 200 字清洗截断、鉴权失败留痕（denied-）独立分文件 | — |
 | 4 | 客户端 X-Request-Id + 成功率双口径 | panel | 响应头带请求 ID 并贯穿账本；面板展示「完成成功率 / HTTP 成功率 / 平均耗时」 | 仿照 | console 出口+账本 | 中低 / 公共面改动需过九通道枚举点清单 | P2 |
 | 5 | 多 API Key + 用量按 Key 归因 + Key 级模型限制 | hub | 每客户端独立 Key，可限模型（通配符）、可启停删除；用量按 Key 出报表 | 仿照 | console auth 层+账本 | 中 / 涉及鉴权面，需回归测试兜底 | P2 |
-| 6 | 404 短冷却 60s | panel | 404（模型/端点不存在类）只短冷却 60s 防长罚 | 待核对后补 | core 错误分类 | 低 / 先核对本仓 404 现走哪档 | P2 |
+| 6 | ~~404 短冷却 60s~~ | panel | 404（模型/端点不存在类）只短冷却 60s 防长罚 | **已有（2026-10-20 核对：快照自带，见 §六勘误）** | upstream/internal/server/handler.go `notFoundCooldown` | — / `upstream.Classify` 判 `ErrNotFound` → 固定 60s 软冷却，不随 soft_rate 指数退避，注释理由与 panel 同款 | — |
 | 7 | **每日限额护栏** | hub | 保留积分 / 每日 Token / 每日积分 / 按模型每日Token 四条账号级护栏，本地 0 点解封；全账号达额返回 429 + Retry-After 指向 0 点 | **仿照（建议简化两条先行：每日Token+保留积分）** | core 调度 | 中高 / 护栏计数与解封需落盘；与 pin/粘性交互要理清 | P2 |
 | 8 | 成长任务一键完成 17/18 | panel | 逆向行为事件链纯 API 点亮成长任务并自动领奖（≈+1950c/新号） | 观望 | core 任务层 | 高 / 事件链脆弱+风控敏感+上游已删无维护；本仓 school/cat 脚本已覆盖部分 | P3 |
 | 9 | OpenRouter 价估算 | hub | token 按公布价折算等价花费，定价策略快照使历史数字不随调价漂移，未定价可见 | 仿照 | console 统计面 | 中 / 需嵌价目快照+定期刷新 | P3 |
@@ -109,6 +109,12 @@
 - **测试**：`TestOriginOfMasksInjectedClientAndCapsUserAgent`、`TestRecordAuthWiresNicknameFallbackAndExplicitZeroCredit`、console `proxy_test.go` 伪造头剥离断言、anthropic adapter 来源测试均在库。
 
 结论：P1 #3 无需实现，本项关闭；真正缺失的相邻功能是 §三 #5「多 API Key + 按 Key 归因」（P2）。
+
+### §三 #6 核对记录（2026-10-20：404 短冷却 60s 快照自带，无需实现）
+
+- `upstream/internal/server/handler.go:53-57` `notFoundCooldown = 60 * time.Second`，注释明确：404 是上游**偶发**路径缺失而非限流，若共用 soft_rate（600s 起步+指数升级）会把好账号罚 10 分钟并逐次加倍，故固定 60s 防雪崩。
+- 分类权威在 `upstream.Classify`（`upstream/internal/upstream/client.go`）：404 → `ErrNotFound`；`applyErrorPolicy`（handler.go:737-740）→ `Cooldown(uid, CoolSoft, notFoundCooldown, "upstream 404")`，不参与 softStreak 指数退避。
+- 与 panel 语义一致，属快照基点自带（非本仓补丁引入）；该行为有 `handler_test.go` 覆盖。本项关闭。
 
 ## 七、待拍板事项
 
