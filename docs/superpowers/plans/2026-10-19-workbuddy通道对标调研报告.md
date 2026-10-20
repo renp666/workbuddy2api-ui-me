@@ -54,7 +54,7 @@
 | 7 | **每日限额护栏** | hub | 保留积分 / 每日 Token / 每日积分 / 按模型每日Token 四条账号级护栏，本地 0 点解封；全账号达额返回 429 + Retry-After 指向 0 点 | **仿照（建议简化两条先行：每日Token+保留积分）** | core 调度 | 中高 / 护栏计数与解封需落盘；与 pin/粘性交互要理清 | P2 |
 | 8 | 成长任务一键完成 17/18 | panel | 逆向行为事件链纯 API 点亮成长任务并自动领奖（≈+1950c/新号） | 观望 | core 任务层 | 高 / 事件链脆弱+风控敏感+上游已删无维护；本仓 school/cat 脚本已覆盖部分 | P3 |
 | 9 | OpenRouter 价估算 | hub | token 按公布价折算等价花费，定价策略快照使历史数字不随调价漂移，未定价可见 | 仿照 | console 统计面 | 中 / 需嵌价目快照+定期刷新 | P3 |
-| 10 | 粘性键哈希化（d- 前缀） | panel | 本仓粘性键已是内容派生（u0:原文），长 prompt 会键膨胀；改为哈希 | 微优化 | core session | 低 | P3 |
+| 10 | ~~粘性键哈希化（d- 前缀）~~ | panel | 本仓粘性键已是内容派生（u0:原文），长 prompt 会键膨胀；改为哈希 | **已顺带完成（2026-10-20 核对：键膨胀落点 sync.Map 缓存已被补丁 0018 删除，见 §六勘误）** | core session | — | — |
 | 11 | X-Device-Token 设备风控头三源 | panel（吸收自上游末期） | 出站补设备风控头（auth 每号/config/文件） | 待核对 | core headers | 低 / 无实证风控问题前不动出站指纹 | P3 |
 | 12 | 积分到期分布图 | panel | 面板按账号积分到期时间出分布 | 仿照 | console 前端 | 低 | P3 |
 | 13 | 桌面客户端凭据导入 | hub | 从运行中的桌面客户端就地解密 token 导入 | 不仿照 | — | 容器读不到宿主 %APPDATA%（traeai 同款教训），回调/JSON 导入已覆盖 | — |
@@ -154,6 +154,16 @@ pin/粘性交互（现状核对确认天然正确）：严格锁定走 PickByUID
 通道统一性结论（八条旁路不适用本能力，与 §三 #2 同构）：护栏依赖「账号级冷却/解封 + 按账号用量计数」这套 core 池语义；八条旁路 sidecar 账号状态进程内自洽——zcode/qoder 单凭据、opencode/freellm 供应商 key 池自轮换（freellm 自带 429/5xx 熔断冷却）、autoclaw/trae/traeai/raccoon 多账号启停为显式控制动作，均无「账号冷却等外部事件解封」缺口，上游 429 限流本身即兜底；旁路 usage_report 账本（uid=zcode 等）不进 core 池，不构成护栏对象。无同类行为需统一。
 
 测试：pool `quota_test.go` 10 例（达额摘除/未知观测不计/跨天清零/不喂熔断/幂等/签到不误放/兜底排除/保留积分四处覆盖/RealmExhausted 六态/0 点窗口）+ usagelog `quota_test.go` 2 例（按日聚合/observer 喂入）+ server `quota_guard_test.go` 2 例（429+Retry-After/nil 守卫零回归，补丁内新增文件）；Docker golang:1.23 vet + 全量 + race 全绿；补丁链全新物化（core-quota-v2）复现验证通过。
+
+### §三 #10 核对记录（2026-10-20：键膨胀落点已被补丁 0018 顺带消除，判空关闭）
+
+立项时依据「粘性键已是内容派生（u0:原文），长 prompt 会键膨胀」。实测核对键膨胀的实际落点：`internal/session/ids.go` 的 `requestIDs sync.Map` 惰性缓存——以轮键原文为 key 无界增长（无会话键客户端每个对话轮新增一条长字符串 entry、永不删除），长 prompt 下才是真内存问题。补丁 0018（灰度移植批次）已顺带完成核心修复：
+
+- `RequestIDForKey` 改 `sha256(盐|键)` 纯派生，删除整个 sync.Map 缓存（内存不再随键数增长）；
+- `contentSignature`（extensions 新文件）对多模态非文本 part 只入 `[type:8-hex 摘要]`，data: base64 内联图不再进键；
+- `TurnKey`/`firstUserText` 派生键仅在请求内瞬时存在（handler 循环外取一次作 sha256 输入），不驻留内存、不进日志、不落盘。
+
+剩余可做的只有「纯文本形态也入哈希摘要」（对齐 panel d- 形态），收益为每请求省一次 O(prompt) 字符串拷贝；派生盐每进程随机、键值本不跨进程稳定，改了无兼容风险但也无实质收益。2026-10-20 拍板判空关闭，不再单独立项。
 
 ## 七、待拍板事项
 
