@@ -44,7 +44,7 @@ func TestUsageReportValidatesAndRecords(t *testing.T) {
 	h := New(context.Background(), Config{Key: testKey, Usage: l})
 	credit := 0.25
 	body := `{"entries":[
-		{"uid":"zcode","account":"GLM 通道","model":"glm-4.6","mode":"stream","prompt_tokens":120,"completion_tokens":80,"credit":` + fmtJSONFloat(credit) + `,"has_credit":true},
+		{"uid":"zcode","account":"GLM 通道","model":"glm-4.6","mode":"stream","prompt_tokens":120,"completion_tokens":80,"credit":` + fmtJSONFloat(credit) + `,"has_credit":true,"request_id":"0123456789abcdef0123456789abcdef"},
 		{"uid":"qoder","account":"Qoder 通道","model":"qoder-glm-4.6","mode":"sync","prompt_tokens":-1,"completion_tokens":-1}
 	]}`
 	w := bridgeRequest(h, "POST", "/internal/v1/usage/reports", body, "")
@@ -68,6 +68,9 @@ func TestUsageReportValidatesAndRecords(t *testing.T) {
 	}
 	if second.UID != "qoder" || second.Model != "qoder-glm-4.6" || second.Prompt != -1 || second.Completion != -1 || second.Credit != nil {
 		t.Fatalf("第二条观测不符：%+v", second)
+	}
+	if first.RequestID != "0123456789abcdef0123456789abcdef" || second.RequestID != "" {
+		t.Fatalf("request_id 贯穿不符：%q / %q", first.RequestID, second.RequestID)
 	}
 	if got.Summary.Calls != 2 || got.Summary.Prompt != 120 || got.Summary.Completion != 80 || got.Summary.Credit != credit || got.Summary.CreditMissing != 1 || got.Summary.PromptMissing != 1 || got.Summary.CompletionMissing != 1 {
 		t.Fatalf("汇总缺失语义不符：%+v", got.Summary)

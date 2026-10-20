@@ -113,6 +113,8 @@ type errorEvent struct {
 	RoutedVia      string `json:"routed_via,omitempty"`
 	RetryCount     int    `json:"retry_count,omitempty"`
 	RetryAfterSec  int    `json:"retry_after_sec,omitempty"`
+	RequestID      string `json:"request_id,omitempty"` // 出口请求 ID，与 core/旁路账本同键
+	Produced       bool   `json:"produced,omitempty"`   // 成功样本的完成口径（成功落盘场景恒 false，仅内存窗口消费）
 }
 
 // usageChannelToRoute 把用量账本的通道身份翻译成路由通道名。两套名字只在 GLM 通道上
@@ -384,6 +386,7 @@ type outcomeSample struct {
 	channel    routeChannel
 	model      string // 通道原生模型名
 	ok         bool
+	produced   bool   // 完成口径：HTTP 成功且非空流、有字节写出（见 emptyStreamMarker）
 	category   string // 失败时的归类
 	durationMs int64  // 成功失败共用出口时延，usage 不重复计样本
 }
@@ -407,7 +410,7 @@ func (w *outcomeWindow) add(ev errorEvent, ok bool) {
 	defer w.mu.Unlock()
 	w.samples = append(w.samples, outcomeSample{
 		ts: time.UnixMilli(ev.Ts), alias: ev.Alias, channel: routeChannel(ev.Channel), model: ev.ModelResolved,
-		ok: ok, category: ev.Category, durationMs: ev.DurationMs,
+		ok: ok, produced: ok && ev.Produced, category: ev.Category, durationMs: ev.DurationMs,
 	})
 	if w.onAdd != nil {
 		w.onAdd(ev, ok)
@@ -432,9 +435,11 @@ func (w *outcomeWindow) add(ev errorEvent, ok bool) {
 	}
 }
 
-// windowStats 是一个切片上的成功/失败计数视图。
+// windowStats 是一个切片上的成功/失败计数视图。produced 只在 ok 样本上累计，
+// 供「完成成功率」口径（HTTP 成功且非空流）使用。
 type windowStats struct {
 	ok, fail int
+	produced int
 }
 
 func (s windowStats) rate() float64 {
@@ -444,9 +449,20 @@ func (s windowStats) rate() float64 {
 	return float64(s.fail) / float64(s.ok+s.fail)
 }
 
+// completionRate 完成成功率：HTTP 成功且非空流的调用占全部调用的比例。
+func (s windowStats) completionRate() float64 {
+	if s.ok+s.fail == 0 {
+		return 0
+	}
+	return float64(s.produced) / float64(s.ok+s.fail)
+}
+
 func (s windowStats) plus(sample outcomeSample) windowStats {
 	if sample.ok {
 		s.ok++
+		if sample.produced {
+			s.produced++
+		}
 	} else {
 		s.fail++
 	}
@@ -461,6 +477,10 @@ type outcomeAggregate struct {
 	categories        map[string]int
 	channelCategories map[routeChannel]map[string]int
 	durations         map[routeChannel]map[string][]int64
+	// 全窗口（成功+失败）出口时延累计，供「平均耗时」展示；count=0 时调用方按
+	// 未观测处理，不拿 0 冒充。
+	totalDurationMs int64
+	durationCount   int
 }
 
 // collect 汇总窗口内样本；并发请求可能不按观测时间入队。
@@ -485,13 +505,11 @@ func (w *outcomeWindow) collect(window time.Duration) outcomeAggregate {
 				agg.durations[sample.channel] = map[string][]int64{}
 			}
 			agg.durations[sample.channel][sample.model] = append(agg.durations[sample.channel][sample.model], sample.durationMs)
+			agg.totalDurationMs += sample.durationMs
+			agg.durationCount++
 		}
 		agg.channels[sample.channel] = agg.channels[sample.channel].plus(sample)
-		if sample.ok {
-			agg.total.ok++
-		} else {
-			agg.total.fail++
-		}
+		agg.total = agg.total.plus(sample)
 		if agg.models[sample.channel] == nil {
 			agg.models[sample.channel] = map[string]windowStats{}
 		}
@@ -646,6 +664,7 @@ func (h *server) adminErrors(w http.ResponseWriter, r *http.Request) {
 		"ok":           0,
 		"fail":         0,
 		"error_rate":   0,
+		"produced_ok":  0,
 		"channels":     []errorChannelStat{},
 		"top_models":   []errorTopModelStat{},
 		"categories":   []errorCategoryStat{},
@@ -661,6 +680,13 @@ func (h *server) adminErrors(w http.ResponseWriter, r *http.Request) {
 		out["ok"] = agg.total.ok
 		out["fail"] = agg.total.fail
 		out["error_rate"] = roundRate(agg.total.rate())
+		out["produced_ok"] = agg.total.produced
+		out["completion_rate"] = roundRate(agg.total.completionRate())
+		if agg.durationCount > 0 {
+			out["avg_duration_ms"] = agg.totalDurationMs / int64(agg.durationCount)
+		} else {
+			out["avg_duration_ms"] = nil // 未观测不拿 0 冒充
+		}
 		out["channels"] = buildErrorChannelStats(agg)
 		out["top_models"] = buildGlobalTopErrorModels(agg)
 		out["latency"] = buildModelLatencyStats(agg)
@@ -740,6 +766,9 @@ func (h *server) finishExitObserve(obs exitObservation) {
 	}
 	status := obs.status
 	ok := status < 400 // 0 = 未显式写头（net/http 隐式 200），按成功计
+	// 完成口径：HTTP 成功、写出过字节、且不是 core 的空流兜底帧（见 emptyStreamMarker）。
+	// 三个条件都满足才算「有产出」；失败样本恒 false。
+	produced := ok && obs.wroteBytes > 0 && !obs.emptyStream
 	channel := publicChannelForModel(obs.model)
 	routedPublic := obs.model
 	ev := errorEvent{
@@ -749,6 +778,8 @@ func (h *server) finishExitObserve(obs exitObservation) {
 		Mode:       obs.mode,
 		DurationMs: obs.durationMs,
 		Client:     obs.client,
+		RequestID:  obs.requestID,
+		Produced:   produced,
 	}
 	// 别名命中时，分流侧把解析结论写进了 X-Prism-* 响应头：通道、改写后的公共模型名
 	// 都从那里取，请求里的原名就是别名。未命中时按模型前缀判通道。

@@ -250,6 +250,53 @@ func TestOriginOfMasksInjectedClientAndCapsUserAgent(t *testing.T) {
 	}
 }
 
+// TestOriginOfReadsRequestID 锁定出口请求 ID 的读取与清洗：console 注入的内部头
+// 原样入账；缺失留空；含控制字符/非 ASCII 的值整体不留（ID 是排障关联键，宁可
+// 缺席不可留半截混合物）。
+func TestOriginOfReadsRequestID(t *testing.T) {
+	r := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil)
+	r.Header.Set("X-Console-Request-Id", "0123456789abcdef0123456789abcdef")
+	if got := OriginOf(r.Context(), r); got.RequestID != "0123456789abcdef0123456789abcdef" {
+		t.Fatalf("内部头应原样入账：%q", got.RequestID)
+	}
+
+	empty := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil)
+	if got := OriginOf(empty.Context(), empty); got.RequestID != "" {
+		t.Fatalf("缺头应留空：%q", got.RequestID)
+	}
+
+	hostile := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil)
+	hostile.Header.Set("X-Console-Request-Id", "abc\nlog-injection")
+	if got := OriginOf(hostile.Context(), hostile); got.RequestID != "" {
+		t.Fatalf("含控制字符的 ID 应整体不留：%q", got.RequestID)
+	}
+
+	nonASCII := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil)
+	nonASCII.Header.Set("X-Console-Request-Id", "id-含中文")
+	if got := OriginOf(nonASCII.Context(), nonASCII); got.RequestID != "" {
+		t.Fatalf("非 ASCII 的 ID 应整体不留：%q", got.RequestID)
+	}
+}
+
+// TestSanitizeRequestID 锁定清洗函数本身：去首尾空白、超限截断、合法字符集。
+func TestSanitizeRequestID(t *testing.T) {
+	cases := []struct {
+		in, want string
+	}{
+		{"", ""},
+		{"  abc  ", "abc"},
+		{strings.Repeat("a", maxRequestID+10), strings.Repeat("a", maxRequestID)},
+		{"ok-id_09", "ok-id_09"},
+		{"with space", ""}, // ID 内空白非法：整体不留
+		{"tab\there", ""},
+	}
+	for _, tc := range cases {
+		if got := SanitizeRequestID(tc.in); got != tc.want {
+			t.Fatalf("SanitizeRequestID(%q)=%q，want %q", tc.in, got, tc.want)
+		}
+	}
+}
+
 func TestDeniedRecordsStayOutOfUsageQueries(t *testing.T) {
 	dir := t.TempDir()
 	l, err := Open(dir)

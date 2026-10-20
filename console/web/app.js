@@ -742,6 +742,12 @@ function renderErrorStats(){
  $('errors-fail').textContent=String(data.fail||0);
  // 样本为 0 时错误率是「没有观测」而不是「0%」：写「—」，不伪造一个漂亮数字。
  $('errors-rate').textContent=calls?formatErrorRate(data.error_rate):'—';
+ // 双口径成功率与平均耗时：HTTP 成功率=1−错误率；完成成功率只认「HTTP 成功且非空流」；
+ // 平均耗时未观测写「—」（后端 null），不拿 0 冒充。
+ $('errors-http-rate').textContent=calls?formatErrorRate(1-Number(data.error_rate||0)):'—';
+ $('errors-completion-rate').textContent=calls?formatErrorRate(data.completion_rate):'—';
+ const avg=data.avg_duration_ms;
+ $('errors-avg-duration').textContent=(avg===null||avg===undefined)?'—':(Number(avg)/1000).toFixed(2)+' s';
  const stamp=$('errors-stamp');
  if(stamp)stamp.textContent=`窗口：${errorsWindowLabels[errorsWindow]||errorsWindow} · 样本 ${calls} 次`;
  renderErrorCategories(data);
@@ -807,6 +813,7 @@ function errorEventMeta(ev){
  if(ev.mode)parts.push(usageModeNames[ev.mode]||ev.mode);
  if(ev.upstream_status)parts.push(`上游 ${ev.upstream_status}`);
  if(Number.isFinite(Number(ev.duration_ms))&&Number(ev.duration_ms)>0)parts.push(`${ev.duration_ms} ms`);
+ if(ev.request_id)parts.push(`请求 ${ev.request_id}`);
  return parts.join(' · ')||'无更多字段';
 }
 for(const [key,id] of errorsWindowButtons)$(id).addEventListener('click',()=>setErrorsWindow(key));

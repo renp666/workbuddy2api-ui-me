@@ -1,9 +1,13 @@
 package main
 
 import (
+	"bytes"
 	"context"
+	crand "crypto/rand"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"log"
 	"net/http"
@@ -84,7 +88,9 @@ func stripPrivateHeaders(headers http.Header) {
 			headers.Del(name)
 		}
 	}
-	for _, name := range []string{"Forwarded", "X-Real-IP", "Cookie", "X-CSRF-Token"} {
+	// X-Request-Id 恒由网关服务端生成（响应头回给客户端的是网关 ID），入站值
+	// 一律剥掉：不透传给 core/旁路，避免客户端伪造值混进转发链。
+	for _, name := range []string{"Forwarded", "X-Real-IP", "Cookie", "X-CSRF-Token", "X-Request-Id"} {
 		headers.Del(name)
 	}
 }
@@ -97,6 +103,11 @@ func (h *server) proxy(management bool) *httputil.ReverseProxy {
 			// this one as console-attested; core masks it to a netblock on write.
 			if addr := h.clientAddress(pr.In); addr != "" {
 				pr.Out.Header.Set("X-Console-Client", addr)
+			}
+			// 出口请求 ID：observePublicExits 生成的网关侧排障键，经内部头传给
+			// core/旁路落账；管理代理与未观测路径的请求 ctx 里没有值，自然跳过。
+			if id := requestIDFrom(pr.In.Context()); id != "" {
+				pr.Out.Header.Set("X-Console-Request-Id", id)
 			}
 			if management {
 				pr.Out.Header.Set("Authorization", "Bearer "+h.cfg.BridgeKey)
@@ -196,6 +207,9 @@ type exitObservation struct {
 	durationMs   int64
 	retryCount   int
 	retryAfter   string
+	requestID    string
+	emptyStream  bool
+	wroteBytes   int64
 }
 
 // observedExitPath 判定该请求是否属于要观测的对话出口。只看三个对话端点：
@@ -226,12 +240,19 @@ func apiForPath(path string) string {
 
 // observePublicExits 包装 /v1/* 出口：记录响应状态、失败响应体摘要、请求模型名与
 // 耗时，请求结束后交给 finishExitObserve 归档。非对话端点原样透传，零额外开销。
+//
+// 同时是出口请求 ID 的生成点：每个公共请求生成 32 hex 的网关侧排障键，响应头
+// X-Request-Id 回给客户端（客户端日志可与网关账本对齐），内部头 X-Console-Request-Id
+// 传给 core/旁路贯穿落账。入站 X-Request-Id 一律剥掉（恒服务端生成，见 stripPrivateHeaders）。
 func (h *server) observePublicExits(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if h.outcomes == nil || !observedExitPath(r) {
 			next.ServeHTTP(w, r)
 			return
 		}
+		id := newRequestID()
+		w.Header().Set("X-Request-Id", id)
+		r = r.WithContext(withRequestID(r.Context(), id))
 		peek := newRequestPeek(exitPeekLimit)
 		if r.Body != nil {
 			r.Body = &peekReader{src: r.Body, peek: peek}
@@ -264,19 +285,60 @@ func (h *server) observePublicExits(next http.Handler) http.Handler {
 			durationMs:   time.Since(observer.start).Milliseconds(),
 			retryCount:   retryCountFromHeader(observer.Header()),
 			retryAfter:   observer.Header().Get("Retry-After"),
+			requestID:    id,
+			emptyStream:  observer.emptyStream,
+			wroteBytes:   observer.wroteBytes,
 		})
 	})
 }
 
+// requestIDCtxKey 是出口请求 ID 的 context 键；值只由 observePublicExits 写入，
+// Rewrite 与 usage 上报处读取。
+type requestIDCtxKey struct{}
+
+func withRequestID(ctx context.Context, id string) context.Context {
+	return context.WithValue(ctx, requestIDCtxKey{}, id)
+}
+
+func requestIDFrom(ctx context.Context) string {
+	if ctx == nil {
+		return ""
+	}
+	id, _ := ctx.Value(requestIDCtxKey{}).(string)
+	return id
+}
+
+// newRequestID 生成 32 hex 的请求 ID（16 字节随机）：与 core 会话 ID 同形态，
+// 可直接用作 B3 TraceId。失败时回落时间戳形态——ID 是排障键，不能因为没有
+// 随机源就缺位。
+func newRequestID() string {
+	var b [16]byte
+	if _, err := crand.Read(b[:]); err != nil {
+		return fmt.Sprintf("req-%016x", time.Now().UnixNano())
+	}
+	return hex.EncodeToString(b[:])
+}
+
+// emptyStreamMarker 是 core 空流兜底帧的精确前缀（upstream/internal/upstream/sse.go
+// 在 0 有效帧时写 `data: {"error":{"message":"empty upstream stream",...}`）。出口观测
+// 用它把「HTTP 200 但零产出」的流从完成口径里剔除。匹配整段结构化前缀而非裸
+// "upstream_error" 字样：消息内容经 JSON 转义后不会形成这个字节序列，误标率趋零。
+// 口径局限（有意为之）：有帧但 content 全空的流、以及 Anthropic 侧其他无产出形态
+// 不在此列——它们由 usage 账本 completion=0 兜底可见。
+var emptyStreamMarker = []byte(`data: {"error":{"message":"empty upstream stream"`)
+
 // exitObserver 记录响应状态码，并只在失败（>=400）时保留响应体摘要，成功响应
-// （含 SSE 流）零缓冲。Flush/Unwrap 与 prismHeaderWriter、usageCaptureWriter 同源，
-// 保证流式响应不被本包装截断。
+// （含 SSE 流）零缓冲。同时累计写出字节数并检测 core 空流兜底帧（完成口径的
+// 「无产出」信号）：检测只做一次 bytes.Contains 内存扫描，不缓冲、不保留内容。
+// Flush/Unwrap 与 prismHeaderWriter、usageCaptureWriter 同源，保证流式响应不被本包装截断。
 type exitObserver struct {
 	http.ResponseWriter
-	status  int
-	capture bool
-	buf     []byte
-	start   time.Time
+	status      int
+	capture     bool
+	buf         []byte
+	start       time.Time
+	wroteBytes  int64
+	emptyStream bool
 }
 
 func (o *exitObserver) WriteHeader(code int) {
@@ -300,6 +362,10 @@ func (o *exitObserver) Write(p []byte) (int, error) {
 			}
 			o.buf = append(o.buf, p[:room]...)
 		}
+	}
+	o.wroteBytes += int64(len(p))
+	if !o.emptyStream && o.status < 400 && len(p) > 0 {
+		o.emptyStream = bytes.Contains(p, emptyStreamMarker)
 	}
 	return o.ResponseWriter.Write(p)
 }

@@ -30,6 +30,7 @@ type usageReportEntry struct {
 	Src        string   `json:"src,omitempty"`
 	Client     string   `json:"client,omitempty"`
 	API        string   `json:"api,omitempty"`
+	RequestID  string   `json:"request_id,omitempty"`
 }
 
 // reportUsage 落账 console 旁路通道的调用观测。账本由 core 进程持有，
@@ -69,9 +70,10 @@ func (h *handler) reportUsage(w http.ResponseWriter, r *http.Request) {
 			Prompt:     item.Prompt,
 			Completion: item.Completion,
 			// 来源观测在 core 侧重新收敛一遍：脱敏与协议名白名单不能依赖上报方自觉。
-			Src:    usagelog.MaskedPrefix(item.Src),
-			Client: usagelog.SanitizeClientText(item.Client),
-			API:    usagelog.KnownAPI(item.API),
+			Src:       usagelog.MaskedPrefix(item.Src),
+			Client:    usagelog.SanitizeClientText(item.Client),
+			API:       usagelog.KnownAPI(item.API),
+			RequestID: usagelog.SanitizeRequestID(item.RequestID),
 		}
 		if item.HasCredit {
 			e.Credit = item.Credit

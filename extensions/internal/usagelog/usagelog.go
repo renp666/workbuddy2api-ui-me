@@ -41,14 +41,16 @@ type Entry struct {
 	Src        string   `json:"src,omitempty"`    // 来源网段（已脱敏，不含主机位）
 	Client     string   `json:"client,omitempty"` // User-Agent 清洗后的自报标识
 	API        string   `json:"api,omitempty"`    // 协议入口："chat" | "messages" | "responses"
+	RequestID  string   `json:"request_id,omitempty"` // 网关出口请求 ID（console 生成，贯穿九通道）
 }
 
 // Denied 一次鉴权失败留痕。只有来源观测，不带账号与模型：key 不对时
 // core 并不知道这次尝试想冒充谁，硬填一个值就是伪造。
 type Denied struct {
-	TS     int64  `json:"ts"`
-	Src    string `json:"src,omitempty"`
-	Client string `json:"client,omitempty"`
+	TS        int64  `json:"ts"`
+	Src       string `json:"src,omitempty"`
+	Client    string `json:"client,omitempty"`
+	RequestID string `json:"request_id,omitempty"`
 }
 
 // Summary 时间范围内的聚合。Prompt/Completion/Credit 只累计已知观测；
@@ -103,7 +105,7 @@ func RecordAuth(acct *auth.Auth, model, mode string, prompt, completion int, cre
 	if l == nil || acct == nil {
 		return
 	}
-	e := Entry{TS: time.Now().Unix(), UID: acct.UID, Account: acct.Nickname, Model: model, Mode: mode, Prompt: prompt, Completion: completion, Src: o.Src, Client: o.Client, API: o.API}
+	e := Entry{TS: time.Now().Unix(), UID: acct.UID, Account: acct.Nickname, Model: model, Mode: mode, Prompt: prompt, Completion: completion, Src: o.Src, Client: o.Client, API: o.API, RequestID: o.RequestID}
 	if e.Account == "" {
 		e.Account = acct.UID
 	}
@@ -120,7 +122,7 @@ func RecordDeniedAuth(o Origin) {
 	if l == nil {
 		return
 	}
-	l.RecordDenied(Denied{TS: time.Now().Unix(), Src: o.Src, Client: o.Client})
+	l.RecordDenied(Denied{TS: time.Now().Unix(), Src: o.Src, Client: o.Client, RequestID: o.RequestID})
 }
 
 // FromResponse 从非流式聚合响应提取 usage 观测；缺失字段返回 -1 / hasCredit=false。
@@ -733,15 +735,48 @@ func SanitizeClientText(s string) string {
 
 // Origin 是一次调用的来源观测，随 Entry 落账。
 type Origin struct {
-	Src    string
-	Client string
-	API    string
+	Src       string
+	Client    string
+	API       string
+	RequestID string
 }
 
 // clientHeader 由 console 在转发公开接口前覆写：console 会先剥掉入站同前缀头
 // （见 console/proxy.go 的 stripPrivateHeaders），所以经 console 部署时该值不可由客户端伪造。
 // 源码模式（不起 console 直接跑 core）下没有这层剥离，该值只能当客户端自报处理。
 const clientHeader = "X-Console-Client"
+
+// requestIDHeader 由 console 在生成出口请求 ID 后注入（见 console/proxy.go 的
+// observePublicExits），与 clientHeader 同族：console 会剥掉入站同前缀头，经 console
+// 部署时该值不可由客户端伪造。源码模式下只能当客户端自报处理，清洗后照常落账。
+const requestIDHeader = "X-Console-Request-Id"
+
+// maxRequestID 是请求 ID 的字节上限。console 自产 32 hex；上限放宽到 128 是给
+// 源码模式下的客户端自报留余量，清洗后超限截断。
+const maxRequestID = 128
+
+// SanitizeRequestID 清洗请求 ID：去首尾空白、限可打印 ASCII 且中间不得含空白、
+// 按字节截断。console 自产 32 hex 不含空白；源码模式下客户端自报的值若带空白
+// （多值头折叠或乱传），视为非法形态整体丢弃——ID 是排障关联键，宁可缺席不可
+// 留半截混合物。
+func SanitizeRequestID(s string) string {
+	s = strings.Trim(s, " \t\r\n\v\f")
+	if s == "" {
+		return ""
+	}
+	clean := make([]byte, 0, len(s))
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		if c < 0x20 || c == 0x7f || c > 0x7e || c == ' ' {
+			return ""
+		}
+		clean = append(clean, c)
+	}
+	if len(clean) > maxRequestID {
+		clean = clean[:maxRequestID]
+	}
+	return string(clean)
+}
 
 type apiContextKey struct{}
 
@@ -795,6 +830,7 @@ func OriginOf(ctx context.Context, r *http.Request) Origin {
 	}
 	o.Src = MaskedPrefix(r.Header.Get(clientHeader))
 	o.Client = SanitizeClientText(r.Header.Get("User-Agent"))
+	o.RequestID = SanitizeRequestID(r.Header.Get(requestIDHeader))
 	if o.API == "" {
 		o.API = APIOfPath(r.URL.Path)
 	}
