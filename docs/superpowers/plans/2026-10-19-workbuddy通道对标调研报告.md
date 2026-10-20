@@ -140,9 +140,24 @@ grill 拍板三处：鉴权权威 console（core 零补丁）；本批范围归�
 
 lab 实测补漏（commit 225b3a2）：`GET /v1/models` 在 publicRouter 中直发 core（mergedModels），不经过公共代理的 Rewrite，附加 Key 原样透传被 core 拒（英文 401）；对话端点走 retry 链换发正常，矛盾由 401 响应体中西文分辨 + `/status` 对照实验定位。修复为 mergedModels 按 ctx 标签换发主 Key，配套把 core mock 改为记录并断言 Authorization（原 mock 无条件 200 掩盖了缺陷）。lab 复测四态全过（附加 Key 200 出列表/无 Key 错 Key 401 中文/`/status` 200）。生产发版后核对 `zcode=0` 属公布语义（`enabled_models` 无 `glm-*` 直名即不上公共列表，调用面不受影响），非本批回归。
 
+### §三 #7 落地记录（2026-10-20，每日限额护栏——简化两条先行）
+
+实现（补丁 0017 + extensions 新文件）：
+- **护栏 1 · 每日 Token**（hub 简化）：`extensions/internal/pool/quota.go` `DailyQuota`——按账号累计当日已知 token 观测（prompt+completion，-1 哨兵缺失不计），喂入点为 `usagelog.TokenObserver`（RecordAuth 落账后同步喂，账本侧 `extensions/internal/usagelog/usagelog.go` 新增 observer 挂点）；达额即 `CooldownQuotaUntil`（新 `CoolKind=CoolQuota`，until=本地次日 0 点）；重启重建由 `usagelog.DailyTokenTotals` 从当天 usage JSONL 按 uid 聚合（账本本身即持久化，不新增落盘文件）。`WB2A_DAILY_TOKEN_LIMIT` 环境变量开关（<=0 关闭，grill 拍板：环境变量注入 compose environment，与 WB2A_BALANCE_REFRESH_MINUTES 同模式）。
+- **护栏 2 · 保留积分**：`Pool.reserveCredits`（`WB2A_RESERVE_CREDITS`，<=0 关闭）——credits 低于保护线的账号不参与轮换（normal healthy 口径、全冷却兜底、PickByUID/PickByUIDForModel 直取四处同口径）；credits 由签到/余额刷新更新后 healthy 实时复判自然回池，无需解封动作。
+- **补丁 0017**（pool+server+main 三处）：①`CoolQuota` 冷却档（String()=quota_daily）；②`pick` healthy 口径并入 `belowReserve`；③`pickEarliestExpiryLocked` 排除有效 CoolQuota 与 belowReserve（防兜底击穿护栏）；④`reviveCoolingLocked` 不解封有效 CoolQuota（签到/余额刷新不误放，到 0 点由 until 自然解封）；⑤handler 末端新增 `QuotaGuard` 接口——全部非禁用账号达额时返回 **429 `daily_quota_exhausted` + Retry-After 指向本地 0 点**（grill 拍板，与 503 no_healthy_account 分流：429 是标准限流信号可指导客户端退避；保留积分护栏无日界恢复，维持 503 语义不适用 Retry-After）；⑥main 接线 `quotaLimits()`/`SetReserveCredits`/`Config.Quota`。
+
+三个必踩坑的设计规避（现状核对发现）：护栏摘除走独立入口**不喂熔断器**（喂入会把全达额升级成指数级封禁拖长解封，与「pin 类错误不计入熔断统计」同口径）；签到解冻（ReenableIfCredits/reviveCoolingLocked）对有效 CoolQuota 不动作；全冷却兜底排除护栏号（否则全部健康号达额后兜底必中护栏号）。
+
+pin/粘性交互（现状核对确认天然正确）：严格锁定走 PickByUIDForModel（校验 healthy），达额号不 healthy → 自动 503 pinned_account_unavailable，符合「不换号一律 503」在册规则；粘性号达额 → 解绑换号。
+
+通道统一性结论（八条旁路不适用本能力，与 §三 #2 同构）：护栏依赖「账号级冷却/解封 + 按账号用量计数」这套 core 池语义；八条旁路 sidecar 账号状态进程内自洽——zcode/qoder 单凭据、opencode/freellm 供应商 key 池自轮换（freellm 自带 429/5xx 熔断冷却）、autoclaw/trae/traeai/raccoon 多账号启停为显式控制动作，均无「账号冷却等外部事件解封」缺口，上游 429 限流本身即兜底；旁路 usage_report 账本（uid=zcode 等）不进 core 池，不构成护栏对象。无同类行为需统一。
+
+测试：pool `quota_test.go` 10 例（达额摘除/未知观测不计/跨天清零/不喂熔断/幂等/签到不误放/兜底排除/保留积分四处覆盖/RealmExhausted 六态/0 点窗口）+ usagelog `quota_test.go` 2 例（按日聚合/observer 喂入）+ server `quota_guard_test.go` 2 例（429+Retry-After/nil 守卫零回归，补丁内新增文件）；Docker golang:1.23 vet + 全量 + race 全绿；补丁链全新物化（core-quota-v2）复现验证通过。
+
 ## 七、待拍板事项
 
 1. P1 三项（#1 #2 #3）是否立项？建议按 1→2→3 独立批次推进，每批走 lab 验证再生产发版。
-2. 限额护栏（#7）做全四条还是简化两条（每日 Token + 保留积分）先行？
+2. ~~限额护栏（#7）做全四条还是简化两条（每日 Token + 保留积分）先行？~~ 已拍板简化两条先行并落地（2026-10-20，见 §三 #7 落地记录）。
 3. 成长任务一键完成（#8）做不做（成本高+风控敏感）？
 4. OpenRouter 价估算（#9）是否纳入后续统计批次？

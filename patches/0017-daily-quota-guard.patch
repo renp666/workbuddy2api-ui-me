@@ -1,0 +1,274 @@
+diff --git a/internal/pool/entry.go b/internal/pool/entry.go
+index 27f3e70..6b9aa07 100644
+--- a/internal/pool/entry.go
++++ b/internal/pool/entry.go
+@@ -13,6 +13,7 @@ type CoolKind int
+ const (
+ 	CoolHard CoolKind = iota // 余额不足 → 冷却到次日 04:00（等签到恢复）
+ 	CoolSoft                 // 429 → 短冷却
++	CoolQuota                // 每日限额护栏达额 → 冷却到次日 00:00（补丁 0017）
+ )
+ 
+ func (k CoolKind) String() string {
+@@ -21,6 +22,8 @@ func (k CoolKind) String() string {
+ 		return "hard_credit"
+ 	case CoolSoft:
+ 		return "soft_rate"
++	case CoolQuota:
++		return "quota_daily"
+ 	}
+ 	return "unknown"
+ }
+diff --git a/internal/pool/pool.go b/internal/pool/pool.go
+index 24daa6a..589f2ee 100644
+--- a/internal/pool/pool.go
++++ b/internal/pool/pool.go
+@@ -29,6 +29,10 @@ type Pool struct {
+ 	idleWeightMax     float64
+ 	// maxInFlight 单账号最大在途请求数；0 = 不限（租约关闭）。
+ 	maxInFlight int
++	// reserveCredits 保留积分线（补丁 0017；SetReserveCredits 注入；<=0 关闭）：
++	// credits 低于该值的账号不参与轮换（normal/兜底/直取同口径），保护积分不
++	// 消耗到线下。签到/余额刷新更新 credits 后 healthy 实时复判，自然回池。
++	reserveCredits int64
+ 	// randInt64N 仅供测试注入确定性随机源；nil 时用 math/rand/v2 全局源。
+ 	// 生产代码不应设置此字段。
+ 	randInt64N func(n int64) int64
+diff --git a/internal/pool/pick.go b/internal/pool/pick.go
+index 09b16ce..0d10f86 100644
+--- a/internal/pool/pick.go
++++ b/internal/pool/pick.go
+@@ -39,9 +39,11 @@ func (p *Pool) pick(tried map[string]bool, reqModel, realm string) *auth.Auth {
+ 		e.pruneExpiredModelCooldowns(now)
+ 	}
+ 	realmOK := func(e *entry) bool { return realm == "" || e.a.Realm() == realm }
+-	healthyOf := func(e *entry) bool { return realmOK(e) && e.healthy(now) }
++	// 补丁 0017：保留积分线（belowReserve）并入健康口径——低于保护线的账号
++	// 与冷却号同待遇，退出 normal 候选（healthyForModel 分支同样生效）。
++	healthyOf := func(e *entry) bool { return realmOK(e) && e.healthy(now) && !p.belowReserve(e) }
+ 	if reqModel != "" {
+-		healthyOf = func(e *entry) bool { return realmOK(e) && e.healthyForModel(now, reqModel) }
++		healthyOf = func(e *entry) bool { return realmOK(e) && e.healthyForModel(now, reqModel) && !p.belowReserve(e) }
+ 	}
+ 	var cands []*entry
+ 	for uid, e := range p.byUID {
+@@ -193,6 +195,15 @@ func (p *Pool) pickEarliestExpiryLocked(tried map[string]bool, now time.Time, re
+ 		if e.disabled || e.a.PendingActivation() {
+ 			continue // 禁用的账号永不参与兜底
+ 		}
++		// 补丁 0017：每日护栏达额（CoolQuota）与低于保留积分线的账号不参与兜底——
++		// 兜底是「无任何 direct 可用」时的降级消费，护栏的目的正是不消耗到额/线之外，
++		// 若放它们从兜底进场，全部健康号达额后兜底必中护栏号，护栏形同虚设。
++		if e.coolKind == CoolQuota && !e.until.IsZero() && now.Before(e.until) {
++			continue
++		}
++		if p.belowReserve(e) {
++			continue
++		}
+ 		if e.coolKind == CoolHard && !e.until.IsZero() && now.Before(e.until) {
+ 			continue // 余额耗尽号（处于有效 hard 冷却期）不参与兜底：等签到恢复，调了必 402
+ 		}
+diff --git a/internal/pool/state.go b/internal/pool/state.go
+index f182d66..a7d4a06 100644
+--- a/internal/pool/state.go
++++ b/internal/pool/state.go
+@@ -254,7 +254,9 @@ func (p *Pool) PickByUIDForModel(uid, model string) *auth.Auth {
+ 		return nil
+ 	}
+ 	now := time.Now()
+-	if !e.healthyForModel(now, model) {
++	// 补丁 0017：直取与粘性/pin 路径同样受保留积分线约束（护栏达额走 CoolQuota
++	// 冷却，healthyForModel 内的 healthy 判定已覆盖，无需在此重复）。
++	if !e.healthyForModel(now, model) || p.belowReserve(e) {
+ 		return nil
+ 	}
+ 	if p.inFlightFull(e) {
+@@ -274,7 +276,7 @@ func (p *Pool) PickByUID(uid string) *auth.Auth {
+ 		return nil
+ 	}
+ 	now := time.Now()
+-	if !e.healthy(now) {
++	if !e.healthy(now) || p.belowReserve(e) { // 补丁 0017：直取同样受保留积分线约束
+ 		return nil
+ 	}
+ 	if p.inFlightFull(e) {
+diff --git a/internal/pool/transition.go b/internal/pool/transition.go
+index dbad8b7..91116c3 100644
+--- a/internal/pool/transition.go
++++ b/internal/pool/transition.go
+@@ -61,5 +61,11 @@ func (p *Pool) disableLocked(e *entry, reason string) {
+ // 历史软冷却累积。调用方必须已持有 p.mu。
+ func (p *Pool) reviveCoolingLocked(e *entry, credits int64) {
+ 	e.credits = credits
++	// 补丁 0017：每日护栏达额（CoolQuota）的冷却不因签到/余额恢复而提前解封——
++	// 护栏窗口是「当日累计已达上限」的事实，签到到账不改变它，到本地 0 点由
++	// healthy 的 until 判定自然解封。软冷却/硬冷却维持原解封语义不变。
++	if e.coolKind == CoolQuota && !e.until.IsZero() && time.Now().Before(e.until) {
++		return
++	}
+ 	e.clearCoolingLocked()
+ }
+diff --git a/internal/server/handler.go b/internal/server/handler.go
+index a4e8c4e..2237aa5 100644
+--- a/internal/server/handler.go
++++ b/internal/server/handler.go
+@@ -9,6 +9,7 @@ import (
+ 	"log"
+ 	"net/http"
+ 	"os"
++	"strconv"
+ 	"strings"
+ 	"sync"
+ 	"time"
+@@ -71,6 +72,11 @@ type Config struct {
+ 	// 缺失时的弱判定（见 upstream.NewMarkupRepair）；名单本身每请求从请求体提取
+ 	// （tools 声明 + 会话历史 tool_calls），无配置面。
+ 	MarkupAllowUnknown bool
++
++	// Quota 由扩展层注入的每日限额护栏查询（补丁 0017；nil = 未启用护栏）。
++	// 选号失败（acct==nil）且该 realm 的非禁用账号全部处于每日 Token 护栏达额
++	// 冷却时，末端返回 429 + Retry-After（本地 0 点），与 503 no_healthy_account 分流。
++	Quota QuotaGuard
+ }
+ 
+ // Pinner 查询某 realm 当前人工锁定的账号 UID（空串 = 未锁定）。
+@@ -79,6 +85,13 @@ type Pinner interface {
+ 	PinnedUID(realm string) string
+ }
+ 
++// QuotaGuard 每日限额护栏的最小查询接口（由扩展 internal/pool 的每日护栏实现）。
++// RealmExhausted 报告该 realm 的非禁用账号是否全部处于有效护栏达额冷却；
++// 存在任何「非护栏原因不可用」或「可用」的账号都返回 false（那些走 503 语义）。
++type QuotaGuard interface {
++	RealmExhausted(realm string) bool
++}
++
+ // errPinnedUnavailable 是严格锁定模式的内部哨兵：锁定号不可用，或本轮在锁定号上
+ // 失败且策略禁止换号。末端错误规范化据此返回固定文案，不拼接上游原始错误。
+ var errPinnedUnavailable = errors.New("pinned account unavailable")
+@@ -882,6 +895,18 @@ func (h *Handler) chatCompletions(w http.ResponseWriter, r *http.Request) {
+ 		st.status = http.StatusServiceUnavailable
+ 		return
+ 	}
++	// 补丁 0017：全部账号每日 Token 达额 → 429 + Retry-After 指向本地 0 点。
++	// 与 503 no_healthy_account 分流的理由：429 是标准限流信号，agent 客户端可据此
++	// 退避而非当故障重试；Retry-After 给出护栏重置时刻，避免盲目轮询。软冷却/熔断/
++	// 禁用等其他不可用原因不进此分支（RealmExhausted 为 false），维持 503 语义。
++	if h.cfg.Quota != nil && h.cfg.Quota.RealmExhausted(realm) {
++		retry := int(time.Until(pool.NextLocalMidnight(time.Now())).Seconds()) + 1
++		w.Header().Set("Retry-After", strconv.Itoa(retry))
++		writeOpenAIError(w, http.StatusTooManyRequests, "daily_quota_exhausted",
++			"全部账号已达每日 Token 护栏上限：为保护账号额度已停止消费，将于本地 0 点自动重置，请稍后再试")
++		st.status = http.StatusTooManyRequests
++		return
++	}
+ 	var ue *upstream.Error
+ 	if errors.As(lastErr, &ue) {
+ 		switch ue.Kind {
+diff --git a/cmd/server/main.go b/cmd/server/main.go
+index 704f559..ea2cb24 100644
+--- a/cmd/server/main.go
++++ b/cmd/server/main.go
+@@ -188,6 +188,17 @@ func main() {
+ 		log.Fatalf("load pin store: %v", err)
+ 	}
+ 
++	// 补丁 0017：每日限额护栏（简化两条：每日 Token + 保留积分），阈值来自环境
++	// 变量 WB2A_DAILY_TOKEN_LIMIT / WB2A_RESERVE_CREDITS（<=0 或未设置 = 关闭）。
++	// 实例在此构造以注入 handler.Config；账本打开后的 observer 接线与当日计数
++	// 重建在 wrapCore 内完成（usage 目录打开点在那里）。
++	dailyTokenLimit, reserveCredits := quotaLimits()
++	p.SetReserveCredits(reserveCredits)
++	quota := pool.NewDailyQuota(p, dailyTokenLimit)
++	if dailyTokenLimit > 0 {
++		log.Printf("quota guard enabled: daily_token_limit=%d reserve_credits=%d", dailyTokenLimit, reserveCredits)
++	}
++
+ 	h := server.NewHandler(server.Config{
+ 		Pool:         p,
+ 		Upstream:     up,
+@@ -208,12 +219,14 @@ func main() {
+ 		RetrySameAccount: 2,
+ 		// 补丁 0016：DSML 标记还原弱判定开关（名单每请求从请求体提取，无配置面）。
+ 		MarkupAllowUnknown: cfg.Upstream.MarkupRepairAllowUnknown,
++		// 补丁 0017：每日限额护栏（limit<=0 时 RealmExhausted 恒 false，等价关闭）。
++		Quota: quota,
+ 	})
+ 
+ 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+ 	defer stop()
+ 	tasks, history, taskErr := newCoreTasks(ctx, cfg, sch)
+-	coreHandler, err := wrapCore(ctx, cfg, p, up, sch, h, tasks, history, taskErr, pins)
++	coreHandler, err := wrapCore(ctx, cfg, p, up, sch, h, tasks, history, taskErr, pins, quota)
+ 	if err != nil {
+ 		log.Fatalf("wrap core: %v", err)
+ 	}
+diff --git a/internal/server/quota_guard_test.go b/internal/server/quota_guard_test.go
+new file mode 100644
+index 0000000..5fee22e
+--- /dev/null
++++ b/internal/server/quota_guard_test.go
+@@ -0,0 +1,63 @@
++// 每日限额护栏末端语义（补丁 0017）：全达额 429+Retry-After，其余不可用 503。
++package server
++
++import (
++	"net/http/httptest"
++	"strings"
++	"testing"
++
++	"workbuddy2api/internal/auth"
++	"workbuddy2api/internal/pool"
++	"workbuddy2api/internal/upstream"
++)
++
++type fakeQuota struct{ exhausted bool }
++
++func (f fakeQuota) RealmExhausted(realm string) bool { return f.exhausted }
++
++// TestQuotaExhaustedReturns429 空池（无号可达末端）+ 全达额 → 429 daily_quota_exhausted
++// 且带 Retry-After；guard false 时维持 503 no_healthy_account。
++func TestQuotaExhaustedReturns429(t *testing.T) {
++	p := pool.New("")
++	req := func(h *Handler) *httptest.ResponseRecorder {
++		r := httptest.NewRequest("POST", "/v1/chat/completions",
++			strings.NewReader(`{"model":"hy4-preview","messages":[{"role":"user","content":"hi"}]}`))
++		r.Header.Set("Authorization", "Bearer secret")
++		rec := httptest.NewRecorder()
++		h.ServeHTTP(rec, r)
++		return rec
++	}
++
++	h := NewHandler(Config{Pool: p, Upstream: upstream.New(), APIKey: "secret", Quota: fakeQuota{exhausted: true}})
++	rec := req(h)
++	if rec.Code != 429 {
++		t.Fatalf("全达额应 429，得到 %d body=%s", rec.Code, rec.Body.String())
++	}
++	if !strings.Contains(rec.Body.String(), "daily_quota_exhausted") {
++		t.Fatalf("错误码应为 daily_quota_exhausted：%s", rec.Body.String())
++	}
++	if rec.Header().Get("Retry-After") == "" {
++		t.Fatal("429 必须带 Retry-After（指向本地 0 点）")
++	}
++
++	h2 := NewHandler(Config{Pool: p, Upstream: upstream.New(), APIKey: "secret", Quota: fakeQuota{exhausted: false}})
++	rec2 := req(h2)
++	if rec2.Code != 503 || !strings.Contains(rec2.Body.String(), "no_healthy_account") {
++		t.Fatalf("guard=false 应维持 503 no_healthy_account，得到 %d %s", rec2.Code, rec2.Body.String())
++	}
++}
++
++// TestQuotaGuardNilKeeps503 未注入护栏（源码模式/未启用）时零回归。
++func TestQuotaGuardNilKeeps503(t *testing.T) {
++	p := pool.New("")
++	p.Add(&auth.Auth{UID: "u1", AccessToken: "at", ExpiresAt: 9999999999})
++	h := NewHandler(Config{Pool: p, Upstream: upstream.New(), APIKey: "secret"})
++	r := httptest.NewRequest("POST", "/v1/chat/completions",
++		strings.NewReader(`{"model":"hy4-preview","messages":[{"role":"user","content":"hi"}]}`))
++	r.Header.Set("Authorization", "Bearer secret")
++	rec := httptest.NewRecorder()
++	h.ServeHTTP(rec, r)
++	if rec.Code == 429 {
++		t.Fatalf("未接线护栏时不得返回 429：%d", rec.Code)
++	}
++}

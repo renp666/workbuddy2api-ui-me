@@ -12,6 +12,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 
@@ -284,7 +285,29 @@ func newCoreTasks(ctx context.Context, cfg *Config, sch *scheduler.Scheduler) (*
 	return taskrun.NewRunner(ctx, history, sch.TaskCatalog, sch.ExecuteTask), history, nil
 }
 
-func wrapCore(ctx context.Context, cfg *Config, p *pool.Pool, up *upstream.Client, sch *scheduler.Scheduler, public http.Handler, tasks *taskrun.Runner, history *taskrun.Store, taskError error, pins *pin.Store) (http.Handler, error) {
+// quotaLimits 从环境读取两条护栏阈值（补丁 0017；两者均需重启生效）：
+//   - WB2A_DAILY_TOKEN_LIMIT：每账号每日 Token 上限（本地 0 点重置），<=0 关闭；
+//   - WB2A_RESERVE_CREDITS：保留积分线，credits 低于该值的账号不参与轮换，<=0 关闭。
+func quotaLimits() (dailyToken, reserveCredits int64) {
+	dailyToken = parseEnvInt64("WB2A_DAILY_TOKEN_LIMIT")
+	reserveCredits = parseEnvInt64("WB2A_RESERVE_CREDITS")
+	return dailyToken, reserveCredits
+}
+
+func parseEnvInt64(name string) int64 {
+	raw := strings.TrimSpace(os.Getenv(name))
+	if raw == "" {
+		return 0
+	}
+	value, err := strconv.ParseInt(raw, 10, 64)
+	if err != nil {
+		log.Printf("WARN: invalid %s=%q, quota guard disabled for this knob", name, raw)
+		return 0
+	}
+	return value
+}
+
+func wrapCore(ctx context.Context, cfg *Config, p *pool.Pool, up *upstream.Client, sch *scheduler.Scheduler, public http.Handler, tasks *taskrun.Runner, history *taskrun.Store, taskError error, pins *pin.Store, quota *pool.DailyQuota) (http.Handler, error) {
 	key, err := coreBridgeKey(cfg)
 	if err != nil {
 		return nil, err
@@ -301,6 +324,19 @@ func wrapCore(ctx context.Context, cfg *Config, p *pool.Pool, up *upstream.Clien
 		log.Print("usage_log_unavailable")
 	}
 	usagelog.Set(usage)
+	// 每日 Token 护栏喂入（补丁 0017）：账本打开后接 observer，并从当天账本聚合
+	// 重建内存计数——重启不丢当日用量，护栏窗口不被重启重置。账本不可用时护栏
+	// 退化为「本轮进程内累计」（重启归零），可用性优先于计数完整。
+	if quota != nil && quota.Limit() > 0 {
+		if usage != nil {
+			if day, totals, aggErr := usagelog.DailyTokenTotals(usage, time.Now()); aggErr == nil {
+				quota.Rebuild(day, totals)
+			} else {
+				log.Printf("WARN: quota guard rebuild failed: %v", aggErr)
+			}
+		}
+		usagelog.SetTokenObserver(quota)
+	}
 	if key == "" {
 		return public, nil
 	}

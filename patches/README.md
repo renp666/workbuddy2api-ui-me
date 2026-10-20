@@ -7,7 +7,7 @@ Baseline: workbuddy2api commit
 and `upstream.lock`). Apply only through
 `python3 scripts/overlay.py prepare --output ABS_NEW_DIRECTORY`; never edit
 `upstream/`. New source and tests live in `extensions/`, not in these patches.
-`series` is the explicit application order: 0001, 0002, 0003, 0004, 0005, 0006, 0007, 0008, 0009, 0010, 0011, 0012, 0013, 0014, 0015, 0016.
+`series` is the explicit application order: 0001, 0002, 0003, 0004, 0005, 0006, 0007, 0008, 0009, 0010, 0011, 0012, 0013, 0014, 0015, 0016, 0017.
 For a deliberate upstream candidate, run
 `python3 scripts/overlay.py update --ref COMMIT_OR_TAG`; it keeps the current
 snapshot and lock until the candidate passes `scripts/check.sh` and isolated
@@ -163,9 +163,26 @@ markup syntax, and their data planes live in their own sidecars, which never
 pass through core — so this repair is intentionally core-only and no console or
 sidecar counterpart is required.
 
+Remove 0017 when the pinned upstream grows an equivalent per-account daily
+guard (a quota cooldown kind that expires at local midnight, is excluded from
+the all-cooled fallback and from credit-revival, plus an all-exhausted 429
+`daily_quota_exhausted` with a midnight `Retry-After`), and the named
+`quota` regressions pass with the patch dropped while
+`extensions/internal/pool/quota.go`, `extensions/internal/pool/quota_test.go`
+and `extensions/internal/usagelog/quota_test.go` move into the upstream tree.
+Dropping it removes `CoolQuota`, `reserveCredits`/`belowReserve`,
+`CooldownQuotaUntil`, `NextLocalMidnight` and the handler `Quota` wiring; the
+0008 ledger feed (`usagelog.TokenObserver` lives in extensions and is inert
+without `SetTokenObserver`), 0010 pin semantics, the balance refresh (0017
+only pins its own `CoolQuota` from early revival) and 0001-0016 stay valid
+either way. Channel-uniformity note: the guard rides on core pool cooldown
+semantics (per-account rotation, fallback, pin); sidecar channels manage
+account state in-process with no "cooled awaiting external event" gap, so the
+guard is intentionally core-only.
+
 Task 2 wiring handoff: `initializeCore(*Config) error` validates opt-in
 `WB2A_BRIDGE_KEY` and creates account/state directories before loading accounts.
-`wrapCore(ctx,cfg,p,up,sch,public,tasks,history,taskError,pins)` uses the same pool/upstream/scheduler; absent
+`wrapCore(ctx,cfg,p,up,sch,public,tasks,history,taskError,pins,quota)` uses the same pool/upstream/scheduler; absent
 bridge key returns the identical source-mode public handler. Task 4 extends the
 early hook with persisted keys and Docker opt-in, not a second pool or scheduler.
 Build metadata comes from linker variables `main.upstreamCommit` and

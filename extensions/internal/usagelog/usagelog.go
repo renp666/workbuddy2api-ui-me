@@ -96,6 +96,24 @@ func Open(dir string) (*Log, error) {
 // global 是 handler 成功路径引用的账本；Open 接线前为 nil（no-op）。
 var global atomic.Pointer[Log]
 
+// TokenObserver 成功调用 token 观测的旁路消费者（每日限额护栏喂入点，补丁 0017）。
+// 在 RecordAuth 的账本写入之后同步调用；观察者自身必须非阻塞（护栏 Observe 只做
+// 内存计数与偶发一次冷却写锁，微秒级），失败不影响账本与调用方。
+type TokenObserver interface {
+	ObserveTokens(uid string, prompt, completion int)
+}
+
+var tokenObserver atomic.Pointer[TokenObserver]
+
+// SetTokenObserver 接线 token 观察者；传 nil 关闭喂入（测试与未接线场景）。
+func SetTokenObserver(o TokenObserver) {
+	if o == nil {
+		tokenObserver.Store(nil)
+		return
+	}
+	tokenObserver.Store(&o)
+}
+
 // Set 接线全局账本；传 nil 关闭记录（测试与未接线场景）。
 func Set(l *Log) { global.Store(l) }
 
@@ -114,6 +132,9 @@ func RecordAuth(acct *auth.Auth, model, mode string, prompt, completion int, cre
 		e.Credit = &credit
 	}
 	l.Record(e)
+	if ob := tokenObserver.Load(); ob != nil {
+		(*ob).ObserveTokens(acct.UID, prompt, completion)
+	}
 }
 
 // RecordDeniedAuth 记录一次鉴权失败留痕；未接线时 no-op。全部来源字段可为空，
@@ -284,6 +305,32 @@ func SummarizeDenied(items []Denied) DeniedStats {
 		stats.Sources = stats.Sources[:maxDeniedSources]
 	}
 	return stats
+}
+
+// DailyTokenTotals 按 DailyQuota 的窗口口径聚合某本地日的每账号已知 token 观测
+// （prompt+completion，缺失不计），返回（日期键, uid→累计, 错误）。供每日护栏
+// 重启重建（补丁 0017）；读取失败返回错误，调用方降级为进程内累计。
+func DailyTokenTotals(l *Log, day time.Time) (string, map[string]int64, error) {
+	key := day.Format(dayLayout)
+	start := time.Date(day.Year(), day.Month(), day.Day(), 0, 0, 0, 0, day.Location()).Unix()
+	end := start + 86400
+	entries, err := l.Query(start, end)
+	if err != nil {
+		return "", nil, err
+	}
+	totals := map[string]int64{}
+	for _, e := range entries {
+		if e.UID == "" {
+			continue
+		}
+		if e.Prompt > 0 {
+			totals[e.UID] += int64(e.Prompt)
+		}
+		if e.Completion > 0 {
+			totals[e.UID] += int64(e.Completion)
+		}
+	}
+	return key, totals, nil
 }
 
 // Summarize 聚合观测；只累计已知值，缺失计入 Missing 计数而非按零处理。
