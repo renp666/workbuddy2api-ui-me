@@ -1,0 +1,365 @@
+diff --git a/internal/pool/entry.go b/internal/pool/entry.go
+index a865b55..32cd62d 100644
+--- a/internal/pool/entry.go
++++ b/internal/pool/entry.go
+@@ -51,10 +51,13 @@ type Status struct {
+ 	ErrTotal          int64              `json:"err_total,omitempty"`
+ 	LastSuccessTime   time.Time          `json:"last_success,omitempty"`
+ 	LastErrTime       time.Time          `json:"last_err,omitempty"`
+-	// 运行态（不持久化）：在途请求数 + 熔断器状态。
++	// 运行态（不持久化）：在途请求数 + 熔断器状态 + 连败降权状态。
+ 	InFlight     int       `json:"in_flight"`
+ 	BreakerFails int       `json:"breaker_fails"`
+ 	BreakerUntil time.Time `json:"breaker_until,omitempty"`
++	// 连败降权（灰度移植 issue #114）：仅降权期内非零（临时出池的运维可见性）。
++	ConsecutiveFails int       `json:"consecutive_fails,omitempty"`
++	DegradeUntil     time.Time `json:"degrade_until,omitempty"`
+ }
+ 
+ // RateLimitedModel 单个被限流模型的台账行（issue #36）。
+@@ -100,6 +103,13 @@ type entry struct {
+ 	breakerUntil time.Time // 熔断截止（指数退避）
+ 	fails        int       // 连续失败计数（熔断用，唯一权威）
+ 	retryCount   int       // 已熔断次数（指数退避的指数）
++	// 连败降权运行态（灰度移植 issue #114，不持久化）：喂入口是「不罚号的失败」
++	// （applyErrorPolicy default 未知 4xx / handler 传输层失败——两者都没有权威
++	// 错误分类，此前只换号，坏号显示健康、每次被选中都失败）。达阈临时出池，
++	// NoteSuccess 清零。与熔断 fails 分开：熔断喂「有分类的错」（NoteError），
++	// 两者并存取更长者（healthy 或门），不重复计罚。
++	consecutiveFails int       // 不罚号失败的连续计数（达 degrade 阈值触发降权）
++	degradeUntil     time.Time // 降权截止（达阈临时出池，运行态）
+ 	// softStreak 连续软冷却次数（CoolSoft），独立于熔断器 fails 的**冷却域**计数器：
+ 	// fails 会被熔断触发清零、且被 hard 冷却与 NoteError 污染，无法表达"连续软限流"。
+ 	// 重置点只有两处（都是账号被证明恢复的时刻）：NoteSuccess、reviveCoolingLocked。
+@@ -141,7 +151,7 @@ func (e *entry) modelCostOf(model string, now time.Time) (modelCostEntry, bool)
+ 	return mc, true
+ }
+ 
+-// healthy 报告账号当前是否可选（未禁用、未处于任一冷却/熔断期）。
++// healthy 报告账号当前是否可选（未禁用、未处于任一冷却/熔断/降权期）。
+ func (e *entry) healthy(now time.Time) bool {
+ 	if e.disabled || e.a.PendingActivation() {
+ 		return false
+@@ -152,6 +162,11 @@ func (e *entry) healthy(now time.Time) bool {
+ 	if !e.breakerUntil.IsZero() && now.Before(e.breakerUntil) {
+ 		return false
+ 	}
++	// 连败降权（灰度移植 issue #114）：与冷却/熔断并列的第四个或门——并存取更长者，
++	// 不叠加（NoteFailures 只喂无分类的失败，与 NoteError 的熔断计数互不污染）。
++	if !e.degradeUntil.IsZero() && now.Before(e.degradeUntil) {
++		return false
++	}
+ 	return true
+ }
+ 
+@@ -165,7 +180,8 @@ func (e *entry) healthy(now time.Time) bool {
+ // 调用方负责 now 与冷却有效性的判断（本方法只看形态，不看冷却是否已过期）。
+ func (e *entry) modelExempt() bool {
+ 	return len(e.modelCooldowns) > 0 &&
+-		!e.disabled && !e.a.PendingActivation() && e.breakerUntil.IsZero()
++		!e.disabled && !e.a.PendingActivation() && e.breakerUntil.IsZero() &&
++		e.degradeUntil.IsZero()
+ }
+ 
+ // modelCooled 报告账号对指定 model 是否正处 6004 模型级冷却（该模型的独立冷却未过期）。
+diff --git a/internal/pool/state.go b/internal/pool/state.go
+index cd8d54a..83a8f73 100644
+--- a/internal/pool/state.go
++++ b/internal/pool/state.go
+@@ -175,6 +175,10 @@ func (p *Pool) NoteSuccess(uid string) {
+ 		e.breakerUntil = time.Time{}
+ 		e.softStreak = 0
+ 		e.sessionDeadFails = 0
++		// 连败降权清零（灰度移植 issue #114）：账号被证明恢复（成功调用）时，
++		// 未达阈的连败计数与降权截止一并清除——立即回池，不等降权到期。
++		e.consecutiveFails = 0
++		e.degradeUntil = time.Time{}
+ 		p.dirty.Store(true)
+ 	}
+ }
+@@ -406,7 +410,6 @@ func (p *Pool) statusOf(uid string, e *entry) Status {
+ 		Nickname:          e.a.Nickname,
+ 		Credits:           e.credits,
+ 		CreditsKnown:      e.creditsKnown,
+-		Cooling:           now.Before(e.until) || now.Before(e.breakerUntil),
+ 		Reason:            e.reason,
+ 		Disabled:          e.disabled,
+ 		SuccessCount:      e.successCount,
+@@ -418,6 +421,12 @@ func (p *Pool) statusOf(uid string, e *entry) Status {
+ 		InFlight:          int(e.inFlight.Load()),
+ 		BreakerFails:      e.fails,
+ 		BreakerUntil:      e.breakerUntil,
++		// 连败降权（灰度移植 issue #114）：降权计入 Cooling（选号口径与展示口径一致）
++		// 但不写 CoolKind（降权不是 CoolSoft/Hard 域），剩余时间仍取 until 口径——
++		// 降权期内 until 一般已到期，CoolRemaining 显示 0 可接受（DegradeUntil 单独透出）。
++		Cooling:          now.Before(e.until) || now.Before(e.breakerUntil) || now.Before(e.degradeUntil),
++		ConsecutiveFails: e.consecutiveFails,
++		DegradeUntil:     e.degradeUntil,
+ 	}
+ 	if st.Disabled {
+ 		// 禁用账号透出禁用原因（运维看不到为什么死）。
+@@ -433,7 +442,12 @@ func (p *Pool) statusOf(uid string, e *entry) Status {
+ 		if st.CoolRemaining < 0 {
+ 			st.CoolRemaining = 0
+ 		}
+-		st.CoolKind = e.coolKind.String()
++		// CoolKind 只在账号级冷却（e.until）生效时写：连败降权（degradeUntil）也计入
++		// Cooling，但零值 coolKind.String() 会显示成 "hard_credit"——降权不是限流域，
++		// 不许伪装成限流（降权-only 的号按 DegradeUntil 口径单独观察）。
++		if now.Before(e.until) {
++			st.CoolKind = e.coolKind.String()
++		}
+ 	}
+ 	return st
+ }
+diff --git a/internal/server/handler.go b/internal/server/handler.go
+index c9a3a8b..fec9091 100644
+--- a/internal/server/handler.go
++++ b/internal/server/handler.go
+@@ -597,14 +597,15 @@ func (h *Handler) chatCompletions(w http.ResponseWriter, r *http.Request) {
+ 	// 循环外**生成一次，循环内每次出站原样复用 → 换号/重试/降级全部同 ID，后台不再
+ 	// 碎片化（此前网关一个都不发，上游按 HTTP 请求逐条记账，同一对话几十上百个
+ 	// RequestID）。
+-	//   - conversationID：body 提取（透传客户端原值，缺省空串——不伪造，见
+-	//     ResolveConversationID；官方后台不校验一致，空会话则不建立聚合键）；
++	//   - conversationID：客户端给了就透传原值；没给就派生同会话稳定值补上（灰度
++	//     渠道校验必查头，缺头判 11-128 conversation id missing——workbuddy-manager
++	//     issue #193 移植。校验对象是头、body 非必填，故只补头不改 body）；
+ 	//   - conversationRequestID：入站 X-Conversation-Request-ID 透传优先（客户端已
+-	//     有自己的对话轮 ID 则以客户端为准），否则按粘性 key 进程内稳定生成（同会话
++	//     有自己的对话轮 ID 则以客户端为准），否则按粘性 key 纯派生稳定生成（同会话
+ 	//     恒同值）；粘性 key 也为空时走轮级兜底（session.TurnKey/TurnRequestID），
+ 	//     无 user 消息时退化成本请求级 NewMessageID——轮转内捕获一次即共享；
+ 	//   - messageID 在 ChatHeaders 内每条消息生成（消息级独立，无需外部可见）。
+-	chatMeta := upstream.ChatMeta{ConversationID: session.ResolveConversationID(body)}
++	chatMeta := upstream.ChatMeta{ConversationID: session.ConversationIDForHeaders(body, sessKey)}
+ 	if v := r.Header.Get("X-Conversation-Request-ID"); v != "" {
+ 		chatMeta.ConversationRequestID = v
+ 	} else if sessKey != "" {
+@@ -756,6 +757,10 @@ func (h *Handler) chatCompletions(w http.ResponseWriter, r *http.Request) {
+ 			st.status = http.StatusServiceUnavailable
+ 			lastErr = terr
+ 			fail(acct.UID)
++			// 连败降权喂入口（灰度移植 issue #114）：传输层失败是不罚号的失败
++			// （无权威错误分类），此前只换号——坏号显示健康、每次被选中都失败。
++			// NoteFailures 达阈临时出池（无分类惩罚的兜底，与冷却/熔断不重复计罚）。
++			h.cfg.Pool.NoteFailures(acct.UID)
+ 			if pinnedUID != "" {
+ 				// 严格锁定：网络错误也不换号重试，由末端给锁定专用文案。
+ 				lastErr = errPinnedUnavailable
+@@ -979,16 +984,33 @@ func (h *Handler) applyErrorPolicy(uid string, kind upstream.ErrKind, body, mode
+ 		// 偶发路径缺失不是限流信号，不该按限流惩罚升级。
+ 		h.cfg.Pool.Cooldown(uid, pool.CoolSoft, notFoundCooldown, "upstream 404")
+ 	case upstream.ErrAccountFault:
+-		// 账号级授权/配额故障按 msg 分野（口径与 Classify 的 accountFaultMarkers 一致）：
++		// 账号级授权/配额故障按 msg 分野（口径与 Classify 的 accountFaultRule 一致）：
+ 		//   - "request illegal"（code 11140）→ 账号级**授权封禁**：软冷却到期也不会自动
+ 		//     恢复（需重新 OAuth 登录），到期后重新选号只会再撞 403 浪费一次轮换——
+ 		//     硬禁用（Disable），不再参与选号。/status 以 disabled + disabled_reason 呈现。
++		//     理由里带**响应自己的码**（灰度移植 issue #201 缺陷 1：此前写死 11140，
++		//     会把排障方向带偏）。
++		//   - "conversation id missing"（灰度渠道校验，workbuddy-manager issue #193
++		//     移植；实测 code 11-128）→ 出站已补会话头族
++		//     （session.ConversationIDForHeaders），仍撞上说明该账号被灰度到了别的
++		//     口径：按账号级**软冷却**处理——只换号不禁用（灰度随时可能放开，禁用
++		//     会让用户白重新登录），但必须把它暂时挪出池子，否则它留在池里"显示健康、
++		//     每次被选中都失败"（issue #201 缺陷 2）。
+ 		//   - 14017（trial not activated）→ register 未完成，补完 register 后可能自愈，
+ 		//     **保持软冷却**（禁用会让用户补完 register 后仍无法用）。
+-		// 两条路径对坏号都立刻换号（同一请求轮转出池），只是后续可恢复性不同。
++		// 三条路径对坏号都立刻换号（同一请求轮转出池），只是后续可恢复性不同。
+ 		// 大小写不敏感（与 Classify 的 marker 匹配同口径）。
+-		if strings.Contains(strings.ToLower(body), "request illegal") {
+-			h.cfg.Pool.Disable(uid, "account banned by upstream (11140 request illegal), re-login required")
++		lowerBody := strings.ToLower(body)
++		if strings.Contains(lowerBody, "request illegal") {
++			h.cfg.Pool.Disable(uid, fmt.Sprintf(
++				"account banned by upstream (request illegal, %s), re-login required",
++				upstreamCodeLabel(body, nil),
++			))
++			return
++		}
++		if strings.Contains(lowerBody, "conversation id missing") {
++			h.cfg.Pool.Cooldown(uid, pool.CoolSoft, h.cfg.SoftCooldown,
++				"channel check (conversation id missing, "+upstreamCodeLabel(body, nil)+")")
+ 			return
+ 		}
+ 		h.cfg.Pool.Cooldown(uid, pool.CoolSoft, h.cfg.SoftCooldown, "account fault (14017)")
+@@ -1006,6 +1028,9 @@ func (h *Handler) applyErrorPolicy(uid string, kind upstream.ErrKind, body, mode
+ 		// ——不同账号可能有不同的模型权限，值得换号再试一次。
+ 	default:
+ 		// 其余（ErrClient/ErrNone）：只换号不罚（防雪崩），不喂熔断。
++		// 连败降权兜底（灰度移植 issue #114）：未知 4xx 属「不罚号的失败」，达阈
++		// 临时出池——已禁用/冷却中的号不会走到这里（Pick 先过滤），计数只对健康号累计。
++		h.cfg.Pool.NoteFailures(uid)
+ 	}
+ }
+ 
+diff --git a/internal/server/handler_test.go b/internal/server/handler_test.go
+index d683c1a..c6e4759 100644
+--- a/internal/server/handler_test.go
++++ b/internal/server/handler_test.go
+@@ -451,7 +451,9 @@ func TestChatAccountFault11140Disables(t *testing.T) {
+ 	if !st.Disabled {
+ 		t.Fatalf("bad 应被硬禁用（11140 封禁需重登，不可自愈）: %+v", st)
+ 	}
+-	wantReason := "account banned by upstream (11140 request illegal), re-login required"
++	// 理由带响应自己的码（补丁 0018 / issue #201 缺陷 1：不再写死 11140——灰度
++	// 渠道校验现场是 code 11-128，写死会把排障方向带偏）。
++	wantReason := "account banned by upstream (request illegal, code 11140), re-login required"
+ 	if st.DisabledReason != wantReason {
+ 		t.Errorf("disabled_reason=%q want %q", st.DisabledReason, wantReason)
+ 	}
+@@ -527,7 +529,7 @@ func TestChatAccountFault14017Rotates(t *testing.T) {
+ // 分类下按 msg 分野——"request illegal"(11140) → 硬禁用；"trial"(14017) → 软冷却不禁用。
+ // 端到端接线由上方 TestChatAccountFault11140Disables / TestChatAccountFault14017Rotates 覆盖。
+ func TestApplyErrorPolicyAccountFaultSplit(t *testing.T) {
+-	const why11140 = "account banned by upstream (11140 request illegal), re-login required"
++	const why11140 = "account banned by upstream (request illegal, code 11140), re-login required"
+ 
+ 	t.Run("11140 request illegal disables", func(t *testing.T) {
+ 		p := pool.New("")
+diff --git a/internal/session/ids.go b/internal/session/ids.go
+index c9f2414..3732654 100644
+--- a/internal/session/ids.go
++++ b/internal/session/ids.go
+@@ -15,7 +15,6 @@ import (
+ 	"fmt"
+ 	"math/rand/v2"
+ 	"strings"
+-	"sync"
+ )
+ 
+ // ResolveConversationID 从请求体提取会话头族的 conversationId（snake/camel 双形态，
+@@ -57,13 +56,10 @@ func NewMessageID() string {
+ 	return fmt.Sprintf("%016x%016x", uint64(rand.Uint64())|1, rand.Uint64())
+ }
+ 
+-// requestIDs 会话键（sticky key）→ conversationRequestID 的进程内惰性缓存。
+-// sync.Map：并发无锁读/写，Entry 不删除（会话 key 恒定，值只增不减，不泄漏——
+-// key 与粘性会话键同源，进程生命周期内数量有限）。
+-var requestIDs sync.Map
+-
+-// RequestIDForKey 返回会话键的稳定 conversationRequestID：
+-//   - 同 key：首次调用生成并缓存，此后恒返回同值（一次 user send/同会话多轮聚合）；
++// RequestIDForKey 返回会话键的稳定 conversationRequestID：sha256(盐|键) 前 16 字节
++// 的 hex，纯派生（无缓存、无 TTL、内存不随键数增长——此前 sync.Map 惰性缓存随
++// 会话键数量无上限增长，纯派生天然有界）。
++//   - 同 key：进程内恒派生同值（一次 user send/同会话多轮聚合）；
+ //   - 异 key：各自独立，互不相同；
+ //   - 空 key：每次生成新值（无会话则无"会话内稳定"语义——调用方应在请求级
+ //     捕获复用，handler 在轮转循环外取一次即天然共享）。
+@@ -73,12 +69,8 @@ func RequestIDForKey(key string) string {
+ 	if key == "" {
+ 		return NewMessageID()
+ 	}
+-	if v, ok := requestIDs.Load(key); ok {
+-		return v.(string)
+-	}
+-	id := NewMessageID()
+-	actual, _ := requestIDs.LoadOrStore(key, id)
+-	return actual.(string)
++	sum := sha256.Sum256([]byte(turnSalt + "|" + key))
++	return hex.EncodeToString(sum[:16])
+ }
+ 
+ // turnSalt 轮级聚合键的派生盐：进程启动时随机生成，让派生 ID 无法按消息内容
+@@ -119,13 +111,14 @@ func TurnKey(body []byte) string {
+ 		if obj.Messages[i].Role != "user" {
+ 			continue
+ 		}
+-		text := contentText(obj.Messages[i].Content)
+-		if text == "" {
+-			// 最后一条 user 消息没有文本（纯图片等）→ 本轮不建立聚合键。
+-			// 不继续往前找：整轮内该消息位置恒定，往前找反而会让键随 step 漂移。
++		sig := contentSignature(obj.Messages[i].Content)
++		if sig == "" {
++			// 最后一条 user 消息没有可签名内容（空/null/空 parts）→ 本轮不建立
++			// 聚合键。不继续往前找：整轮内该消息位置恒定，往前找反而会让键随
++			// step 漂移。
+ 			return ""
+ 		}
+-		return fmt.Sprintf("u%d:%s", i, text)
++		return fmt.Sprintf("u%d:%s", i, sig)
+ 	}
+ 	return ""
+ }
+diff --git a/internal/session/ids_test.go b/internal/session/ids_test.go
+index 5839bce..3be95fc 100644
+--- a/internal/session/ids_test.go
++++ b/internal/session/ids_test.go
+@@ -78,8 +78,10 @@ func TestRequestIDForKeyStability(t *testing.T) {
+ 	}
+ }
+ 
+-// TestTurnKeyExtraction 轮级兜底键的提取：取**最后一条** user 消息的「序号+文本」，
+-// 轮内追加 assistant/tool 消息不改变键；无 user / 无文本 / 坏 JSON 一律空串。
++// TestTurnKeyExtraction 轮级兜底键的提取：取**最后一条** user 消息的「序号+签名」，
++// 轮内追加 assistant/tool 消息不改变键；无 user / 无可签名内容 / 坏 JSON 一律空串。
++// 多模态路径（补丁 0018 / 灰度移植 issue #170）单独测：纯图片轮有内容签名，不再
++// 返回 ""（此前纯图片轮不建键，agent 图片轮的换号重试在上游用量里碎片化）。
+ func TestTurnKeyExtraction(t *testing.T) {
+ 	cases := []struct {
+ 		name string
+@@ -90,7 +92,6 @@ func TestTurnKeyExtraction(t *testing.T) {
+ 		{"last user wins", `{"messages":[{"role":"user","content":"第一问"},{"role":"assistant","content":"答"},{"role":"user","content":"第二问"}]}`, "u2:第二问"},
+ 		// agent 多步：轮内追加 assistant/tool 消息，末条 user 位置与内容不变 → 同键。
+ 		{"agent step keeps same key", `{"messages":[{"role":"user","content":"任务"},{"role":"assistant","tool_calls":[{"id":"c1"}]},{"role":"tool","content":"结果"}]}`, "u0:任务"},
+-		{"multimodal parts text joined", `{"messages":[{"role":"user","content":[{"type":"text","text":"看图"},{"type":"image_url","image_url":{"url":"data:x"}}]}]}`, "u0:看图"},
+ 		{"no user message", `{"messages":[{"role":"system","content":"sys"}]}`, ""},
+ 		{"empty messages", `{"messages":[]}`, ""},
+ 		{"messages key absent", `{"model":"glm-5.2"}`, ""},
+@@ -98,7 +99,6 @@ func TestTurnKeyExtraction(t *testing.T) {
+ 		{"empty body", ``, ""},
+ 		{"empty content", `{"messages":[{"role":"user","content":""}]}`, ""},
+ 		{"null content", `{"messages":[{"role":"user","content":null}]}`, ""},
+-		{"image only content", `{"messages":[{"role":"user","content":[{"type":"image_url","image_url":{"url":"x"}}]}]}`, ""},
+ 	}
+ 	for _, c := range cases {
+ 		t.Run(c.name, func(t *testing.T) {
+@@ -109,6 +109,28 @@ func TestTurnKeyExtraction(t *testing.T) {
+ 	}
+ }
+ 
++// TestTurnKeyMultimodalSignature 多模态轮键（补丁 0018）：文本照旧无缝拼接，非文本
++// part 以 [type:摘要] 入键；纯图片轮不再返回 ""；同 body 两轮同键（稳定）。
++func TestTurnKeyMultimodalSignature(t *testing.T) {
++	withImg := `{"messages":[{"role":"user","content":[{"type":"text","text":"看图"},{"type":"image_url","image_url":{"url":"data:x"}}]}]}`
++	got := TurnKey([]byte(withImg))
++	if !strings.HasPrefix(got, "u0:看图") || !strings.Contains(got, "[image_url:") {
++		t.Errorf("图文轮键应保留文本前缀并带图片摘要标记，got %q", got)
++	}
++	if again := TurnKey([]byte(withImg)); again != got {
++		t.Errorf("同 body 两轮应同键：%q vs %q", got, again)
++	}
++	imgOnly := `{"messages":[{"role":"user","content":[{"type":"image_url","image_url":{"url":"x"}}]}]}`
++	if only := TurnKey([]byte(imgOnly)); !strings.HasPrefix(only, "u0:[image_url:") {
++		t.Errorf("纯图片轮应建键（不再返回空串），got %q", only)
++	}
++	// 空字符串文本 part 全空 → 无可签名内容 → 仍空串（不伪造）。
++	blank := `{"messages":[{"role":"user","content":[{"type":"text","text":""}]}]}`
++	if got := TurnKey([]byte(blank)); got != "" {
++		t.Errorf("全空文本 part 应视为无内容，got %q", got)
++	}
++}
++
+ // TestTurnRequestIDDerivation 轮级 ID 是纯派生：同键恒同值、异键异值、空键每次新值、
+ // 形态恒 32 hex。
+ func TestTurnRequestIDDerivation(t *testing.T) {
+diff --git a/internal/upstream/client.go b/internal/upstream/client.go
+index 91fad9d..7dee01b 100644
+--- a/internal/upstream/client.go
++++ b/internal/upstream/client.go
+@@ -242,6 +242,12 @@ var accountFaultRule = errorRule{kind: ErrAccountFault, mode: matchFold, pattern
+ 	"request illegal",
+ 	"trial not activated",
+ 	"trial version is not yet activated",
++	// 灰度渠道校验（workbuddy-manager issue #193/#201 移植）：上游对部分账号灰度启用
++	// 出站头校验，缺 X-Conversation-ID 判 "11-128 conversation id missing"（HTTP 400，
++	// code 值没加引号的非法 JSON）。被灰度的号显示健康、每次被选中都失败——必须归为
++	// 账号级故障走软冷却，不能落 default 只换号不罚。msg 文案唯一（无软限流歧义），
++	// 可安全收录；code 11-128 的取码与展示见 extensions CodeOf/upstreamCodeLabel。
++	"conversation id missing",
+ }}
+ 
+ // softRateResetLoc 上游 429 6004 文案中的重置时间固定按 UTC+8 解释（上游文案如此，

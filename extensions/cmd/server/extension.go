@@ -312,6 +312,9 @@ func wrapCore(ctx context.Context, cfg *Config, p *pool.Pool, up *upstream.Clien
 	if err != nil {
 		return nil, err
 	}
+	// 连败降权参数（灰度移植 issue #114）：环境变量注入（未设置用默认 5 次/10m/2h 上限），
+	// 随后在 degrade.go 生效——「不罚号的失败」达阈临时出池。
+	pool.EnvDegrade()
 	// 周期余额刷新（对标 panel 的 balance_refresh）：硬冷却（402 余额耗尽）账号余额
 	// 恢复后自动解冻回池，不再等下一次签到或次日 04:00。WB2A_BALANCE_REFRESH_MINUTES
 	// 覆盖周期（分钟），<=0 关闭，默认 5；跟随主 ctx 生命周期。
