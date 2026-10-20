@@ -35,10 +35,11 @@
 | 网页管理面板、账号热加载、在线改模型开关/别名、调用统计账本+趋势图 | console（九通道控制台，广度已超两个对标） |
 | /healthz、每请求表格日志、状态原子落盘、首启自动生成密钥 | core + console keys.json |
 | 上游新模型免发版进 /v1/models（目录探测） | FetchGlobalModels 探测 + 隐藏模型实测入库 |
+| 调用来源 IP·UA 归因 | 补丁 0008 + console usagelog（见 §六勘误：调研时误判为缺失） |
 
 ### 缺失（候选增强，见第四节建议表）
 
-响应侧 tool_calls 还原、余额后台刷新+解冻、客户端 X-Request-Id 响应头+成功率面板、调用来源 IP·UA 归因、多 API Key+按 Key 归因、每日限额护栏、成长任务一键完成 17/18、OpenRouter 价估算、404 短冷却 60s（待核对）、X-Device-Token 设备风控头（待核对）、积分到期分布、core 配置热生效。
+响应侧 tool_calls 还原、余额后台刷新+解冻、客户端 X-Request-Id 响应头+成功率面板、多 API Key+按 Key 归因、每日限额护栏、成长任务一键完成 17/18、OpenRouter 价估算、404 短冷却 60s（待核对）、X-Device-Token 设备风控头（待核对）、积分到期分布、core 配置热生效。
 
 ## 三、逐项仿照建议表（核心交付）
 
@@ -46,7 +47,7 @@
 | --- | --- | --- | --- | --- | --- | --- | --- |
 | 1 | **工具调用标记还原** | panel | 上游 DeepSeek 系把工具调用写成带全角竖线的标记文本，仅当请求声明 `tools` 时才被上游解析；中转丢失 tools 声明时标记以纯文本落进 content，Codex/pi 类只认结构化 tool_calls 的客户端工具链直接断。网关在响应侧识别标记并还原为 tool_calls（流式+非流式） | **仿照** | core 出站响应（补丁/扩展） | 中 / 保守匹配防误还原；需真实上游实测样本 | **P1** |
 | 2 | **余额后台刷新+冷却自动解冻** | panel | 周期（默认 5min）查余额更新池；处于硬冷却（余额耗尽）的账号余额恢复后自动解冻回池 | **仿照（已落地 2026-10-19，见 §六）** | core 调度（扩展/补丁） | 中低 / 本仓 pick.go CoolHard 语义已在，只补刷新与解冻 | **P1** |
-| 3 | **调用来源 IP·UA 归因** | panel + hub 按Key归因思想 | 账本每条记录补 client_ip / UA 摘要，多客户端区分排障 | **仿照** | console usagelog | 低 / 注意脱敏口径沿用 error_snippet 惯例 | **P1** |
+| 3 | ~~调用来源 IP·UA 归因~~ | panel + hub 按Key归因思想 | 账本每条记录补 client_ip / UA 摘要，多客户端区分排障 | **已有（勘误：调研时误判为缺失，见 §六）** | 补丁 0008 + extensions/internal/usagelog | — / 本仓实现比 panel 更严：IP 收敛网段（/24、/64 主机位不落盘）、UA 200 字清洗截断、鉴权失败留痕（denied-）独立分文件 | — |
 | 4 | 客户端 X-Request-Id + 成功率双口径 | panel | 响应头带请求 ID 并贯穿账本；面板展示「完成成功率 / HTTP 成功率 / 平均耗时」 | 仿照 | console 出口+账本 | 中低 / 公共面改动需过九通道枚举点清单 | P2 |
 | 5 | 多 API Key + 用量按 Key 归因 + Key 级模型限制 | hub | 每客户端独立 Key，可限模型（通配符）、可启停删除；用量按 Key 出报表 | 仿照 | console auth 层+账本 | 中 / 涉及鉴权面，需回归测试兜底 | P2 |
 | 6 | 404 短冷却 60s | panel | 404（模型/端点不存在类）只短冷却 60s 防长罚 | 待核对后补 | core 错误分类 | 低 / 先核对本仓 404 现走哪档 | P2 |
@@ -94,6 +95,20 @@
 通道统一性结论（八条旁路通道不适用本能力）：
 - 旁路通道（zcode/qoder/opencode/autoclaw/trae/traeai/raccoon/freellm）的账号状态管理在各自 sidecar 进程内自洽，无「硬冷却等外部事件解锁」缺口：zcode/qoder/trae 系失败由自身重试与重启恢复；raccoon/autoclaw 的账号启停是显式控制动作；opencode/freellm 是供应商 key 池自轮换。core 的 402 CoolHard 是唯一「余额耗尽→等恢复」语义，余额刷新只在 core 有意义。
 - sidecar 均无周期余额刷新同类行为（trae/autoclaw 有积分查询但为页签手动触发，非自动解冻闭环；上游权益到期时 zcode/trae 模型数归 0 是上游侧状态，非账号冷却，刷新无对象）。
+
+### §三 #3 勘误（2026-10-20 复核：「调用来源 IP·UA 归因」本仓已有，调研时误判为缺失）
+
+调研报告撰写（2026-10-19）时未对该项做 grep 断言即标缺失。2026-10-20 P1 #3 立项考证时实测推翻：
+
+- **账本字段**：`extensions/internal/usagelog/usagelog.go` `Entry` 结构自带 `Src`（来源网段）/`Client`（UA 清洗自报）/`API`（协议入口）三字段；`Denied`（鉴权失败留痕）同样带 `Src`/`Client`。
+- **成功路径落账**：补丁 `0008-call-usage-log.patch` 在 core 流式与非流式两个成功点调用 `RecordAuth(..., usagelog.OriginOf(r.Context(), r))`；`/v1/messages` 适配层同样接线（`anthropic/adapter.go`，含失败留痕 `RecordDeniedAuth`）。
+- **来源传递链**：console `proxy.go` 的 `stripPrivateHeaders` 先剥客户端伪造的 `X-Console-Client`/`X-Forwarded-*` 同前缀头，再以 `clientAddress(r)`（含可信代理 CIDR 判定）覆写 `X-Console-Client`；core 侧 `OriginOf` 读该头，经 console 部署时不可伪造（源码模式裸跑 core 时按客户端自报处理，有注释与测试钉死）。
+- **脱敏口径**：`MaskedPrefix` 收敛到网段（IPv4 /24、IPv6 /64，主机位不写盘）；`SanitizeClientText` UA 控制字符清洗+200 字节截断（字符边界回退）。比 panel 存完整 client_ip 更严。
+- **前端展示**：`console/web/app.js` 调用统计表已有 `src` 列与 `clientLabel`（UA 认得出真名显示「真名（原始串）」，另配 `clientAgentNames` 通道标签）；鉴权失败概览展示「来源网段 × 次数」Top5。
+- **旁路通道**：`console/usage_report.go` 旁路账本条目同样带 `Src`（原始对端地址）+`Client`（原始 UA），脱敏由 core 落账前收口完成——九通道口径统一，无需另做通道统一处理。
+- **测试**：`TestOriginOfMasksInjectedClientAndCapsUserAgent`、`TestRecordAuthWiresNicknameFallbackAndExplicitZeroCredit`、console `proxy_test.go` 伪造头剥离断言、anthropic adapter 来源测试均在库。
+
+结论：P1 #3 无需实现，本项关闭；真正缺失的相邻功能是 §三 #5「多 API Key + 按 Key 归因」（P2）。
 
 ## 七、待拍板事项
 
