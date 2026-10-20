@@ -138,6 +138,8 @@ grill 拍板三处：鉴权权威 console（core 零补丁）；本批范围归�
 
 测试：console apikeys_test.go 6 例（校验/持久化降级/gate 三态/status+models 约束/上报贯穿）+ core usagelog/bridge 新增断言；console go 全量 + race（Docker golang:1.23）全绿，node 213/213，usagelog/bridge race 绿（bridge 既有 Windows 基线失败 Access is denied 在案除外）。
 
+lab 实测补漏（commit 225b3a2）：`GET /v1/models` 在 publicRouter 中直发 core（mergedModels），不经过公共代理的 Rewrite，附加 Key 原样透传被 core 拒（英文 401）；对话端点走 retry 链换发正常，矛盾由 401 响应体中西文分辨 + `/status` 对照实验定位。修复为 mergedModels 按 ctx 标签换发主 Key，配套把 core mock 改为记录并断言 Authorization（原 mock 无条件 200 掩盖了缺陷）。lab 复测四态全过（附加 Key 200 出列表/无 Key 错 Key 401 中文/`/status` 200）。生产发版后核对 `zcode=0` 属公布语义（`enabled_models` 无 `glm-*` 直名即不上公共列表，调用面不受影响），非本批回归。
+
 ## 七、待拍板事项
 
 1. P1 三项（#1 #2 #3）是否立项？建议按 1→2→3 独立批次推进，每批走 lab 验证再生产发版。
