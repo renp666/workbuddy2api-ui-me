@@ -453,7 +453,12 @@ func (h *server) mergedModels(w http.ResponseWriter, r *http.Request, core *http
 		core.ServeHTTP(w, r)
 		return
 	}
-	if auth := r.Header.Get("Authorization"); auth != "" {
+	// 多 Key 归因（对标项 #5）：apiKeyGate 命中后 ctx 带标签，这里换发主 Key——
+	// mergedModels 直发 core 不经过公共代理的 Rewrite，不换发会把附加 Key 明文
+	// 送到 core 被 withAuth 拒掉。清单为空（gate 直通）时保持客户端原样透传。
+	if label := keyLabelFrom(r.Context()); label != "" {
+		coreReq.Header.Set("Authorization", "Bearer "+h.cfg.APIKey)
+	} else if auth := r.Header.Get("Authorization"); auth != "" {
 		coreReq.Header.Set("Authorization", auth)
 	}
 	var (

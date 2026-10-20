@@ -225,11 +225,18 @@ func TestAPIKeyGateEnforcesWhenListed(t *testing.T) {
 }
 
 // TestAPIKeyGateOnStatusAndModels 锁定：/status 与 /v1/models 同受 gate 约束
-// （清单非空时）；/healthz 保持免鉴权。
+//（清单非空时）；/healthz 保持免鉴权。/v1/models 走 mergedModels 直发 core
+//（不经公共代理 Rewrite），附加 Key 必须在此换发主 Key——mock 校验 Authorization，
+// 换发缺失时真实 core 的 401 会被 mock 的无条件 200 掩盖。
 func TestAPIKeyGateOnStatusAndModels(t *testing.T) {
+	var mu sync.Mutex
+	var coreAuth string
 	h, srv, _ := errorConsole(t, chatCore(t, func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		coreAuth = r.Header.Get("Authorization")
+		mu.Unlock()
 		w.WriteHeader(http.StatusOK)
-		_, _ = w.Write([]byte(`{}`))
+		_, _ = w.Write([]byte(`{"object":"list","data":[]}`))
 	}))
 	if err := srv.apiKeys.replace([]apiKeyEntry{{Label: "ci-bot", Key: gateExtraKey(), Enabled: true, CreatedAt: 1}}); err != nil {
 		t.Fatal(err)
@@ -254,6 +261,12 @@ func TestAPIKeyGateOnStatusAndModels(t *testing.T) {
 	}
 	if rec := get("/v1/models", gateExtraKey()); rec.Code != http.StatusOK {
 		t.Fatalf("/v1/models 附加 Key 应命中：status=%d body=%s", rec.Code, rec.Body)
+	}
+	mu.Lock()
+	gotAuth := coreAuth
+	mu.Unlock()
+	if gotAuth != "Bearer "+gateMainKey {
+		t.Fatalf("/v1/models 附加 Key 应换发主 Key（mergedModels 直发不经 Rewrite）：core auth=%q", gotAuth)
 	}
 	if rec := get("/healthz", ""); rec.Code != http.StatusOK {
 		t.Fatalf("/healthz 应保持免鉴权：status=%d", rec.Code)
