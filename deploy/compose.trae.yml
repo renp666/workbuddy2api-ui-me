@@ -19,7 +19,9 @@ services:
     environment:
       TZ: Asia/Shanghai
       # 数据面密钥（console -> trae2api:7866 的 Bearer）；为空时 sidecar 视为免鉴权。
-      WB2A_TRAE_KEY: ${WB2A_TRAE_KEY:-}
+      # 注意变量名——sidecar 二进制读的是 TRAE_API_KEY，把 WB2A_TRAE_KEY 直接注进去
+      # 会得到一个"空 key = 不鉴权"的容器（traeai overlay 的注释里同款警告）。
+      TRAE_API_KEY: ${WB2A_TRAE_KEY:-}
       # 回调由 console 公开 origin 代理，sidecar 自身不起独立回调端口。
       TRAE_CALLBACK_LISTEN: "0"
     volumes:
