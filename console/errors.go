@@ -114,6 +114,7 @@ type errorEvent struct {
 	RetryCount     int    `json:"retry_count,omitempty"`
 	RetryAfterSec  int    `json:"retry_after_sec,omitempty"`
 	RequestID      string `json:"request_id,omitempty"` // 出口请求 ID，与 core/旁路账本同键
+	KeyLabel       string `json:"key_label,omitempty"`  // 命中的 API Key 标签（主 Key 记「默认」）
 	Produced       bool   `json:"produced,omitempty"`   // 成功样本的完成口径（成功落盘场景恒 false，仅内存窗口消费）
 }
 
@@ -779,6 +780,7 @@ func (h *server) finishExitObserve(obs exitObservation) {
 		DurationMs: obs.durationMs,
 		Client:     obs.client,
 		RequestID:  obs.requestID,
+		KeyLabel:   obs.keyLabel,
 		Produced:   produced,
 	}
 	// 别名命中时，分流侧把解析结论写进了 X-Prism-* 响应头：通道、改写后的公共模型名

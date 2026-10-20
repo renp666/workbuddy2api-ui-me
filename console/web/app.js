@@ -99,7 +99,7 @@ async function signedIn(session) {
  await refreshStatus(); await refreshModels(); await loadPins();
  void loadModelHeat(); void loadModelSwitch(); void loadGlobalHeat(); void loadOverview(true); void restoreProbe(); void loadHealth(true); void loadErrorStats(true);
 }
-const pageNames = {overview:'运行概览',workbuddy:'WorkBuddy 通道',zcode:'Zcode 通道',qoder:'Qoder 通道',opencode:'OpenCode 通道',freellm:'FreeLLMAPI 通道',ccr:'CCR 网关',autoclaw:'AutoClaw 通道',trae:'Trae 通道',traeai:'Trae 国际版通道',raccoon:'小浣熊通道',usage:'调用统计',routes:'Agent 接入',access:'API 接入'};
+const pageNames = {overview:'运行概览',workbuddy:'WorkBuddy 通道',zcode:'Zcode 通道',qoder:'Qoder 通道',opencode:'OpenCode 通道',freellm:'FreeLLMAPI 通道',ccr:'CCR 网关',autoclaw:'AutoClaw 通道',trae:'Trae 通道',traeai:'Trae 国际版通道',raccoon:'小浣熊通道',usage:'调用统计',routes:'Agent 接入',access:'API 接入',apikeys:'API 密钥'};
 const workbuddyNames = {accounts:'账号管理',tasks:'自动任务',models:'模型列表',chat:'对话测试'};
 function setWorkBuddyView(view) {
  workbuddyView = view;
@@ -142,6 +142,7 @@ function showPage(value) {
  if (page === 'traeai') loadTraeai();
  if (page === 'raccoon') loadRaccoon();
  if (page === 'routes') loadRoutes();
+ if (page === 'apikeys') loadApiKeys();
  // The access tab lists GLM and Qoder channel models too; fetch statuses once lazily
  // so its select is complete even when the operator never opens those tabs.
  if (page === 'access') loadMissingChannelStatuses();
@@ -2675,6 +2676,96 @@ function startRouteEdit(entry){
  $('routes-alias-panel').scrollIntoView({behavior:'smooth',block:'start'});
  $('routes-alias-name').focus({preventScroll:true});
 }
+// ---------- API 密钥（多 Key 归因） ----------
+// 契约见 console/apikeys.go：GET /admin/apikeys 返回 {keys, default_label, editable}；
+// POST /admin/apikeys 整表提交 {keys:[{label,key,enabled,created_at}]}，保存即生效。
+// 页面持有编辑缓冲：添加/启停/删除都先改本地副本，点「保存清单」整表提交——
+// 与路由别名页同一套交互，避免半表状态落盘。
+let apikeysKeys=[],apikeysUsageItems=[],apikeysUsageRange='today',apikeysBusy=false;
+function generateAPIKey(){
+ const raw=new Uint8Array(32);crypto.getRandomValues(raw);
+ let s='';for(const b of raw)s+=String.fromCharCode(b);
+ return btoa(s).replace(/\+/g,'-').replace(/\//g,'_').replace(/=+$/,'');
+}
+async function loadApiKeys(){
+ if(!csrf)return;
+ const generation=sessionGeneration;
+ try{
+  const [state,usage]=await Promise.all([jsonAPI('apikeys'),jsonAPI('usage?range='+encodeURIComponent(apikeysUsageRange)).catch(()=>null)]);
+  if(generation!==sessionGeneration)return;
+  apikeysKeys=(state.keys||[]).map(k=>({...k}));
+  apikeysUsageItems=usage?usage.items||[]:[];
+  renderApiKeys();
+ }catch(error){if(generation===sessionGeneration)notice(error.message);}
+}
+function markApikeysDirty(){$('apikeys-editbar').hidden=false;}
+function renderApiKeys(){
+ const body=$('apikeys-body');body.replaceChildren();
+ $('apikeys-empty').hidden=apikeysKeys.length>0;
+ apikeysKeys.forEach((entry,index)=>{
+  const tr=document.createElement('tr');
+  const label=cell(entry.label);
+  const key=cell(entry.key);key.className='mono';key.title='调用时使用：Authorization: Bearer '+entry.key;
+  const state=document.createElement('td');
+  const toggle=document.createElement('button');toggle.type='button';toggle.className='quiet';
+  toggle.textContent=entry.enabled?'启用中':'已停用';
+  toggle.title='点击切换启用状态（保存清单后生效）';
+  toggle.addEventListener('click',()=>{entry.enabled=!entry.enabled;markApikeysDirty();renderApiKeys();});
+  state.append(toggle);
+  const created=cell(entry.created_at?new Date(entry.created_at*1000).toLocaleString():'—');
+  const actions=document.createElement('td');
+  const del=document.createElement('button');del.type='button';del.className='quiet danger-text';del.textContent='删除';
+  del.addEventListener('click',()=>{apikeysKeys.splice(index,1);markApikeysDirty();renderApiKeys();});
+  actions.append(del);
+  tr.append(label,key,state,created,actions);
+  body.append(tr);
+ });
+ // 用量表：按 key_label 聚合。缺标签的历史调用归「（未标注）」；
+ // tokens 只累加已观测值（-1 是缺失，不是 0），积分只认 has_credit 的行。
+ const byLabel=new Map();
+ for(const e of apikeysUsageItems){
+  const label=e.key_label||'（未标注）';
+  if(!byLabel.has(label))byLabel.set(label,{calls:0,prompt:0,completion:0,credit:0,creditKnown:false});
+  const agg=byLabel.get(label);agg.calls++;
+  if(Number.isFinite(e.prompt)&&e.prompt>=0)agg.prompt+=e.prompt;
+  if(Number.isFinite(e.completion)&&e.completion>=0)agg.completion+=e.completion;
+  if(e.has_credit&&Number.isFinite(e.credit)){agg.credit+=e.credit;agg.creditKnown=true;}
+ }
+ const usageBody=$('apikeys-usage-body');usageBody.replaceChildren();
+ const rows=[...byLabel.entries()].sort((a,b)=>b[1].calls-a[1].calls);
+ $('apikeys-usage-empty').hidden=rows.length>0;
+ for(const [label,agg] of rows){
+  const tr=document.createElement('tr');
+  tr.append(cell(label),numCell(agg.calls.toLocaleString()),numCell(agg.prompt?agg.prompt.toLocaleString():'—'),numCell(agg.completion?agg.completion.toLocaleString():'—'),numCell(agg.creditKnown?agg.credit.toFixed(2):'—'));
+  usageBody.append(tr);
+ }
+}
+$('apikeys-add').addEventListener('click',()=>{
+ const label=$('apikeys-new-label').value.trim().replace(/\s+/g,'');
+ const key=$('apikeys-new-key').value.trim().replace(/\s+/g,'')||generateAPIKey();
+ if(!label){notice('请先填写标签');return;}
+ if(label==='默认'){notice('「默认」保留给主 Key，附加 Key 请换一个标签');return;}
+ if(apikeysKeys.some(k=>k.label===label)){notice('标签已存在：'+label);return;}
+ if(key.length<16||key.length>128){notice('Key 须为 16..128 个无空白字符');return;}
+ apikeysKeys.push({label,key,enabled:true,created_at:Math.floor(Date.now()/1000)});
+ $('apikeys-new-label').value='';$('apikeys-new-key').value='';
+ markApikeysDirty();renderApiKeys();
+});
+$('apikeys-save').addEventListener('click',async()=>{
+ if(apikeysBusy)return;
+ const generation=sessionGeneration;apikeysBusy=true;$('apikeys-save').disabled=true;
+ try{
+  const state=await jsonAPI('apikeys',{keys:apikeysKeys});
+  if(generation!==sessionGeneration)return;
+  apikeysKeys=(state.keys||[]).map(k=>({...k}));
+  $('apikeys-editbar').hidden=true;
+  renderApiKeys();notice('API 密钥清单已保存，立即生效');
+ }catch(error){if(generation===sessionGeneration)notice(error.message);}
+ finally{if(generation===sessionGeneration){apikeysBusy=false;$('apikeys-save').disabled=false;}}
+});
+$('apikeys-discard').addEventListener('click',()=>{$('apikeys-editbar').hidden=true;loadApiKeys();});
+$('apikeys-usage-range').addEventListener('change',event=>{apikeysUsageRange=event.target.value;loadApiKeys();});
+$('apikeys-refresh').addEventListener('click',()=>{$('apikeys-editbar').hidden=true;loadApiKeys();});
 // ---------- 模型能力 TOP（别名页） ----------
 // 契约见 console/capability.go：GET /admin/capabilities 返回 {available, snapshot_at, note, rows}，
 // rows 已按 OpenRouter most-popular 顺序排列，heat 从 1 起，且与模型页的「全球热度」列同源，

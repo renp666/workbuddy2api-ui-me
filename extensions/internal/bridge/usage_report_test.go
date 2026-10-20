@@ -44,7 +44,7 @@ func TestUsageReportValidatesAndRecords(t *testing.T) {
 	h := New(context.Background(), Config{Key: testKey, Usage: l})
 	credit := 0.25
 	body := `{"entries":[
-		{"uid":"zcode","account":"GLM 通道","model":"glm-4.6","mode":"stream","prompt_tokens":120,"completion_tokens":80,"credit":` + fmtJSONFloat(credit) + `,"has_credit":true,"request_id":"0123456789abcdef0123456789abcdef"},
+		{"uid":"zcode","account":"GLM 通道","model":"glm-4.6","mode":"stream","prompt_tokens":120,"completion_tokens":80,"credit":` + fmtJSONFloat(credit) + `,"has_credit":true,"request_id":"0123456789abcdef0123456789abcdef","key_label":"ci-bot"},
 		{"uid":"qoder","account":"Qoder 通道","model":"qoder-glm-4.6","mode":"sync","prompt_tokens":-1,"completion_tokens":-1}
 	]}`
 	w := bridgeRequest(h, "POST", "/internal/v1/usage/reports", body, "")
@@ -72,13 +72,17 @@ func TestUsageReportValidatesAndRecords(t *testing.T) {
 	if first.RequestID != "0123456789abcdef0123456789abcdef" || second.RequestID != "" {
 		t.Fatalf("request_id 贯穿不符：%q / %q", first.RequestID, second.RequestID)
 	}
+	if first.KeyLabel != "ci-bot" || second.KeyLabel != "" {
+		t.Fatalf("key_label 贯穿不符：%q / %q", first.KeyLabel, second.KeyLabel)
+	}
 	if got.Summary.Calls != 2 || got.Summary.Prompt != 120 || got.Summary.Completion != 80 || got.Summary.Credit != credit || got.Summary.CreditMissing != 1 || got.Summary.PromptMissing != 1 || got.Summary.CompletionMissing != 1 {
 		t.Fatalf("汇总缺失语义不符：%+v", got.Summary)
 	}
 }
 
 // TestUsageReportRemasksSourceAndDropsUnknownAPI：旁路上报的 src/client/api 是外部输入，
-// core 落账前必须自己再收敛一次——地址只留网段（主机位不写盘），协议名只认名单内的值。
+// core 落账前必须自己再收敛一次——地址只留网段（主机位不写盘），协议名只认名单内的值，
+// key_label 同口径清洗（空白/非 ASCII 整体不留）。
 func TestUsageReportRemasksSourceAndDropsUnknownAPI(t *testing.T) {
 	dir := t.TempDir()
 	l, err := usagelog.Open(dir)
@@ -87,8 +91,8 @@ func TestUsageReportRemasksSourceAndDropsUnknownAPI(t *testing.T) {
 	}
 	h := New(context.Background(), Config{Key: testKey, Usage: l})
 	body := `{"entries":[
-		{"uid":"zcode","model":"glm-4.6","mode":"sync","prompt_tokens":1,"completion_tokens":1,"src":"203.0.113.42","client":"claude-cli/1.2","api":"messages"},
-		{"uid":"zcode","model":"glm-4.6","mode":"sync","prompt_tokens":1,"completion_tokens":1,"src":"2001:db8:1:2:3:4:5:6","client":"x\r\nY: forged","api":"whatever"}
+		{"uid":"zcode","model":"glm-4.6","mode":"sync","prompt_tokens":1,"completion_tokens":1,"src":"203.0.113.42","client":"claude-cli/1.2","api":"messages","key_label":"ci-bot"},
+		{"uid":"zcode","model":"glm-4.6","mode":"sync","prompt_tokens":1,"completion_tokens":1,"src":"2001:db8:1:2:3:4:5:6","client":"x\r\nY: forged","api":"whatever","key_label":"bad label\n"}
 	]}`
 	if w := bridgeRequest(h, "POST", "/internal/v1/usage/reports", body, ""); w.Code != 202 {
 		t.Fatalf("上报被拒：%d %s", w.Code, w.Body)
@@ -103,8 +107,14 @@ func TestUsageReportRemasksSourceAndDropsUnknownAPI(t *testing.T) {
 	if items[0].Src != "203.0.113.0/24" || items[0].Client != "claude-cli/1.2" || items[0].API != "messages" {
 		t.Errorf("已知观测应按 core 口径收敛：%+v", items[0])
 	}
+	if items[0].KeyLabel != "ci-bot" {
+		t.Errorf("合法标签应原样入账：%+v", items[0])
+	}
 	if items[1].Src != "2001:db8:1:2::/64" || items[1].Client != "x Y: forged" || items[1].API != "" {
 		t.Errorf("表外协议名必须留空，控制字符不得进字段：%+v", items[1])
+	}
+	if items[1].KeyLabel != "" {
+		t.Errorf("含空白/控制字符的标签必须整体不留：%+v", items[1])
 	}
 }
 

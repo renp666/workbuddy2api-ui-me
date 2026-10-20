@@ -40,8 +40,9 @@ type Entry struct {
 	Credit     *float64 `json:"credit,omitempty"`
 	Src        string   `json:"src,omitempty"`    // 来源网段（已脱敏，不含主机位）
 	Client     string   `json:"client,omitempty"` // User-Agent 清洗后的自报标识
-	API        string   `json:"api,omitempty"`    // 协议入口："chat" | "messages" | "responses"
+	API        string   `json:"api,omitempty"`        // 协议入口："chat" | "messages" | "responses"
 	RequestID  string   `json:"request_id,omitempty"` // 网关出口请求 ID（console 生成，贯穿九通道）
+	KeyLabel   string   `json:"key_label,omitempty"`  // 客户端 API Key 标签（console 多 Key 归属，主 Key 记「默认」）
 }
 
 // Denied 一次鉴权失败留痕。只有来源观测，不带账号与模型：key 不对时
@@ -105,7 +106,7 @@ func RecordAuth(acct *auth.Auth, model, mode string, prompt, completion int, cre
 	if l == nil || acct == nil {
 		return
 	}
-	e := Entry{TS: time.Now().Unix(), UID: acct.UID, Account: acct.Nickname, Model: model, Mode: mode, Prompt: prompt, Completion: completion, Src: o.Src, Client: o.Client, API: o.API, RequestID: o.RequestID}
+	e := Entry{TS: time.Now().Unix(), UID: acct.UID, Account: acct.Nickname, Model: model, Mode: mode, Prompt: prompt, Completion: completion, Src: o.Src, Client: o.Client, API: o.API, RequestID: o.RequestID, KeyLabel: o.KeyLabel}
 	if e.Account == "" {
 		e.Account = acct.UID
 	}
@@ -739,6 +740,7 @@ type Origin struct {
 	Client    string
 	API       string
 	RequestID string
+	KeyLabel  string
 }
 
 // clientHeader 由 console 在转发公开接口前覆写：console 会先剥掉入站同前缀头
@@ -754,6 +756,37 @@ const requestIDHeader = "X-Console-Request-Id"
 // maxRequestID 是请求 ID 的字节上限。console 自产 32 hex；上限放宽到 128 是给
 // 源码模式下的客户端自报留余量，清洗后超限截断。
 const maxRequestID = 128
+
+// keyLabelHeader 由 console 在校验客户端 API Key 命中后注入（见 console/apikeys.go
+// 的出口换发），与 requestIDHeader 同族：console 会剥掉入站同前缀头，经 console
+// 部署时该值不可由客户端伪造。源码模式下没有这层剥离，只能当客户端自报处理。
+const keyLabelHeader = "X-Console-Key-Label"
+
+// maxKeyLabel 是 Key 标签的字节上限，console 创建入口与这里的清洗共用同一口径：
+// 标签是账本里的归属标识（ASCII 短标识），不是自由文本。
+const maxKeyLabel = 64
+
+// SanitizeKeyLabel 清洗 Key 标签，规则与 SanitizeRequestID 完全同族：去首尾空白、
+// 限可打印 ASCII 且中间不得含空白、超限截断（截断点不会劈出半截，因为只放 ASCII）。
+// 不合规形态整体丢弃——标签是归属键，宁可缺席不留混合物。
+func SanitizeKeyLabel(s string) string {
+	s = strings.Trim(s, " \t\r\n\v\f")
+	if s == "" {
+		return ""
+	}
+	clean := make([]byte, 0, len(s))
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		if c < 0x20 || c == 0x7f || c > 0x7e || c == ' ' {
+			return ""
+		}
+		clean = append(clean, c)
+	}
+	if len(clean) > maxKeyLabel {
+		clean = clean[:maxKeyLabel]
+	}
+	return string(clean)
+}
 
 // SanitizeRequestID 清洗请求 ID：去首尾空白、限可打印 ASCII 且中间不得含空白、
 // 按字节截断。console 自产 32 hex 不含空白；源码模式下客户端自报的值若带空白
@@ -831,6 +864,7 @@ func OriginOf(ctx context.Context, r *http.Request) Origin {
 	o.Src = MaskedPrefix(r.Header.Get(clientHeader))
 	o.Client = SanitizeClientText(r.Header.Get("User-Agent"))
 	o.RequestID = SanitizeRequestID(r.Header.Get(requestIDHeader))
+	o.KeyLabel = SanitizeKeyLabel(r.Header.Get(keyLabelHeader))
 	if o.API == "" {
 		o.API = APIOfPath(r.URL.Path)
 	}

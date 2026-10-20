@@ -123,10 +123,10 @@ function taskFixture(fetch, cryptoImpl={randomUUID:()=> '11111111-2222-4333-8444
   const get=id=>{if(!elements.has(id))elements.set(id,element());return elements.get(id);};
   const protocolButtons=['access-openai','access-anthropic','chat-openai','chat-anthropic'].map(id=>{const button=get(id);button.dataset.protocol=id.split('-')[1];return button;});
   // 顶栏刷新按钮的名单从 app.js 的 usageChannelOrder 现读（WorkBuddy 没有页面级刷新，
-  // 它的「刷新任务」留在原位），再加三条非通道页。先前这里写死四条，freellm 的按钮
+  // 它的「刷新任务」留在原位），再加四条非通道页。先前这里写死四条，freellm 的按钮
   // 上了页面却没人看过——新通道漏一颗不会报错，只会多一个永远点不亮的死按钮。
   const channelRefresh=channelList(readFileSync(__dirname+'/web/app.js','utf8')).filter(c=>c!=='workbuddy').map(c=>[c+'-refresh',c]);
-  const railButtons=[['refresh','overview'],...channelRefresh,['ccr-refresh','ccr'],['usage-refresh','usage'],['routes-refresh','routes']].map(([id,view])=>{const button=get(id);button.dataset.refreshFor=view;return button;});
+  const railButtons=[['refresh','overview'],...channelRefresh,['ccr-refresh','ccr'],['usage-refresh','usage'],['routes-refresh','routes'],['apikeys-refresh','apikeys']].map(([id,view])=>{const button=get(id);button.dataset.refreshFor=view;return button;});
   const opened=[];
   const ctx=vm.createContext({document:{getElementById:get,querySelectorAll:selector=>selector==='[data-protocol]'?protocolButtons:selector==='[data-refresh-for]'?railButtons:[],createElement:element,hidden:false,handlers:{},addEventListener(name,fn){this.handlers[name]=fn;}},
     location:{origin:'http://console.test'},AbortController,TextDecoder,TextEncoder,Option:function(text,value){return {textContent:text,value};},
@@ -4741,4 +4741,66 @@ test('M2-B health query failure does not hide the alias configuration', async ()
   await vm.runInContext('loadRoutes()',ctx);
   assert.equal(get('routes-content').hidden,false);
   assert.equal(get('routes-alias-body').children.length,1);
+});
+
+// —— API 密钥页签（多 Key 归因）——
+// 页面三件事：清单渲染（含启停切换缓冲）、按 key_label 聚合用量（缺失不冒充 0）、
+// 整表保存 POST /admin/apikeys。聚合口径与调用统计页同源（usage?range=… 的 items）。
+test('API 密钥页签：清单渲染、自动生成 Key、整表保存与按标签用量聚合',async()=>{
+  const keysState={keys:[{label:'ci-bot',key:'extra-key-0123456789',enabled:true,created_at:1760000000}],default_label:'默认',editable:true};
+  const posts=[];
+  const {ctx,get}=taskFixture((url,options={})=>{
+    if(url==='/admin/session')return new Promise(()=>{});
+    if(url==='/admin/apikeys'){
+      if(options.body){const body=JSON.parse(options.body);posts.push(body);keysState.keys=body.keys;}
+      return {ok:true,status:200,json:async()=>keysState};
+    }
+    if(url==='/admin/usage?range=month'){
+      return {ok:true,status:200,json:async()=>({items:[
+        {key_label:'ci-bot',prompt:120,completion:80,credit:0.25,has_credit:true},
+        {key_label:'ci-bot',prompt:-1,completion:-1,credit:0.5,has_credit:true},
+        {key_label:'',prompt:10,completion:5,credit:1,has_credit:true},
+        {key_label:'默认',prompt:20,completion:10,credit:0,has_credit:false},
+      ]})};
+    }
+    return {ok:true,status:200,json:async()=>({})};
+  });
+  get('realm').querySelector=()=>({disabled:false});
+  ctx.crypto={getRandomValues:a=>{for(let i=0;i<a.length;i++)a[i]=(i*7+13)&255;return a;}};
+  ctx.btoa=s=>Buffer.from(s,'binary').toString('base64');
+  await vm.runInContext("signedIn({csrf:'c',global_enabled:true,zcode_enabled:false,qoder_enabled:false,opencode_enabled:false})",ctx);
+  vm.runInContext("apikeysUsageRange='month'",ctx);
+  await vm.runInContext('loadApiKeys()',ctx);
+  const rows=get('apikeys-body').children;
+  assert.equal(rows.length,1,'key row missing');
+  assert.equal(rows[0].children[0].textContent,'ci-bot');
+  assert.equal(rows[0].children[1].textContent,'extra-key-0123456789');
+  assert.equal(rows[0].children[2].children[0].textContent,'启用中');
+  // 用量聚合：按调用数降序（同分不承诺顺序，按标签定位断言）；缺失 tokens 不计入
+  // 也不冒充 0；积分只累加 has_credit 的行。
+  const usageRows=get('apikeys-usage-body').children;
+  assert.deepEqual(usageRows.map(r=>r.children[0].textContent).sort(),['ci-bot','默认','（未标注）'].sort());
+  const rowOf=label=>usageRows.find(r=>r.children[0].textContent===label);
+  assert.equal(usageRows[0].children[0].textContent,'ci-bot','调用数最多者居首');
+  assert.equal(rowOf('ci-bot').children[1].textContent,'2');
+  assert.equal(rowOf('ci-bot').children[2].textContent,'120','缺失 tokens 不得冒充 0');
+  assert.equal(rowOf('ci-bot').children[4].textContent,'0.75','积分只累加 has_credit 的行');
+  assert.equal(rowOf('默认').children[4].textContent,'—','has_credit=false 是未知，不是 0');
+  assert.equal(rowOf('（未标注）').children[4].textContent,'1.00');
+  // 添加：Key 留空自动生成（32 字节 base64url = 43 字符无空白），进缓冲不直接落盘。
+  get('apikeys-new-label').value='daily';
+  get('apikeys-new-key').value='';
+  get('apikeys-add').handlers.click();
+  assert.equal(get('apikeys-body').children.length,2,'新行未进表');
+  assert.equal(get('apikeys-editbar').hidden,false,'添加后应亮出未保存提示');
+  const daily=vm.runInContext("apikeysKeys.find(k=>k.label==='daily')",ctx);
+  assert.match(daily.key,/^[A-Za-z0-9_-]{43}$/,'自动生成 Key 应为 43 字符 base64url');
+  assert.ok(!posts.length,'添加只进缓冲，不应立即 POST');
+  // 保存：整表提交，且保留服务端回传状态。
+  await get('apikeys-save').handlers.click();
+  await flushMicrotasks();
+  assert.equal(posts.length,1,'保存应 POST 一次');
+  assert.equal(posts[0].keys.length,2);
+  assert.deepEqual(posts[0].keys.map(k=>k.label),['ci-bot','daily']);
+  assert.equal(get('apikeys-editbar').hidden,true,'保存成功后收起未保存提示');
 });

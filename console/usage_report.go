@@ -29,6 +29,7 @@ type usageReportEntry struct {
 	Client     string   `json:"client,omitempty"`
 	API        string   `json:"api,omitempty"`
 	RequestID  string   `json:"request_id,omitempty"`
+	KeyLabel   string   `json:"key_label,omitempty"`
 }
 
 // maxReportTokens 防御上游异常 usage 数值（防 int 溢出）。
@@ -112,7 +113,7 @@ type usageCaptureWriter struct {
 // 旁路不经过 core，所以「谁在用」的来源观测只能在这里附上：与公开代理口同一套
 // 对端判定（含可信反代取 XFF 最右段），协议名按公开路径判定。
 func (h *server) newUsageCapture(w http.ResponseWriter, r *http.Request, model, channel string, stream bool) *usageCaptureWriter {
-	e := usageReportEntry{UID: channel, Model: model, Mode: "sync", Prompt: -1, Completion: -1, Src: h.clientAddress(r), Client: r.Header.Get("User-Agent"), RequestID: requestIDFrom(r.Context())}
+	e := usageReportEntry{UID: channel, Model: model, Mode: "sync", Prompt: -1, Completion: -1, Src: h.clientAddress(r), Client: r.Header.Get("User-Agent"), RequestID: requestIDFrom(r.Context()), KeyLabel: keyLabelFrom(r.Context())}
 	switch r.URL.Path {
 	case "/v1/chat/completions":
 		e.API = "chat"

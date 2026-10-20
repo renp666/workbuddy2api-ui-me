@@ -109,6 +109,14 @@ func (h *server) proxy(management bool) *httputil.ReverseProxy {
 			if id := requestIDFrom(pr.In.Context()); id != "" {
 				pr.Out.Header.Set("X-Console-Request-Id", id)
 			}
+			// Key 归属标签：apiKeyGate 命中后恒存在（主 Key 记「默认」）。core 通道
+			// 在这里统一换发 cfg.APIKey（附加 Key 的明文不出 console），core 落账侧
+			// OriginOf 读 X-Console-Key-Label 归属。旁路通道由 console 侧 usage
+			// 上报带 key_label，sidecar 不感知。
+			if label := keyLabelFrom(pr.In.Context()); label != "" {
+				pr.Out.Header.Set("Authorization", "Bearer "+h.cfg.APIKey)
+				pr.Out.Header.Set("X-Console-Key-Label", label)
+			}
 			if management {
 				pr.Out.Header.Set("Authorization", "Bearer "+h.cfg.BridgeKey)
 				pr.Out.Header.Set("X-Console-Owner", sessionFrom(pr.In).owner)
@@ -210,6 +218,7 @@ type exitObservation struct {
 	requestID    string
 	emptyStream  bool
 	wroteBytes   int64
+	keyLabel     string
 }
 
 // observedExitPath 判定该请求是否属于要观测的对话出口。只看三个对话端点：
@@ -288,6 +297,7 @@ func (h *server) observePublicExits(next http.Handler) http.Handler {
 			requestID:    id,
 			emptyStream:  observer.emptyStream,
 			wroteBytes:   observer.wroteBytes,
+			keyLabel:     observer.keyLabel,
 		})
 	})
 }
@@ -339,6 +349,7 @@ type exitObserver struct {
 	start       time.Time
 	wroteBytes  int64
 	emptyStream bool
+	keyLabel    string // apiKeyGate 命中的标签（「默认」或附加 Key），错误账本归属用
 }
 
 func (o *exitObserver) WriteHeader(code int) {
@@ -462,8 +473,8 @@ func streamFromRequestPrefix(prefix []byte) (bool, bool) {
 }
 
 // retryCountFromHeader 取重试跳数。优先读本网关请求内重试写的 X-Prism-Attempts
-//（实际服务客户端的那次尝试序号）；回落读旁路上游回报的 X-Fallback-Attempts
-//（console 不掌握 core 内部的重试计数，只有旁路上游会报），取不到就留 0。
+// （实际服务客户端的那次尝试序号）；回落读旁路上游回报的 X-Fallback-Attempts
+// （console 不掌握 core 内部的重试计数，只有旁路上游会报），取不到就留 0。
 func retryCountFromHeader(header http.Header) int {
 	for _, name := range []string{"X-Prism-Attempts", "X-Fallback-Attempts"} {
 		raw := strings.TrimSpace(header.Get(name))

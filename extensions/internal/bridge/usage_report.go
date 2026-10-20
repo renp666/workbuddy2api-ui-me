@@ -31,6 +31,7 @@ type usageReportEntry struct {
 	Client     string   `json:"client,omitempty"`
 	API        string   `json:"api,omitempty"`
 	RequestID  string   `json:"request_id,omitempty"`
+	KeyLabel   string   `json:"key_label,omitempty"`
 }
 
 // reportUsage 落账 console 旁路通道的调用观测。账本由 core 进程持有，
@@ -74,6 +75,7 @@ func (h *handler) reportUsage(w http.ResponseWriter, r *http.Request) {
 			Client:    usagelog.SanitizeClientText(item.Client),
 			API:       usagelog.KnownAPI(item.API),
 			RequestID: usagelog.SanitizeRequestID(item.RequestID),
+			KeyLabel:  usagelog.SanitizeKeyLabel(item.KeyLabel),
 		}
 		if item.HasCredit {
 			e.Credit = item.Credit

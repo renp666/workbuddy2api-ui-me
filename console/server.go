@@ -16,6 +16,7 @@ import (
 	"net"
 	"net/http"
 	"net/url"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"sync"
@@ -127,6 +128,9 @@ type server struct {
 	// credits 缓存 core 下发的模型积分消耗规则（补丁 0011 的 credits 字段），
 	// 供模型开关判定默认态与页面展示。
 	credits *creditCache
+	// apiKeys 是附加 API Key 清单（多 Key 归因，对标项 #5）：console 权威校验 +
+	// 账本归属。为 nil 时（RouteFile 未配置）gate 只认主 Key，行为与没有本功能时一致。
+	apiKeys *apiKeyStore
 	// catalog 缓存 OpenRouter 公开目录的一份快照，同时供「全球热度」列和
 	// 「模型能力 TOP」榜单派生，保证两列出自同一次抓取。
 	catalog *catalogCache
@@ -263,6 +267,9 @@ func NewServer(cfg Config) (http.Handler, error) {
 	h := &server{cfg: cfg, mux: http.NewServeMux(), sessions: map[string]*adminSession{}, limits: map[string]loginLimit{}, client: &http.Client{Timeout: 3 * time.Second, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}, zcodeClient: &http.Client{CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}, trusted: trusted, httpsEnabled: strings.HasPrefix(cfg.PublicOrigin, "https://")}
 	if cfg.RouteFile != "" {
 		h.routes = newRouteStore(cfg.RouteFile)
+		// 附加 API Key 清单与 routes.json 同目录（consoleDataDir）；文件缺失视为
+		// 空清单，损坏时告警降级（见 newAPIKeyStore），不阻塞启动。
+		h.apiKeys = newAPIKeyStore(filepath.Join(consoleDataDir(cfg.RouteFile), "apikeys.json"))
 	}
 	h.probes = &probeCache{}
 	h.probe = newProbeRunner()
@@ -300,16 +307,19 @@ func NewServer(cfg Config) (http.Handler, error) {
 	// 旁路通道靠它按前缀分流，路由别名与 auto 虚拟模型也只在它内部生效。
 	// 只配了 core 的部署（RouteFile 非空但旁路 URL 全空）同样要挂上，
 	// 否则别名改写与 /v1/models 的 auto 条目会静默失效。
+	// 公共出口鉴权权威（多 Key 归因，对标项 #5）：/v1/* 与 GET /status 先过
+	// apiKeyGate（主 Key + 附加清单，未命中自产 401），命中后 core 通道统一换发
+	// cfg.APIKey。/healthz 保持免鉴权（探活语义不变）。
 	if cfg.ZCodeURL != nil || cfg.QoderURL != nil || cfg.OpenCodeURL != nil || cfg.AutoClawURL != nil || cfg.TraeURL != nil || cfg.RaccoonURL != nil || cfg.FreellmURL != nil || cfg.RouteFile != "" {
 		var routed http.Handler = h.publicRouter(public)
 		if h.circuits != nil {
 			routed = h.circuitExitGuard(routed)
 		}
-		h.mux.Handle("/v1/", h.observePublicExits(routed))
+		h.mux.Handle("/v1/", h.observePublicExits(h.apiKeyGate(routed)))
 	} else {
-		h.mux.Handle("/v1/", h.observePublicExits(public))
+		h.mux.Handle("/v1/", h.observePublicExits(h.apiKeyGate(public)))
 	}
-	h.mux.Handle("GET /status", public)
+	h.mux.Handle("GET /status", h.apiKeyGate(public))
 	h.mux.Handle("GET /healthz", public)
 	h.mux.HandleFunc("POST /admin/login", h.adminLogin)
 	h.mux.HandleFunc("GET /admin/session", h.withAdmin(func(w http.ResponseWriter, r *http.Request) {
@@ -318,7 +328,7 @@ func NewServer(cfg Config) (http.Handler, error) {
 			adminError(w, 503, err.Error())
 			return
 		}
-		writeJSON(w, 200, map[string]any{"csrf": sessionFrom(r).csrf, "global_enabled": info.GlobalEnabled, "zcode_enabled": cfg.ZCodeURL != nil, "zcode_control": cfg.ZCodeControlURL != nil, "qoder_enabled": cfg.QoderURL != nil, "qoder_control": cfg.QoderControlURL != nil, "opencode_enabled": cfg.OpenCodeURL != nil, "ccr_enabled": cfg.CCRURL != nil, "autoclaw_enabled": cfg.AutoClawURL != nil, "trae_enabled": cfg.TraeURL != nil, "traeai_enabled": cfg.TraeAIURL != nil, "raccoon_enabled": cfg.RaccoonURL != nil, "freellm_enabled": cfg.FreellmURL != nil})
+		writeJSON(w, 200, map[string]any{"csrf": sessionFrom(r).csrf, "global_enabled": info.GlobalEnabled, "zcode_enabled": cfg.ZCodeURL != nil, "zcode_control": cfg.ZCodeControlURL != nil, "qoder_enabled": cfg.QoderURL != nil, "qoder_control": cfg.QoderControlURL != nil, "opencode_enabled": cfg.OpenCodeURL != nil, "ccr_enabled": cfg.CCRURL != nil, "autoclaw_enabled": cfg.AutoClawURL != nil, "trae_enabled": cfg.TraeURL != nil, "traeai_enabled": cfg.TraeAIURL != nil, "raccoon_enabled": cfg.RaccoonURL != nil, "freellm_enabled": cfg.FreellmURL != nil, "apikeys_enabled": h.apiKeys != nil})
 	}))
 	h.mux.HandleFunc("POST /admin/logout", h.withAdmin(h.adminLogout))
 	h.mux.HandleFunc("GET /admin/zcode", h.withAdmin(h.adminZcodeStatus))
@@ -394,6 +404,9 @@ func NewServer(cfg Config) (http.Handler, error) {
 	// 路由别名：GET 读当前配置与各通道模型目录，POST 落盘并即时生效。
 	h.mux.HandleFunc("GET /admin/route", h.withAdmin(h.writeRouteState))
 	h.mux.HandleFunc("POST /admin/route/save", h.withAdmin(h.adminRouteSave))
+	// 附加 API Key（多 Key 归因）：GET 读清单，POST 全量保存（新增/启停/删除整表提交）。
+	h.mux.HandleFunc("GET /admin/apikeys", h.withAdmin(h.adminAPIKeysState))
+	h.mux.HandleFunc("POST /admin/apikeys", h.withAdmin(h.adminAPIKeysSave))
 	// 整组启停：模型列表与别名表共用同一个写入口，保证两边状态一致。
 	h.mux.HandleFunc("POST /admin/route/switch", h.withAdmin(h.adminRouteSwitch))
 	// 单别名测试：发一条最小对话，把可用性与速度/失败原因直接带回页面。

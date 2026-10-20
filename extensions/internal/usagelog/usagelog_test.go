@@ -297,6 +297,53 @@ func TestSanitizeRequestID(t *testing.T) {
 	}
 }
 
+// TestOriginOfReadsKeyLabel 锁定 Key 归属标签的入账路径：console 换发时注入的
+// 内部头进 Origin；缺头留空；不合规形态（控制字符/非 ASCII/空白）整体不留。
+func TestOriginOfReadsKeyLabel(t *testing.T) {
+	r := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil)
+	r.Header.Set("X-Console-Key-Label", "ci-bot")
+	if got := OriginOf(r.Context(), r); got.KeyLabel != "ci-bot" {
+		t.Fatalf("内部头应原样入账：%q", got.KeyLabel)
+	}
+
+	empty := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil)
+	if got := OriginOf(empty.Context(), empty); got.KeyLabel != "" {
+		t.Fatalf("缺头应留空：%q", got.KeyLabel)
+	}
+
+	hostile := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil)
+	hostile.Header.Set("X-Console-Key-Label", "a\tb")
+	if got := OriginOf(hostile.Context(), hostile); got.KeyLabel != "" {
+		t.Fatalf("含空白的标签应整体不留：%q", got.KeyLabel)
+	}
+
+	nonASCII := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil)
+	nonASCII.Header.Set("X-Console-Key-Label", "标签")
+	if got := OriginOf(nonASCII.Context(), nonASCII); got.KeyLabel != "" {
+		t.Fatalf("非 ASCII 的标签应整体不留：%q", got.KeyLabel)
+	}
+}
+
+// TestSanitizeKeyLabel 锁定清洗函数本身：与 SanitizeRequestID 同族口径，
+// 上限 64 字节。「默认」是 console 主 Key 的保留标签，落账侧原样透传不做特判
+//（保留约束由 console 创建入口 enforce，core 不重复实现；中文标签在清洗层
+// 因非 ASCII 整体丢弃，console 创建入口同样只收 ASCII，口径闭环）。
+func TestSanitizeKeyLabel(t *testing.T) {
+	for _, tc := range []struct{ in, want string }{
+		{"", ""},
+		{"  ci-bot  ", "ci-bot"},
+		{strings.Repeat("k", maxKeyLabel+10), strings.Repeat("k", maxKeyLabel)},
+		{"默认", ""},
+		{"with space", ""},
+		{"a\nb", ""},
+		{"tag-01_x", "tag-01_x"},
+	} {
+		if got := SanitizeKeyLabel(tc.in); got != tc.want {
+			t.Fatalf("SanitizeKeyLabel(%q)=%q，want %q", tc.in, got, tc.want)
+		}
+	}
+}
+
 func TestDeniedRecordsStayOutOfUsageQueries(t *testing.T) {
 	dir := t.TempDir()
 	l, err := Open(dir)
