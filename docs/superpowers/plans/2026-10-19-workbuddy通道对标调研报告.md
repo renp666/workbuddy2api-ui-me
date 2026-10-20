@@ -116,6 +116,28 @@
 - 分类权威在 `upstream.Classify`（`upstream/internal/upstream/client.go`）：404 → `ErrNotFound`；`applyErrorPolicy`（handler.go:737-740）→ `Cooldown(uid, CoolSoft, notFoundCooldown, "upstream 404")`，不参与 softStreak 指数退避。
 - 与 panel 语义一致，属快照基点自带（非本仓补丁引入）；该行为有 `handler_test.go` 覆盖。本项关闭。
 
+### §三 #4 落地记录（2026-10-20，客户端 X-Request-Id + 成功率双口径）
+
+实现：`console/proxy.go`（`newRequestID` 32-hex crypto/rand、`withRequestID`/`requestIDFrom` ctx 键、`observePublicExits` 生成点：响应头 `X-Request-Id` 回客户端 + 内部头 `X-Console-Request-Id` 传 core/旁路；入站 `X-Request-Id` 一律剥除恒服务端生成）+ `console/errors.go`（errorEvent 增 `RequestID`/`Produced`；完成口径 `produced := ok && wroteBytes>0 && !emptyStream`，`emptyStreamMarker` 精确匹配 core 空流兜底帧 `data: {"error":{"message":"empty upstream stream"`）+ `extensions/internal/usagelog`（Entry/Origin 增 RequestID，`SanitizeRequestID` ≤128 字节可打印 ASCII 含空白整体不留）+ bridge/console 两侧 usage_report 贯穿。管理端点新增 HTTP 成功率/完成成功率/平均耗时三卡与错误流水 request_id 列。
+
+grill 拍板三处：请求 ID 恒服务端生成（防客户端撞号污染账本）；空流判定精确匹配空流帧前缀（「字节>0」被实测证伪——core 空流回 200+error 帧约 60 字节）；健康页错误区块扩展（不新建页签）。
+
+通道统一性：core 与八条旁路通道统一贯穿（usage_report 同字段），与 panel 单网关形态不同处在于本仓是 console+九通道两层，请求 ID 在 console 出口层生成、经内部头进各通道账本。
+
+### §三 #5 落地记录（2026-10-20，多 API Key 归因）
+
+实现（commit e813afe）：
+- **console 权威**（grill 拍板）：`console/apikeys.go` 附加 Key 清单（`apikeys.json` 与 routes.json 同目录、0600、原子落盘、损坏 fail-closed 降级只认主 Key、上限 32 条、标签「默认」保留给主 Key）；`apiKeyGate` 挂 `/v1/*` 与 `GET /status`（`/healthz` 保持免鉴权）——**清单为空时直通**（行为与现状完全一致，既有测试零改动全绿），清单非空时未命中自产 401（OpenAI 错误形态，401 也带 X-Request-Id 且进错误账本）。
+- **出口换发**：core 通道 Rewrite 里按 ctx 标签统一换发 `Authorization: Bearer cfg.APIKey` + 注入 `X-Console-Key-Label`（附加 Key 明文不出 console）；旁路通道 Rewrite 本就换 sidecar key，天然可用；旁路 usage 上报带 `key_label`，sidecar 不感知。
+- **core 落账侧**：usagelog `Origin`/`Entry` 增 `KeyLabel`（`OriginOf` 读 `X-Console-Key-Label` 头 + `SanitizeKeyLabel` ≤64 字节可打印 ASCII 含空白整体不留），补丁 0008/0014 调用点零改动；bridge usage_report 收口清洗。经 console 部署时不可伪造（stripPrivateHeaders 剥 `x-console-` 前缀），源码模式按客户端自报处理。
+- **管理页签「API 密钥」**：清单整表编辑（添加/启停/删除进缓冲、保存整表提交即生效）、Key 自动生成（32 字节 base64url）、按 key_label 聚合用量（缺标签历史调用归「（未标注）」、缺失 tokens 不冒充 0、has_credit=false 记「—」）。
+
+grill 拍板三处：鉴权权威 console（core 零补丁）；本批范围归因+报表（按 Key 限制可用模型留下一批）；主 Key 保留为「默认」标签不可删。
+
+通道统一性：九通道账本统一带 key_label——core 经换发头落账、八条旁路经 usage_report 上报落账；按 Key 的模型限制（下一批）同样要在 gate 层统一实现，不逐通道做。
+
+测试：console apikeys_test.go 6 例（校验/持久化降级/gate 三态/status+models 约束/上报贯穿）+ core usagelog/bridge 新增断言；console go 全量 + race（Docker golang:1.23）全绿，node 213/213，usagelog/bridge race 绿（bridge 既有 Windows 基线失败 Access is denied 在案除外）。
+
 ## 七、待拍板事项
 
 1. P1 三项（#1 #2 #3）是否立项？建议按 1→2→3 独立批次推进，每批走 lab 验证再生产发版。
