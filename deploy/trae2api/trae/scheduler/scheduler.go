@@ -160,7 +160,10 @@ func (s *Scheduler) RunRefreshNow() {
 		}
 		if err := a.SaveAtomic(); err != nil {
 			log.Printf("refresh %s save: %v", st.UID, err)
+			continue
 		}
+		// 刷新成功即凭据可用：清掉此前刷新失败留下的冷却，别让面板一直显示旧错误。
+		s.cfg.Pool.ClearCooldownIfReason(st.UID, "refresh: ")
 	}
 }
 

@@ -339,6 +339,9 @@ func (h *Handler) adminRefreshAccount(w http.ResponseWriter, r *http.Request) {
 		writeOpenAIError(w, http.StatusInternalServerError, "save_failed", err.Error())
 		return
 	}
+	// 手动刷新成功 = 凭据可用：把之前那次刷新失败留下的冷却一并清掉，
+	// 否则点完「刷新凭据」看到的仍是冷却中 + 旧错误，看不出已经修好。
+	h.cfg.Pool.ClearCooldownIfReason(uid, "refresh: ")
 	st, _ := h.cfg.Pool.Status(uid)
 	writeJSON(w, http.StatusOK, map[string]any{
 		"uid":        uid,

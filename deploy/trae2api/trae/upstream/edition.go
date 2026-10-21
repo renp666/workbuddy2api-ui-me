@@ -24,11 +24,15 @@ type Edition struct {
 	Key   string
 	Label string
 
-	AgentHost     string // 对话 + 模型目录
-	OAuthHost     string // ExchangeToken / GetUserInfo 回落 host（账号自带 ApiHost 优先）
-	UgHost        string // 权益/签到 host
-	ConsoleHost   string // 浏览器授权页 host
-	ClientID      string // authConfig.SOLO.stable，两区共用（本机 product.json + 差分实测）
+	AgentHost   string // 对话 + 模型目录
+	OAuthHost   string // ExchangeToken / GetUserInfo 回落 host（账号自带 ApiHost 优先）
+	UgHost      string // 权益/签到 host
+	ConsoleHost string // 浏览器授权页 host
+	ClientID    string // 主 client_id（授权页 URL 与首次刷新用它）
+	// ClientIDAlt 备用类别 client_id：刷新遇 10101「not matched to the client」时再试一次。
+	// 存在的理由：凭据由哪类客户端签发不由区域决定（国际版桌面客户端是 TRAE 类，
+	// 国内 SOLO 是 SOLO 类），而凭据文件本身不记录类别，只能试出来并记住。
+	ClientIDAlt   string
 	AppID         string
 	IdeVersion    string
 	IdeVersionCo  string // X-Ide-Version-Code：填错会被上游把模型目录裁空（实测 2026-10-16）
@@ -65,7 +69,8 @@ func EditionCN() Edition {
 		OAuthHost:        OAuthHost,
 		UgHost:           UgHost,
 		ConsoleHost:      ConsoleHost,
-		ClientID:         ClientID,
+		ClientID:         ClientIDSOLO,
+		ClientIDAlt:      ClientIDTrae,
 		AppID:            AppID,
 		IdeVersion:       IdeVersion,
 		IdeVersionCo:     IdeVersionCode,
@@ -90,7 +95,8 @@ func EditionIntl() Edition {
 		OAuthHost:     "https://ug-normal.trae.ai",
 		UgHost:        "https://ug-normal.trae.ai",
 		ConsoleHost:   "https://www.trae.ai",
-		ClientID:      ClientID,
+		ClientID:      ClientIDSOLO,
+		ClientIDAlt:   ClientIDTrae,
 		AppID:         AppID,
 		IdeVersion:    IdeVersion,
 		IdeVersionCo:  IdeVersionCode,
@@ -124,6 +130,7 @@ func FromEnv() Edition {
 	ed.UgHost = envStr("TRAE_UG_HOST", ed.UgHost)
 	ed.ConsoleHost = envStr("TRAE_CONSOLE_HOST", ed.ConsoleHost)
 	ed.ClientID = envStr("TRAE_CLIENT_ID", ed.ClientID)
+	ed.ClientIDAlt = envStr("TRAE_CLIENT_ID_ALT", ed.ClientIDAlt)
 	ed.IdeVersion = envStr("TRAE_IDE_VERSION", ed.IdeVersion)
 	ed.IdeVersionCo = envStr("TRAE_IDE_VERSION_CODE", ed.IdeVersionCo)
 	return ed
@@ -153,6 +160,9 @@ func (e Edition) normalized() Edition {
 		}
 		if e.ClientID != "" {
 			out.ClientID = e.ClientID
+		}
+		if e.ClientIDAlt != "" {
+			out.ClientIDAlt = e.ClientIDAlt
 		}
 		if e.AppID != "" {
 			out.AppID = e.AppID
@@ -188,6 +198,9 @@ func (e Edition) normalized() Edition {
 	}
 	if e.ClientID == "" {
 		e.ClientID = def.ClientID
+	}
+	if e.ClientIDAlt == "" {
+		e.ClientIDAlt = def.ClientIDAlt
 	}
 	if e.AppID == "" {
 		e.AppID = def.AppID

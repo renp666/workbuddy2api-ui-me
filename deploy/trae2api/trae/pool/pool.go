@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strings"
 	"sync"
 	"time"
 
@@ -240,6 +241,29 @@ func (p *Pool) Disable(uid, reason string) {
 		e.reason = reason
 	}
 	p.saveLocked()
+}
+
+// ClearCooldownIfReason 解冻一个账号，但只解 reason 带指定前缀的那些冷却。
+//
+// 为什么需要它：刷新失败会给账号挂上中冷却（10 分钟级），随后人工重导凭据或调度器把
+// token 修好了，面板上却仍旧显示「冷却中 + 那条刷新错误」直到冷却自然到期——看起来像
+// 没修好。反过来，plan 权益不足（12h）与 429 这类与 token 无关的冷却不能被一次成功的
+// 刷新抹掉，所以按 reason 前缀区分，而不是无差别解冻。
+func (p *Pool) ClearCooldownIfReason(uid, prefix string) bool {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	e, ok := p.byUID[uid]
+	if !ok || e.disabled || e.until.IsZero() {
+		return false
+	}
+	if prefix != "" && !strings.HasPrefix(e.reason, prefix) {
+		return false
+	}
+	e.until = time.Time{}
+	e.reason = ""
+	e.errCount = 0
+	p.saveLocked()
+	return true
 }
 
 // ReenableIfCredits 签到后解冻：仅当 remain > 0 且账号处于冷却（非禁用）时恢复。

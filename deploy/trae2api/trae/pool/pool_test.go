@@ -344,3 +344,52 @@ func TestStateFileBackwardCompat(t *testing.T) {
 		t.Fatalf("old-format account should be pickable, got %+v", got)
 	}
 }
+
+// TestClearCooldownIfReasonOnlyClearsMatchingPrefix 守住边界：
+// 只解「因刷新失败」留下的冷却，plan 权益不足（12h）与 429 不能被一次成功刷新抹掉。
+func TestClearCooldownIfReasonOnlyClearsMatchingPrefix(t *testing.T) {
+	p := New("")
+	p.Add(&auth.Auth{UID: "u1"})
+	p.Add(&auth.Auth{UID: "u2"})
+	p.Add(&auth.Auth{UID: "u3"})
+	p.Cooldown("u1", CoolErr, 10*time.Minute, "refresh: upstream 400: ...")
+	p.Cooldown("u2", CoolPlan, 12*time.Hour, "plan 权益不足")
+	p.Cooldown("u3", CoolSoft, time.Minute, "429 rate limit")
+
+	if !p.ClearCooldownIfReason("u1", "refresh: ") {
+		t.Error("refresh 前缀的冷却应被清掉")
+	}
+	if p.ClearCooldownIfReason("u2", "refresh: ") {
+		t.Error("plan 冷却不能被清掉")
+	}
+	if p.ClearCooldownIfReason("u3", "refresh: ") {
+		t.Error("429 冷却不能被清掉")
+	}
+	for _, uid := range []string{"u1", "u2", "u3"} {
+		st, _ := p.Status(uid)
+		switch uid {
+		case "u1":
+			if st.Cooling || st.Reason != "" {
+				t.Errorf("u1 应恢复可用：%+v", st)
+			}
+		default:
+			if !st.Cooling {
+				t.Errorf("%s 应仍在冷却：%+v", uid, st)
+			}
+		}
+	}
+}
+
+// TestClearCooldownIfReasonSkipsDisabled 守住：硬禁用（session 失效）只能人工恢复。
+func TestClearCooldownIfReasonSkipsDisabled(t *testing.T) {
+	p := New("")
+	p.Add(&auth.Auth{UID: "u1"})
+	p.Disable("u1", "manual refresh: session dead")
+	if p.ClearCooldownIfReason("u1", "refresh: ") {
+		t.Error("禁用态不该被清冷却解冻")
+	}
+	st, _ := p.Status("u1")
+	if !st.Disabled {
+		t.Errorf("仍应为禁用态：%+v", st)
+	}
+}

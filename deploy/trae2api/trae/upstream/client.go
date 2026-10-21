@@ -173,6 +173,12 @@ func (c *Client) RefreshTokenIfNeeded(a *auth.Auth, skew time.Duration) (bool, e
 
 // refreshLocked 是 RefreshToken 的持锁内部实现；调用方必须已持有 a 写锁。
 // 任何失败路径都不改写 a 字段，保证旧 refreshToken 可重试。
+//
+// client_id 按候选链逐个试：ExchangeToken 要求 refreshToken 与**签发它的客户端类别**
+// 同类（SOLO.stable / TRAE.stable），否则上游 10101
+// "refresh token is not matched to the client"。凭据文件不带类别信息，
+// 而类别不由区域决定（国际版桌面客户端是 TRAE 类，国内 SOLO 是 SOLO 类），
+// 所以这里先试凭据记住的、再试区域默认、最后试备用类别，成功后写回 a.ClientID。
 func (c *Client) refreshLocked(a *auth.Auth) error {
 	if strings.TrimSpace(a.RefreshToken) == "" {
 		return fmt.Errorf("no refreshToken")
@@ -181,8 +187,76 @@ func (c *Client) refreshLocked(a *auth.Auth) error {
 	if host == "" {
 		host = c.oauthBase()
 	}
+	var lastErr error
+	for _, cid := range c.refreshCandidates(a) {
+		err := c.exchangeLocked(a, host, cid)
+		if err == nil {
+			a.ClientID = cid
+			return nil
+		}
+		lastErr = err
+		// 只有"类别不匹配"值得换一个 client_id 再试；token 真失效/网络错换谁都一样。
+		if !isClientMismatch(err) {
+			return humanizeRefreshError(err)
+		}
+	}
+	return humanizeRefreshError(lastErr)
+}
+
+// humanizeRefreshError 把刷新失败的上游原文换成面板上能读懂、能照做的说明。
+// 保留 *Error 类型与 Kind/Status：调用方靠 errors.As 判断 ErrSessionDead 决定是否禁用，
+// 换成裸 error 会让"token 失效"退化成普通冷却，账号在池子里反复被选中又反复失败。
+func humanizeRefreshError(err error) error {
+	var ue *Error
+	if !errors.As(err, &ue) {
+		return err
+	}
+	switch {
+	case isClientMismatch(err):
+		return &Error{Kind: ue.Kind, Status: ue.Status,
+			Msg: "refresh token 与客户端类别不匹配（SOLO/TRAE 两类都已试过），需重新登录或重新导入凭据"}
+	case strings.Contains(ue.Msg, "refresh token is invalid"):
+		return &Error{Kind: ue.Kind, Status: ue.Status,
+			Msg: "refresh token 已失效（可能已被桌面客户端或另一实例轮换），需重新登录或重新导入凭据"}
+	}
+	return err
+}
+
+// refreshCandidates 返回本次刷新依次尝试的 client_id：
+// 凭据记住的 > 区域默认 > 区域备用类别，去重后保序。
+func (c *Client) refreshCandidates(a *auth.Auth) []string {
+	ed := c.ed()
+	out := make([]string, 0, 3)
+	seen := make(map[string]struct{}, 3)
+	for _, id := range []string{a.ClientID, ed.ClientID, ed.ClientIDAlt} {
+		id = strings.TrimSpace(id)
+		if id == "" {
+			continue
+		}
+		if _, dup := seen[id]; dup {
+			continue
+		}
+		seen[id] = struct{}{}
+		out = append(out, id)
+	}
+	return out
+}
+
+// isClientMismatch 判别上游"refreshToken 与 client 不同类"的错误。
+// 只认 10101 与它的原文案，避免把其它 4xx 也当成"换个类别再试"而多打一次上游。
+func isClientMismatch(err error) bool {
+	var ue *Error
+	if !errors.As(err, &ue) {
+		return false
+	}
+	return strings.Contains(ue.Msg, "not matched to the client") || strings.Contains(ue.Msg, `"Code":"10101"`)
+}
+
+// exchangeLocked 用指定 client_id 走一次 ExchangeToken，成功后改写 a 的 token 字段。
+// 失败时不改 a（上游失败不会轮换 refreshToken），旧 token 仍可重试。
+func (c *Client) exchangeLocked(a *auth.Auth, host, clientID string) error {
 	body := map[string]any{
-		"ClientID":     c.ed().ClientID,
+		"ClientID":     clientID,
 		"RefreshToken": a.RefreshToken, // 已持 a 写锁，直接读
 		"ClientSecret": "-",
 		"UserID":       "",

@@ -33,7 +33,12 @@ type Auth struct {
 	UID          string
 	EnterpriseID string
 	Nickname     string
-	FilePath     string // 落盘路径；refresh 后原子写回
+	// ClientID 上一次刷新成功的客户端类别 client_id（SOLO/TRAE 两类）。
+	// 上游 ExchangeToken 要求 refreshToken 与签发时的 client 同类，否则 10101
+	// "refresh token is not matched to the client"；凭据本身不带这个信息，
+	// 由 upstream 试出来后写回并持久化，后续刷新直接命中，不再试错。
+	ClientID string
+	FilePath string // 落盘路径；refresh 后原子写回
 }
 
 // Lock 供同进程内其他包（upstream.RefreshToken）在改写 Auth 字段期间加写锁。
@@ -90,6 +95,7 @@ func parseNested(raw []byte) (*Auth, error) {
 			ApiHost      string `json:"apiHost"`
 			MachineID    string `json:"machineId"`
 			DeviceID     string `json:"deviceId"`
+			ClientID     string `json:"clientId"`
 		} `json:"auth"`
 		Account struct {
 			UID          string `json:"uid"`
@@ -108,6 +114,7 @@ func parseNested(raw []byte) (*Auth, error) {
 		ApiHost:      n.Auth.ApiHost,
 		MachineID:    n.Auth.MachineID,
 		DeviceID:     n.Auth.DeviceID,
+		ClientID:     n.Auth.ClientID,
 		UID:          n.Account.UID,
 		EnterpriseID: n.Account.EnterpriseID,
 		Nickname:     n.Account.Nickname,
@@ -126,6 +133,7 @@ func parseFlat(raw []byte) (*Auth, error) {
 		ApiHost      string `json:"apiHost"`
 		MachineID    string `json:"machineId"`
 		DeviceID     string `json:"deviceId"`
+		ClientID     string `json:"clientId"`
 		UID          string `json:"uid"`
 		EnterpriseID string `json:"enterpriseId"`
 		Nickname     string `json:"nickname"`
@@ -141,6 +149,7 @@ func parseFlat(raw []byte) (*Auth, error) {
 		ApiHost:      f.ApiHost,
 		MachineID:    f.MachineID,
 		DeviceID:     f.DeviceID,
+		ClientID:     f.ClientID,
 		UID:          f.UID,
 		EnterpriseID: f.EnterpriseID,
 		Nickname:     f.Nickname,
@@ -190,16 +199,21 @@ func (a *Auth) saveAtomicLocked() error {
 	if a.FilePath == "" {
 		return fmt.Errorf("no FilePath set")
 	}
+	authDoc := map[string]any{
+		"accessToken":  a.AccessToken,
+		"refreshToken": a.RefreshToken,
+		"expiresAt":    a.ExpiresAt,
+		"domain":       a.Domain,
+		"apiHost":      a.ApiHost,
+		"machineId":    a.MachineID,
+		"deviceId":     a.DeviceID,
+	}
+	// 只在已探明类别时写：空值写进去会让文件看起来"有类别"，下次刷新又得重新试。
+	if a.ClientID != "" {
+		authDoc["clientId"] = a.ClientID
+	}
 	doc := map[string]any{
-		"auth": map[string]any{
-			"accessToken":  a.AccessToken,
-			"refreshToken": a.RefreshToken,
-			"expiresAt":    a.ExpiresAt,
-			"domain":       a.Domain,
-			"apiHost":      a.ApiHost,
-			"machineId":    a.MachineID,
-			"deviceId":     a.DeviceID,
-		},
+		"auth": authDoc,
 		"account": map[string]any{
 			"uid":          a.UID,
 			"enterpriseId": a.EnterpriseID,

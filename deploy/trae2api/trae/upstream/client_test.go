@@ -354,3 +354,77 @@ func TestFetchModelsScopeKeepsLocalModelsOutOfBothScopes(t *testing.T) {
 		}
 	}
 }
+
+// TestRefreshTokenFallsBackToAltClientID 守住「凭据类别与区域无关」这条实测结论：
+// 国际版桌面客户端签发的 refreshToken 属于 TRAE 类 client_id，
+// 用 SOLO 类刷新会得到 10101 "refresh token is not matched to the client"。
+// 刷新链必须自动切到备用类别并记住，否则整条通道的 token 一旦过期就永久不可用。
+func TestRefreshTokenFallsBackToAltClientID(t *testing.T) {
+	var seen []string
+	c := testClient(func(r *http.Request) (*http.Response, error) {
+		body, _ := io.ReadAll(r.Body)
+		switch {
+		case bytes.Contains(body, []byte(`"ClientID":"`+ClientIDSOLO+`"`)):
+			seen = append(seen, ClientIDSOLO)
+			return jsonResp(400, `{"ResponseMetadata":{"Error":{"Code":"10101","Data":{"__Message.error":"refresh token is not matched to the client"},"StandardCode":"040004"}}}`), nil
+		case bytes.Contains(body, []byte(`"ClientID":"`+ClientIDTrae+`"`)):
+			seen = append(seen, ClientIDTrae)
+			return jsonResp(200, `{"Result":{"Token":"newat","RefreshToken":"newrt","TokenExpireAt":1786847930141}}`), nil
+		}
+		return nil, errors.New("unexpected client id: " + string(body))
+	})
+	a := &auth.Auth{AccessToken: "at", RefreshToken: "rt", ExpiresAt: 1, ApiHost: "https://oauth.example"}
+	if err := c.RefreshToken(a); err != nil {
+		t.Fatalf("refresh 应回退到备用 client_id 成功: %v", err)
+	}
+	if len(seen) != 2 || seen[0] != ClientIDSOLO || seen[1] != ClientIDTrae {
+		t.Errorf("尝试顺序 = %v，want [%s %s]", seen, ClientIDSOLO, ClientIDTrae)
+	}
+	if a.ClientID != ClientIDTrae {
+		t.Errorf("a.ClientID=%q，want 记住 %q（否则每次刷新都要重试一轮）", a.ClientID, ClientIDTrae)
+	}
+	if a.AccessToken != "newat" || a.RefreshToken != "newrt" {
+		t.Errorf("token 未更新: %+v", a)
+	}
+}
+
+// TestRefreshTokenUsesRememberedClientID 守住「记住后不再试错」：
+// 凭据已存 clientId 时必须直接命中，一次请求搞定。
+func TestRefreshTokenUsesRememberedClientID(t *testing.T) {
+	calls := 0
+	c := testClient(func(r *http.Request) (*http.Response, error) {
+		calls++
+		body, _ := io.ReadAll(r.Body)
+		if !bytes.Contains(body, []byte(`"ClientID":"`+ClientIDTrae+`"`)) {
+			return jsonResp(400, `{"ResponseMetadata":{"Error":{"Code":"10101","Data":{"__Message.error":"refresh token is not matched to the client"}}}}`), nil
+		}
+		return jsonResp(200, `{"Result":{"Token":"newat","RefreshToken":"newrt","TokenExpireAt":1786847930141}}`), nil
+	})
+	a := &auth.Auth{AccessToken: "at", RefreshToken: "rt", ExpiresAt: 1, ApiHost: "https://oauth.example", ClientID: ClientIDTrae}
+	if err := c.RefreshToken(a); err != nil {
+		t.Fatalf("refresh: %v", err)
+	}
+	if calls != 1 {
+		t.Errorf("ExchangeToken 调了 %d 次，want 1（记住的类别应直接命中）", calls)
+	}
+}
+
+// TestRefreshTokenStopsOnNonMismatchError 守住「不把别的 4xx 当成类别不匹配」：
+// token 真失效时换 client_id 也没有意义，只会多打一次上游。
+func TestRefreshTokenStopsOnNonMismatchError(t *testing.T) {
+	calls := 0
+	c := testClient(func(r *http.Request) (*http.Response, error) {
+		calls++
+		return jsonResp(401, `{"ResponseMetadata":{"Error":{"Code":"20101","Data":{"__Message.error":"refresh token is invalid"}}}}`), nil
+	})
+	a := &auth.Auth{AccessToken: "at", RefreshToken: "rt", ExpiresAt: 1, ApiHost: "https://oauth.example"}
+	if err := c.RefreshToken(a); err == nil {
+		t.Fatal("want error")
+	}
+	if calls != 1 {
+		t.Errorf("ExchangeToken 调了 %d 次，want 1（非类别不匹配不该重试）", calls)
+	}
+	if a.ClientID != "" {
+		t.Errorf("失败时不应写入 ClientID，得到 %q", a.ClientID)
+	}
+}

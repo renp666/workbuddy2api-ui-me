@@ -495,6 +495,9 @@ func (h *Handler) chatCompletions(w http.ResponseWriter, r *http.Request) {
 		if refreshed {
 			_ = acct.SaveAtomic()
 		}
+		// token 刷新成功即说明凭据是好的：清掉此前因刷新失败挂上的软冷却，
+		// 否则面板会一直显示「冷却中 + 那条刷新错误」直到中冷却自然到期，像没修好。
+		h.cfg.Pool.ClearCooldownIfReason(acct.UID, "refresh: ")
 
 		rc, status, respBody, terr := h.cfg.Upstream.ChatStream(acct, body)
 		if terr != nil {

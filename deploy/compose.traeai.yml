@@ -10,6 +10,11 @@
 #      TRAE_AGENT_HOST 单项覆盖，不必改代码重 build；
 #   3. 容器读不到宿主 %APPDATA%，所以凭据入口是页签里粘贴桌面客户端的 storage.json
 #      （sidecar 用 Go 标准库解 tc/AES-128-CBC 信封），或粘贴 OAuth 回调链接。
+#   4. 凭据的 client_id 类别随签发客户端而定，与区域无关：国际版桌面客户端是 TRAE 类
+#      （ono9krqynydwx5），国内 SOLO 是 SOLO 类（en1oxy7wnw8j9n）。ExchangeToken 要求两者同类，
+#      否则 10101 "refresh token is not matched to the client"，表现为 token 过期后通道永久不可用。
+#      sidecar 刷新时按「凭据记住的 → 区域默认 → 备用类别」自动试并写回，无需在此配置；
+#      需要强制时用 TRAE_CLIENT_ID / TRAE_CLIENT_ID_ALT 覆盖。
 #
 # 容器加入 console 的网络命名空间（network_mode: service:console），只绑 127.0.0.1:7869：
 # 公共口只经 console 发布，sidecar 不对 Compose 网络和宿主暴露。console 注入 Bearer 密钥，
