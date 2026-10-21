@@ -43,6 +43,9 @@ type Entry struct {
 	API        string   `json:"api,omitempty"`        // 协议入口："chat" | "messages" | "responses"
 	RequestID  string   `json:"request_id,omitempty"` // 网关出口请求 ID（console 生成，贯穿九通道）
 	KeyLabel   string   `json:"key_label,omitempty"`  // 客户端 API Key 标签（console 多 Key 归属，主 Key 记「默认」）
+	// CostUSD 落账时按价目表快照的等价美元花费（OpenRouter 价估算，prices.go）。
+	// nil = 未定价（无价目文件/模型不在表内/token 未观测），缺失≠0，页面写「—」。
+	CostUSD *float64 `json:"cost_usd,omitempty"`
 }
 
 // Denied 一次鉴权失败留痕。只有来源观测，不带账号与模型：key 不对时
@@ -56,7 +59,8 @@ type Denied struct {
 
 // Summary 时间范围内的聚合。Prompt/Completion/Credit 只累计已知观测；
 // Missing 按字段各自计数（输入回报了、输出没回报是真实存在的一种响应），
-// 让展示层区分「0 消耗」与「未观测」，不把缺失当零。
+// 让展示层区分「0 消耗」与「未观测」，不把缺失当零。Cost 同口径：只累计
+// 落账时已定价的快照值，CostMissing 计未定价条数。
 type Summary struct {
 	Calls             int     `json:"calls"`
 	Prompt            int64   `json:"prompt_tokens"`
@@ -65,6 +69,8 @@ type Summary struct {
 	CreditMissing     int     `json:"credit_missing"`
 	PromptMissing     int     `json:"prompt_missing"`
 	CompletionMissing int     `json:"completion_missing"`
+	Cost              float64 `json:"cost_usd"`
+	CostMissing       int     `json:"cost_missing"`
 }
 
 // Log 按天文件的追加式用量账本。零值不可用，经 Open 构造。
@@ -87,6 +93,11 @@ func Open(dir string) (*Log, error) {
 		return nil, err
 	}
 	l := &Log{dir: dir}
+	// 价目文件约定在 data 目录（usage 的上一级）：runtime/wb2api/data/prices.json，
+	// 用户把 OpenRouter 公布价复制进去即生效，size/mtime 变化自动热重载（prices.go）。
+	pricesPath := filepath.Join(filepath.Dir(dir), "prices.json")
+	priceFile.Store(&pricesPath)
+	refreshPriceTable(true)
 	if _, err := l.PruneDetails(detailKeepDays, time.Now()); err != nil {
 		log.Print("WARN: [usagelog] prune: ", err)
 	}
@@ -130,6 +141,10 @@ func RecordAuth(acct *auth.Auth, model, mode string, prompt, completion int, cre
 	}
 	if hasCredit {
 		e.Credit = &credit
+	}
+	// 价目快照在写入前完成：此后调价只影响新调用，历史账目不漂移。
+	if cost, ok := CostUSDFor(model, prompt, completion); ok {
+		e.CostUSD = &cost
 	}
 	l.Record(e)
 	if ob := tokenObserver.Load(); ob != nil {
@@ -351,6 +366,11 @@ func Summarize(entries []Entry) Summary {
 			s.Credit += *e.Credit
 		} else {
 			s.CreditMissing++
+		}
+		if e.CostUSD != nil {
+			s.Cost += *e.CostUSD
+		} else {
+			s.CostMissing++
 		}
 	}
 	return s

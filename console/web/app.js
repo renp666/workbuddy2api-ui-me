@@ -1356,7 +1356,7 @@ function shareCell(value,total){
 // summarizeUsage 复刻 core usagelog.Summarize 口径：输入与输出各自判定未知（<0 不累加、
 // 各自计入 prompt_missing / completion_missing），credit 缺失（null）不累加且计入 credit_missing。
 // 一个通道只回报了输入、没回报输出是真实存在的响应，把输出当 0 会静悄悄少报总量。
-function summarizeUsage(items){const s={calls:items.length,prompt:0,completion:0,credit:0,creditMissing:0,promptMissing:0,completionMissing:0};for(const e of items){if(e.prompt_tokens>=0)s.prompt+=e.prompt_tokens;else s.promptMissing++;if(e.completion_tokens>=0)s.completion+=e.completion_tokens;else s.completionMissing++;if(e.credit!=null)s.credit+=e.credit;else s.creditMissing++;}return s;}
+function summarizeUsage(items){const s={calls:items.length,prompt:0,completion:0,credit:0,creditMissing:0,promptMissing:0,completionMissing:0,cost:0,costMissing:0};for(const e of items){if(e.prompt_tokens>=0)s.prompt+=e.prompt_tokens;else s.promptMissing++;if(e.completion_tokens>=0)s.completion+=e.completion_tokens;else s.completionMissing++;if(e.credit!=null)s.credit+=e.credit;else s.creditMissing++;if(e.cost_usd!=null)s.cost+=e.cost_usd;else s.costMissing++;}return s;}
 // ── 数值展示口径：全站唯一一处，改这里全站生效 ──
 // tokenParts 三档动态展示：<1万 直接给原值；≥1万 原值为主、副行给「万」值；
 // ≥1亿 以「亿」为主、原值退到副行。未观测（<0）仍是「—」，不把缺失当 0。
@@ -1378,6 +1378,15 @@ function formatCredit(value){
 }
 // formatCreditGroup 与上同形，但走积分口径（2 位小数）。
 function formatCreditGroup(total,missing,calls){return calls>0&&missing===calls?'—':formatCredit(total);}
+// formatCost 价目快照（USD）：金额常为毫级，<0.01 给 4 位小数、否则 2 位；缺失仍「—」。
+function formatCost(value){
+ if(value==null||value==='')return '—';
+ const n=Number(value);
+ if(!Number.isFinite(n))return '—';
+ return '$'+(n!==0&&Math.abs(n)<0.01?n.toFixed(4):n.toFixed(2));
+}
+// formatCostGroup 花费口径：整组未定价写「—」，有定价的组给合计（缺失条目不计入）。
+function formatCostGroup(total,missing,calls){return calls>0&&missing===calls?'—':formatCost(total);}
 // usageTokenTotal Tokens 合计口径：输入与输出都没有任何观测时返回 null（调用点写「—」），
 // 否则给出可展示的合计值（0 条观测不等于 0 消耗）。两处指标条共用，避免各写一遍判据。
 function usageTokenTotal(s){return s.calls>0&&s.promptMissing===s.calls&&s.completionMissing===s.calls?null:s.prompt+s.completion;}
@@ -1406,10 +1415,12 @@ function renderUsage(data){
  $('usage-calls').textContent=String(summary.calls);
  setMetric('usage-tokens',usageTokenTotal(summary));
  $('usage-credit').textContent=formatCreditGroup(summary.credit,summary.creditMissing,summary.calls);
+ $('usage-cost').textContent=formatCostGroup(summary.cost,summary.costMissing,summary.calls);
  const notes=[];
  if(summary.promptMissing)notes.push(`${summary.promptMissing} 条记录未回报输入 token，未计入合计`);
  if(summary.completionMissing)notes.push(`${summary.completionMissing} 条记录未回报输出 token，未计入合计`);
  if(summary.creditMissing)notes.push(`${summary.creditMissing} 条记录未回报积分扣费，未计入合计`);
+ if(summary.costMissing)notes.push(`${summary.costMissing} 条未定价（模型不在价目表或价目文件未配置），未计入花费`);
  $('usage-note').textContent=notes.join('；');$('usage-note').hidden=!notes.length;
  // 鉴权失败留痕来自 core 的 denied 账本，按当前时间范围统计，与通道筛选无关；零失败不占位。
  const denied=data.denied||{},deniedCalls=denied.calls||0,deniedEl=$('usage-denied');
@@ -1427,7 +1438,7 @@ function renderUsage(data){
   const s=summarizeUsage(byChannel.get(c));const credit=s.calls?formatCreditGroup(s.credit,s.creditMissing,s.calls):'—';
   const tr=document.createElement('tr');tr.className='ch-'+c+' ch-band';
   const calls=numCell(String(s.calls));calls.append(shareCell(s.calls,all.length));
-  tr.append(channelCell(usageChannelNames[c],c),calls,tokenCell(s.prompt,s.promptMissing,s.calls),tokenCell(s.completion,s.completionMissing,s.calls),numCell(credit));
+  tr.append(channelCell(usageChannelNames[c],c),calls,tokenCell(s.prompt,s.promptMissing,s.calls),tokenCell(s.completion,s.completionMissing,s.calls),numCell(credit),numCell(formatCostGroup(s.cost,s.costMissing,s.calls)));
   distBody.append(tr);
  }
  $('usage-empty').hidden=items.length>0;
@@ -1445,7 +1456,7 @@ function renderUsageDetail(){
  for(const e of usageDetailRows.slice(start,start+usagePageSize)){
   const channel=usageChannelOf(e);
   const tr=document.createElement('tr');tr.className='ch-'+channel;
-  tr.append(cell(formatTaskTime(e.ts*1000)),channelCell(usageChannelNames[channel],channel),cell(e.account||e.uid||'—'),cell(e.model||'—'),cell(usageAPINames[e.api]||'—'),cell(usageModeNames[e.mode]||e.mode||'—'),numCell(formatUsageTokens(e.prompt_tokens)),numCell(formatUsageTokens(e.completion_tokens)),numCell(formatUsageCredit(e.credit)),cell(e.src||'—'),cell(clientLabel(e.client,channel)||'—'));
+  tr.append(cell(formatTaskTime(e.ts*1000)),channelCell(usageChannelNames[channel],channel),cell(e.account||e.uid||'—'),cell(e.model||'—'),cell(usageAPINames[e.api]||'—'),cell(usageModeNames[e.mode]||e.mode||'—'),numCell(formatUsageTokens(e.prompt_tokens)),numCell(formatUsageTokens(e.completion_tokens)),numCell(formatUsageCredit(e.credit)),numCell(formatCost(e.cost_usd)),cell(e.src||'—'),cell(clientLabel(e.client,channel)||'—'));
   body.append(tr);
  }
  renderUsagePager(pages);

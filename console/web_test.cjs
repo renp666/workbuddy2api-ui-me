@@ -2524,6 +2524,30 @@ test('credit packages distribution lives in the accounts pane with refresh wirin
   assert.match(js,/if \(name === 'accounts' && !creditPackagesLoaded\) void loadCreditPackages\(false\)/,'first visit to accounts pane must auto-load once');
 });
 
+test('等价花费按落账快照聚合：未定价不计入也不冒充零，毫级金额给 4 位小数',async()=>{
+  const items=[
+    {ts:1000,uid:'u1',account:'alice',model:'cn:glm-5.3-flash',mode:'stream',prompt_tokens:1000000,completion_tokens:500000,credit:0,cost_usd:0.3},
+    {ts:1001,uid:'u2',account:'bob',model:'unknown-model',mode:'sync',prompt_tokens:10,completion_tokens:20,credit:0},
+    {ts:1002,uid:'u3',account:'carol',model:'glm-5.3-flash',mode:'sync',prompt_tokens:100,completion_tokens:100,credit:0,cost_usd:0.00005},
+  ];
+  const {ctx,get}=taskFixture(async()=>({ok:true,status:200,json:async()=>({range:'today',items,summary:{}})}));
+  await vm.runInContext('loadUsage()',ctx);
+  assert.equal(get('usage-cost').textContent,'$0.30','花费合计口径错：'+get('usage-cost').textContent);
+  assert.match(get('usage-note').textContent,/1 条未定价/,'未定价条数没有如实可见');
+  const dist=get('usage-by-channel-body').children;
+  assert.equal(dist[0].children[5].textContent,'$0.30','通道分布缺花费列或口径错');
+  const detail=get('usage-body').children;
+  assert.equal(detail[0].children[9].textContent,'$0.0001','毫级金额没给 4 位小数');
+  assert.equal(detail[1].children[9].textContent,'—','未定价明细必须写「—」而不是 $0');
+});
+
+test('全部未定价时花费卡如实显示「—」，不伪造 $0',async()=>{
+  const items=[{ts:1000,uid:'u1',account:'alice',model:'m',mode:'sync',prompt_tokens:1,completion_tokens:1,credit:0}];
+  const {ctx,get}=taskFixture(async()=>({ok:true,status:200,json:async()=>({range:'today',items,summary:{}})}));
+  await vm.runInContext('loadUsage()',ctx);
+  assert.equal(get('usage-cost').textContent,'—','全组未定价应写「—」');
+});
+
 test('usage statistics is a standalone sidebar page and left the workbuddy tabs',()=>{
   const html=readFileSync(__dirname+'/web/index.html','utf8');
   assert.match(html,/data-view="usage"[\s\S]*?调用统计/,'usage entry missing from the sidebar nav');
@@ -2549,8 +2573,8 @@ test('usage page aggregates by channel, filters the detail list and keeps missin
   assert.match(get('usage-note').textContent,/1 条记录未回报积分扣费/,'missing credit not surfaced');
   const dist=get('usage-by-channel-body').children;
   assert.deepEqual(dist.map(tr=>tr.children[0].textContent),['WorkBuddy','GLM（Zcode）','Qoder','OpenCode'],'distribution rows missing or misordered');
-  assert.deepEqual(dist[1].children.map(td=>td.textContent),['GLM（Zcode）','1','10','20','—'],'zcode missing credit must show dash, not 0');
-  assert.deepEqual(dist[2].children.map(td=>td.textContent),['Qoder','1','—','5','0.00'],'qoder 整组输入缺失要显示「—」，真实 0 积分保留');
+  assert.deepEqual(dist[1].children.map(td=>td.textContent),['GLM（Zcode）','1','10','20','—','—'],'zcode missing credit must show dash, not 0');
+  assert.deepEqual(dist[2].children.map(td=>td.textContent),['Qoder','1','—','5','0.00','—'],'qoder 整组输入缺失要显示「—」，真实 0 积分保留');
   // Filtering narrows only the detail list; the distribution keeps the full picture.
   ctx.USAGE_ITEMS=items;
   vm.runInContext("usageChannel='zcode';renderUsage({items:USAGE_ITEMS})",ctx);
@@ -2610,7 +2634,7 @@ test('token 缺失按输入与输出分别计数：只回报输入时输出不�
   assert.doesNotMatch(note,/未回报 token 用量/,'仍在使用输入输出合并的旧口径：'+note);
   // 通道分布表同样按字段留空：输出缺失的通道显示「—」而不是 0。
   const dist=get('usage-by-channel-body').children;
-  assert.deepEqual(dist[0].children.map(td=>td.textContent),['WorkBuddy','1','7','—','1.00'],'输出缺失被写成 0：'+dist[0].children.map(td=>td.textContent));
+  assert.deepEqual(dist[0].children.map(td=>td.textContent),['WorkBuddy','1','7','—','1.00','—'],'输出缺失被写成 0：'+dist[0].children.map(td=>td.textContent));
 });
 
 test('全部未观测时两张卡的积分与 Tokens 都读「—」，概览与调用统计口径一致',async()=>{
@@ -2649,10 +2673,10 @@ test('调用明细带出协议入口、来源网段与客户端标识，缺失�
   // 明细按时间倒序：ts1001（无来源观测）在前，ts1000 在后。
   const blank=detail[0].children.map(td=>td.textContent);
   const known=detail[1].children.map(td=>td.textContent);
-  assert.deepEqual([blank[4],blank[9],blank[10]],['—','—','—'],'缺失的来源观测不得被补成任何值：'+blank);
+  assert.deepEqual([blank[4],blank[10],blank[11]],['—','—','—'],'缺失的来源观测不得被补成任何值：'+blank);
   assert.equal(known[4],'Messages','协议入口列没读出 messages');
-  assert.equal(known[9],'203.0.113.0/24','来源网段列错了');
-  assert.equal(known[10],'claude-cli/1.2.3','客户端标识列错了');
+  assert.equal(known[10],'203.0.113.0/24','来源网段列错了');
+  assert.equal(known[11],'claude-cli/1.2.3','客户端标识列错了');
 });
 
 test('鉴权失败留痕在调用统计页成一条来源分布，零失败不打扰、缺失不编造',async()=>{
@@ -4128,7 +4152,7 @@ test('调用明细的客户端列：旁路通道前置通道标签认是谁报�
   const usage=taskFixture(async()=>({ok:true,status:200,json:async()=>({range:'today',items,summary:{}})}));
   await vm.runInContext('loadUsage()',usage.ctx);
   const rows=usage.get('usage-body').children;
-  const clientOf=tr=>tr.children[10].textContent;
+  const clientOf=tr=>tr.children[11].textContent;
   // 明细最新在上：qoder（无 client）→ zcode → trae → 核心。
   // 两条旁路的 client 都取自「调用方打到 console 公开口的 User-Agent」（账本实测：trae 那路是 curl、zcode 那路是 urllib），
   // 认不出是谁发的，所以前置通道标签。
@@ -4148,12 +4172,12 @@ test('调用明细的客户端列：认得出的串显示准确 agent 名，格�
   const usage=taskFixture(async()=>({ok:true,status:200,json:async()=>({range:'today',items,summary:{}})}));
   await vm.runInContext('loadUsage()',usage.ctx);
   const rows=usage.get('usage-body').children;
-  const clientOf=tr=>tr.children[10].textContent;
+  const clientOf=tr=>tr.children[11].textContent;
   // 明细最新在上：空值 → 未识别 → 带版本号的 Hertz → 裸 Hertz。
   assert.deepEqual(rows.map(clientOf),['—','Trae · Go-http-client/1.1','Trae CN（Hertz/0.10.1）','Trae CN（Hertz）'],
     '认得出的串没显示准确 agent 名，或未识别的串没退回通道标签');
   // 原始串必须原样带出：真名是补充，不是替换，否则对不上现场抓的 UA。
-  assert.equal(rows[3].children[10].textContent,'Trae CN（Hertz）','原始串被吞了，光看真名对不上现场抓的 UA');
+  assert.equal(rows[3].children[11].textContent,'Trae CN（Hertz）','原始串被吞了，光看真名对不上现场抓的 UA');
   // 大小写不敏感、含即中；认不出/空值绝不硬套。
   const {ctx}=taskFixture(async()=>({ok:true,status:200,json:async()=>({}),headers:{get:()=>null}}));
   const call=expr=>vm.runInContext(expr,ctx);
