@@ -2513,6 +2513,17 @@ test('workbuddy models table lives in its own tab, not inside the chat pane',()=
   assert.ok(!chat.includes('core-models-body'),'core model table must not stay inside the chat pane');
 });
 
+test('credit packages distribution lives in the accounts pane with refresh wiring',()=>{
+  const html=readFileSync(__dirname+'/web/index.html','utf8');
+  const accounts=html.match(/id="workbuddy-pane-accounts"[\s\S]*?<\/div>\s*<\/div>/)[0];
+  assert.match(accounts,/积分到期分布[\s\S]*?id="credit-packages-refresh"[\s\S]*?id="credit-packages-rows"[\s\S]*?id="credit-packages-empty"/,'credit packages panel missing from accounts pane');
+  assert.ok(!/id="workbuddy-pane-chat"/.test(accounts.slice(accounts.indexOf('credit-packages'))),'credit packages panel must not leak into other panes');
+  const js=readFileSync(__dirname+'/web/app.js','utf8');
+  assert.match(js,/function loadCreditPackages\(force\)/,'loadCreditPackages missing');
+  assert.match(js,/credit-packages' \+ \(force \? '\?refresh=1' : ''\)/,'refresh must pass ?refresh=1 when forced');
+  assert.match(js,/if \(name === 'accounts' && !creditPackagesLoaded\) void loadCreditPackages\(false\)/,'first visit to accounts pane must auto-load once');
+});
+
 test('usage statistics is a standalone sidebar page and left the workbuddy tabs',()=>{
   const html=readFileSync(__dirname+'/web/index.html','utf8');
   assert.match(html,/data-view="usage"[\s\S]*?调用统计/,'usage entry missing from the sidebar nav');

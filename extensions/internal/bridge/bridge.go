@@ -51,6 +51,9 @@ type handler struct {
 	mu       sync.Mutex
 	flows    map[string]*loginFlow
 	newOAuth func(string) (*oauth.Client, error)
+	// creditCache 积分包到期探测的按账号缓存（成功 10 分钟 / 失败 2 分钟），
+	// 避免页面交互把 billing 查询放大成高频外呼。见 credit_packages.go。
+	creditCache sync.Map
 }
 
 var ownerPattern = regexp.MustCompile(`^[A-Za-z0-9_-]{32,128}$`)
@@ -76,6 +79,7 @@ func New(ctx context.Context, cfg Config) http.Handler {
 	h.mux.HandleFunc("GET /internal/v1/tasks", h.listTasks)
 	h.mux.HandleFunc("GET /internal/v1/usage", h.listUsage)
 	h.mux.HandleFunc("GET /internal/v1/usage/daily", h.listUsageDaily)
+	h.mux.HandleFunc("GET /internal/v1/credit-packages", h.creditPackages)
 	h.mux.HandleFunc("POST /internal/v1/usage/reports", h.reportUsage)
 	h.mux.HandleFunc("GET /internal/v1/pin", h.listPins)
 	h.mux.HandleFunc("POST /internal/v1/pin", h.pinAccount)

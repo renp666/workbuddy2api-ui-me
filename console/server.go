@@ -450,6 +450,7 @@ func NewServer(cfg Config) (http.Handler, error) {
 		{"GET /admin/task-runs/{id}", "GET", "/internal/v1/task-runs/{id}"},
 		{"GET /admin/usage", "GET", "/internal/v1/usage"},
 		{"GET /admin/usage-daily", "GET", "/internal/v1/usage/daily"},
+		{"GET /admin/credit-packages", "GET", "/internal/v1/credit-packages"},
 		{"GET /admin/pin", "GET", "/internal/v1/pin"},
 		{"POST /admin/pin", "POST", "/internal/v1/pin"},
 		{"POST /admin/unpin", "POST", "/internal/v1/unpin"},

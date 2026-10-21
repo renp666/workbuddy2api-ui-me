@@ -55,6 +55,9 @@
     <div class="section-title"><h2>已连接账号</h2><span class="muted small">每 15 秒刷新本地状态</span></div>
     <div id="pin-banner" class="pin-banner" hidden></div>
     <div class="panel table-wrap"><table><thead><tr><th>账号 / 版本</th><th>状态</th><th>积分快照</th><th class="num">成功 / 错误</th><th class="num">在途</th><th>限制与说明</th><th>操作</th></tr></thead><tbody id="accounts-body"></tbody></table><p id="accounts-empty" class="empty">还没有账号。点击上方「浏览器授权」开始。</p></div><p class="muted small">积分为最近观测值；未查询时显示「待确认」。同账号重新授权会更新凭据，保留现有限流记录。锁定后该平台的对话消费严格只走锁定账号，账号不可用时直接报错、不切换其他账号。</p>
+    <div class="section-title"><h2>积分到期分布</h2><span class="muted small">逐包列出剩余积分的到期时间；点击刷新向上游查询</span><button id="credit-packages-refresh" class="secondary">↻ 刷新分布</button></div>
+    <p id="credit-packages-meta" class="muted small" hidden></p>
+    <div class="panel table-wrap" id="credit-packages-panel"><table><thead><tr><th>账号</th><th>最早到期</th><th class="num">剩余 / 包</th><th>分布（段宽 = 剩余积分，颜色越暖越先到期）</th></tr></thead><tbody id="credit-packages-rows"></tbody></table><p id="credit-packages-empty" class="empty">尚未查询。点击「刷新分布」逐账号拉取积分包到期明细（结果缓存 10 分钟）。</p></div>
    </div>
    <div id="workbuddy-pane-tasks" hidden>
     <div class="section-title"><h2>自动任务</h2><span class="muted small">配置与下次执行时间来自核心调度器；立即执行覆盖全部符合条件账号</span><button id="task-refresh" class="secondary">↻ 刷新任务</button></div>

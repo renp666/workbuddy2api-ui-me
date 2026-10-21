@@ -65,7 +65,7 @@ function signedOut() {
  sessionGeneration++;
  csrf = ''; activeRequest?.abort(); clearTimeout(flowTimer); flowID = undefined; history = []; conversation = newConversation(); stopTaskReads(); taskIntents.clear(); taskState={items:[],active_run:null,latest_runs:[]};taskHistory=[];taskBefore=null;taskStarting=false;taskRenderKey=undefined;
  clearMessages($('messages'));$('task-list').replaceChildren();$('task-history-body').replaceChildren();$('task-detail').hidden=true;$('task-accounts').textContent='';$('task-log').textContent=''; $('api-key').value = ''; $('api-key').type = 'password'; $('admin-key').value = ''; $('console-view').hidden = true; $('login-view').hidden = false;
- protocol='openai';$('prompt').value='';$('max-tokens').value='1024';$('usage').textContent='用量将在上游返回后显示';usageGeneration++;workbuddyView='accounts';renderAccess();
+ protocol='openai';$('prompt').value='';$('max-tokens').value='1024';$('usage').textContent='用量将在上游返回后显示';usageGeneration++;workbuddyView='accounts';renderAccess();creditPackagesLoaded=false;$('credit-packages-rows').replaceChildren();$('credit-packages-meta').hidden=true;$('credit-packages-empty').hidden=false;$('credit-packages-empty').textContent='尚未查询。点击「刷新分布」逐账号拉取积分包到期明细（结果缓存 10 分钟）。';
  zcodeModels=[];zcodeHistory=[];zcodeStatus=null;zcodeAuthURL='';zcodeLogoutArmed=false;zcodeBusy=false;zcodeProviderTouched=false;zcodePlanTouched=false;zcodeView='status';zcodeViewTouched=false;zcodeEnabled=false;clearTimeout(zcodePollTimer);zcodePollTimer=undefined;$('zcode-model').replaceChildren();clearMessages($('zcode-messages'));$('zcode-prompt').value='';$('zcode-usage').textContent='用量将在上游返回后显示';$('zcode-disabled').hidden=true;$('zcode-content').hidden=true;$('nav-zcode').classList.remove('nav-muted');
  qoderModels=[];qoderHistory=[];qoderStatus=null;qoderEnabled=false;qoderControl=false;qoderLoggedIn=false;qoderAuthURL='';qoderBusy=false;qoderLogoutArmed=false;qoderView='status';qoderViewTouched=false;clearTimeout(qoderPollTimer);qoderPollTimer=undefined;clearTimeout(qoderLoginTimer);qoderLoginTimer=null;$('qoder-model').replaceChildren();clearMessages($('qoder-messages'));$('qoder-prompt').value='';$('qoder-usage').textContent='用量将在上游返回后显示';$('qoder-disabled').hidden=true;$('qoder-content').hidden=true;$('nav-qoder').classList.remove('nav-muted');$('qoder-auth-row').hidden=true;$('qoder-pane-login').hidden=true;$('qoder-login-hint').textContent='';
  opencodeModels=[];opencodeHistory=[];opencodeStatus=null;opencodeEnabled=false;opencodeBusy=false;opencodeView='status';$('opencode-model').replaceChildren();clearMessages($('opencode-messages'));$('opencode-prompt').value='';$('opencode-usage').textContent='用量将在上游返回后显示';$('opencode-disabled').hidden=true;$('opencode-content').hidden=true;$('nav-opencode').classList.remove('nav-muted');$('opencode-health-wrap').hidden=true;$('opencode-health-body').replaceChildren();
@@ -153,7 +153,9 @@ document.querySelectorAll('[data-view]').forEach(button => button.addEventListen
 for (const name of ['accounts','tasks','models','chat']) $('workbuddy-view-'+name).addEventListener('click', () => {
  setWorkBuddyView(name);
  if (name === 'tasks') loadTaskPage();
+ if (name === 'accounts' && !creditPackagesLoaded) void loadCreditPackages(false);
 });
+$('credit-packages-refresh').addEventListener('click', () => { void loadCreditPackages(true); });
 $('login-form').addEventListener('submit', async event => {
  event.preventDefault(); const button = event.submitter; button.disabled = true; $('login-error').textContent = '';
  try { const session = await jsonAPI('login', {key:$('admin-key').value}); await signedIn(session); } catch(error) { $('login-error').textContent = error.message; } finally { button.disabled = false; }
@@ -1014,6 +1016,97 @@ async function loadPins() {
  catch { pinState = {cn:null, global:null}; } // 旧核心无端点时降级为无锁定 UI
  renderPinBanner();
  if (lastStatus) renderAccounts(lastStatus);
+}
+// 积分到期分布：窗口分桶（≤3 天 / ≤7 天 / ≤30 天 / 更远或无到期日），
+// 段宽按账号内最大包剩余归一，颜色越暖越先到期。
+const creditWindows = [
+ {label:'3 天内',color:'#d9534f'},
+ {label:'7 天内',color:'#e28b3a'},
+ {label:'30 天内',color:'#3aa06e'},
+ {label:'更远 / 无到期日',color:'#6b7f95'}
+];
+function creditWindowIndex(days) {
+ if (days === null || days > 30) return 3;
+ if (days <= 3) return 0;
+ if (days <= 7) return 1;
+ return 2;
+}
+function creditDays(endAt) {
+ if (!endAt) return null;
+ const t = Date.parse(endAt);
+ if (Number.isNaN(t)) return null;
+ return (t - Date.now()) / 86400000;
+}
+let creditPackagesLoaded = false;
+async function loadCreditPackages(force) {
+ const btn = $('credit-packages-refresh');
+ btn.disabled = true; const label = btn.textContent; btn.textContent = '查询中…';
+ try {
+  const data = await jsonAPI('credit-packages' + (force ? '?refresh=1' : ''));
+  renderCreditPackages(data);
+ } catch (error) {
+  $('credit-packages-empty').hidden = false;
+  $('credit-packages-empty').textContent = '查询失败：' + error.message;
+ } finally { btn.disabled = false; btn.textContent = label; }
+}
+function renderCreditPackages(data) {
+ const tbody = $('credit-packages-rows');
+ tbody.replaceChildren();
+ const items = data.items || [];
+ const fetched = data.fetched_at ? `查询于 ${formatProbeTime(data.fetched_at)}` : '';
+ $('credit-packages-meta').textContent = `共 ${items.length} 个账号${fetched ? ' · ' + fetched : ''}`;
+ $('credit-packages-meta').hidden = items.length === 0;
+ for (const item of items) {
+  const tr = document.createElement('tr');
+  const nameTd = document.createElement('td');
+  nameTd.textContent = `${item.nickname || item.uid}（${realmLabel(item.realm || 'cn')}）`;
+  tr.append(nameTd);
+  const packages = (item.packages || []).map(p => ({...p, days: creditDays(p.end_at)}));
+  const earliest = packages.filter(p => p.days !== null).sort((a, b) => a.days - b.days)[0];
+  const endTd = document.createElement('td');
+  if (item.error) {
+   endTd.textContent = item.error;
+   endTd.className = 'muted';
+  } else if (earliest) {
+   endTd.textContent = earliest.days <= 0 ? '已到期/今日' : `${formatProbeTime(earliest.end_at)}（${Math.ceil(earliest.days)} 天）`;
+  } else {
+   endTd.textContent = '仅无到期日积分';
+   endTd.className = 'muted';
+  }
+  tr.append(endTd);
+  const countTd = document.createElement('td');
+  countTd.className = 'num';
+  countTd.textContent = item.error ? '—' : String(packages.length);
+  tr.append(countTd);
+  const barTd = document.createElement('td');
+  if (!item.error && packages.length) {
+   const max = Math.max(...packages.map(p => p.remain));
+   const bar = document.createElement('div');
+   bar.style.cssText = 'display:flex;gap:2px;height:14px;border-radius:7px;overflow:hidden;background:rgba(127,127,127,.15);';
+   bar.title = packages.map(p => `${p.name}：${p.remain}（${p.end_at ? (p.days !== null && p.days > 0 ? Math.ceil(p.days) + ' 天后到期' : '已到期/今日') : '无到期日'}）`).join('\n');
+   for (const p of packages) {
+    const seg = document.createElement('span');
+    seg.style.cssText = `width:${Math.max(4, Math.round(p.remain / max * 100))}%;background:${creditWindows[creditWindowIndex(p.days)].color};`;
+    bar.append(seg);
+   }
+   barTd.append(bar);
+   const legend = document.createElement('div');
+   legend.className = 'muted small';
+   legend.style.marginTop = '4px';
+   legend.textContent = packages.map(p => `${p.name} ${p.remain}`).join(' · ');
+   barTd.append(legend);
+  } else if (!item.error) {
+   barTd.textContent = '无剩余积分包';
+   barTd.className = 'muted';
+  }
+  tr.append(barTd);
+  tbody.append(tr);
+ }
+ const hasRows = tbody.children.length > 0;
+ $('credit-packages-panel').hidden = false;
+ $('credit-packages-empty').hidden = hasRows;
+ if (!hasRows) $('credit-packages-empty').textContent = '暂无账号或全部账号无剩余积分包。';
+ creditPackagesLoaded = true;
 }
 function renderPinBanner() {
  const banner = $('pin-banner');
