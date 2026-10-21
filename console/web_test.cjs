@@ -4779,7 +4779,8 @@ test('M2-B health query failure does not hide the alias configuration', async ()
 });
 
 // —— API 密钥页签（多 Key 归因）——
-// 页面三件事：清单渲染（含启停切换缓冲）、按 key_label 聚合用量（缺失不冒充 0）、
+// 页面四件事：清单渲染（含启停切换缓冲）、模型白名单编辑（空=不限「全部模型」，只改
+// 缓冲，保存时随整表提交）、按 key_label 聚合用量（缺失不冒充 0）、
 // 整表保存 POST /admin/apikeys。聚合口径与调用统计页同源（usage?range=… 的 items）。
 test('API 密钥页签：清单渲染、自动生成 Key、整表保存与按标签用量聚合',async()=>{
   const keysState={keys:[{label:'ci-bot',key:'extra-key-0123456789',enabled:true,created_at:1760000000}],default_label:'默认',editable:true};
@@ -4811,6 +4812,17 @@ test('API 密钥页签：清单渲染、自动生成 Key、整表保存与按标
   assert.equal(rows[0].children[0].textContent,'ci-bot');
   assert.equal(rows[0].children[1].textContent,'extra-key-0123456789');
   assert.equal(rows[0].children[2].children[0].textContent,'启用中');
+  // 模型白名单列：默认空=不限（占位符「全部模型」）；输入只改缓冲不落盘，
+  // 逗号/顿号/空白分隔、去重；保存时随整表提交。
+  assert.equal(rows[0].children.length,6,'白名单列缺失');
+  const modelsInput=rows[0].children[3].children[0];
+  assert.equal(modelsInput.className,'apikeys-models-input');
+  assert.equal(modelsInput.value,'','无白名单回显为空');
+  assert.equal(modelsInput.placeholder,'全部模型','空白名单应显示「全部模型」');
+  modelsInput.value='glm-*, glm-*，cn:good-model、  cn:x ';
+  modelsInput.handlers.input();
+  assert.deepEqual([...vm.runInContext("apikeysKeys[0].models",ctx)],['glm-*','cn:good-model','cn:x'],'分隔与去重');
+  assert.equal(get('apikeys-editbar').hidden,false,'改白名单应亮出未保存提示');
   // 用量聚合：按调用数降序（同分不承诺顺序，按标签定位断言）；缺失 tokens 不计入
   // 也不冒充 0；积分只累加 has_credit 的行。
   const usageRows=get('apikeys-usage-body').children;
@@ -4837,5 +4849,8 @@ test('API 密钥页签：清单渲染、自动生成 Key、整表保存与按标
   assert.equal(posts.length,1,'保存应 POST 一次');
   assert.equal(posts[0].keys.length,2);
   assert.deepEqual(posts[0].keys.map(k=>k.label),['ci-bot','daily']);
+  assert.deepEqual(posts[0].keys.find(k=>k.label==='ci-bot').models,['glm-*','cn:good-model','cn:x'],'白名单应随保存提交');
+  assert.ok(!('models' in posts[0].keys.find(k=>k.label==='daily')),'未声明白名单的 Key 不带 models 字段');
+  assert.equal(get('apikeys-body').children[0].children[3].children[0].value,'glm-*,cn:good-model,cn:x','保存后按服务端回显重绘白名单');
   assert.equal(get('apikeys-editbar').hidden,true,'保存成功后收起未保存提示');
 });

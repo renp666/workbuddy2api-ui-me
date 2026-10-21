@@ -2782,14 +2782,24 @@ function startRouteEdit(entry){
 }
 // ---------- API 密钥（多 Key 归因） ----------
 // 契约见 console/apikeys.go：GET /admin/apikeys 返回 {keys, default_label, editable}；
-// POST /admin/apikeys 整表提交 {keys:[{label,key,enabled,created_at}]}，保存即生效。
-// 页面持有编辑缓冲：添加/启停/删除都先改本地副本，点「保存清单」整表提交——
+// POST /admin/apikeys 整表提交 {keys:[{label,key,enabled,created_at,models}]}，保存即生效。
+// models 是该 Key 的模型白名单（字符串数组，空=不限，支持 * 通配符）。
+// 页面持有编辑缓冲：添加/启停/删除/改白名单都先改本地副本，点「保存清单」整表提交——
 // 与路由别名页同一套交互，避免半表状态落盘。
 let apikeysKeys=[],apikeysUsageItems=[],apikeysUsageRange='today',apikeysBusy=false;
 function generateAPIKey(){
  const raw=new Uint8Array(32);crypto.getRandomValues(raw);
  let s='';for(const b of raw)s+=String.fromCharCode(b);
  return btoa(s).replace(/\+/g,'-').replace(/\//g,'_').replace(/=+$/,'');
+}
+// parseKeyModels 把输入框文本拆成白名单数组：逗号/全角逗号/顿号/空白都当分隔符，
+// 去重去空。空文本 → 空数组（=不限）。
+function parseKeyModels(text){
+ const seen=new Set();
+ for(const part of String(text||'').split(/[,，、\s]+/)){
+  if(part)seen.add(part);
+ }
+ return [...seen];
 }
 async function loadApiKeys(){
  if(!csrf)return;
@@ -2816,12 +2826,27 @@ function renderApiKeys(){
   toggle.title='点击切换启用状态（保存清单后生效）';
   toggle.addEventListener('click',()=>{entry.enabled=!entry.enabled;markApikeysDirty();renderApiKeys();});
   state.append(toggle);
+  // 模型白名单：每行一个输入框，逗号/顿号分隔，空=不限（占位符「全部模型」）。
+  // input 只改缓冲不重绘（重绘会打断输入焦点）；其余操作走整表重绘。
+  const models=document.createElement('td');
+  const modelsInput=document.createElement('input');
+  modelsInput.type='text';modelsInput.className='apikeys-models-input';
+  modelsInput.value=(entry.models||[]).join(',');
+  modelsInput.placeholder='全部模型';
+  modelsInput.autocomplete='off';
+  modelsInput.title='限制该 Key 可调用的模型，逗号分隔，支持 * 通配符（如 glm-*）；留空=全部模型。白名单只拦实际调用，模型列表仍返回全量。';
+  modelsInput.setAttribute('aria-label','Key '+entry.label+' 的模型白名单');
+  modelsInput.addEventListener('input',()=>{
+   entry.models=parseKeyModels(modelsInput.value);
+   markApikeysDirty();
+  });
+  models.append(modelsInput);
   const created=cell(entry.created_at?new Date(entry.created_at*1000).toLocaleString():'—');
   const actions=document.createElement('td');
   const del=document.createElement('button');del.type='button';del.className='quiet danger-text';del.textContent='删除';
   del.addEventListener('click',()=>{apikeysKeys.splice(index,1);markApikeysDirty();renderApiKeys();});
   actions.append(del);
-  tr.append(label,key,state,created,actions);
+  tr.append(label,key,state,models,created,actions);
   body.append(tr);
  });
  // 用量表：按 key_label 聚合。缺标签的历史调用归「（未标注）」；

@@ -411,7 +411,7 @@
   <section class="page" data-page="apikeys" hidden><div class="page-heading"><div><h1>API 密钥</h1><p class="muted">为不同客户端发放独立 Key，调用账本按标签归属（多 Key 归因）。主 Key 是「API 接入」页的那把，账本里恒记为「默认」，不可删除。</p></div></div>
    <article class="panel"><div class="section-title"><h2>附加密钥</h2><span class="muted small">清单非空后，公共出口只接受主 Key 与下表启用的 Key；改动点「保存清单」后立即生效</span></div>
     <div class="inline-form"><input id="apikeys-new-label" placeholder="标签（如 ci-bot，字母数字与 - _ .）" maxlength="64" autocomplete="off"><input id="apikeys-new-key" placeholder="Key 留空自动生成" autocomplete="off"><button id="apikeys-add" class="secondary">添加到清单</button></div>
-    <div class="table-wrap"><table><thead><tr><th>标签</th><th>Key</th><th>状态</th><th>创建时间</th><th>操作</th></tr></thead><tbody id="apikeys-body"></tbody></table><p id="apikeys-empty" class="empty">还没有附加 Key；公共出口当前只认主 Key（行为与未开启本功能时一致）。</p></div>
+    <div class="table-wrap"><table><thead><tr><th>标签</th><th>Key</th><th>状态</th><th>模型白名单</th><th>创建时间</th><th>操作</th></tr></thead><tbody id="apikeys-body"></tbody></table><p id="apikeys-empty" class="empty">还没有附加 Key；公共出口当前只认主 Key（行为与未开启本功能时一致）。</p></div>
     <div class="inline-form" id="apikeys-editbar" hidden><span class="muted small">有未保存的修改</span><button id="apikeys-save" class="primary">保存清单</button><button id="apikeys-discard" class="secondary">放弃修改</button></div>
    </article>
    <div class="section-title"><h2>按 Key 用量</h2><span class="muted small"><label for="apikeys-usage-range">时间范围</label>&nbsp;<select id="apikeys-usage-range"><option value="today" selected>今天</option><option value="yesterday">前一天</option><option value="week">本周</option><option value="month">本月</option></select>&nbsp;· 标签来自调用账本（core 与旁路通道统一落 key_label），历史调用在开启归因前没有标签，归入「（未标注）」</span></div>
