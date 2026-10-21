@@ -80,6 +80,11 @@ func (h *handler) reportUsage(w http.ResponseWriter, r *http.Request) {
 		if item.HasCredit {
 			e.Credit = item.Credit
 		}
+		// 价目快照在 core 落账层补齐：旁路条目与 core 本地调用同口径（九通道统一），
+		// token 缺失或模型未定价时 CostUSDFor 返回 false，保持缺失语义。
+		if cost, ok := usagelog.CostUSDFor(item.Model, item.Prompt, item.Completion); ok {
+			e.CostUSD = &cost
+		}
 		h.cfg.Usage.Record(e)
 	}
 	writeJSON(w, 202, map[string]int{"accepted": len(body.Entries)})

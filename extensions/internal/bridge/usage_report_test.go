@@ -118,6 +118,46 @@ func TestUsageReportRemasksSourceAndDropsUnknownAPI(t *testing.T) {
 	}
 }
 
+// TestUsageReportSnapshotsCost：旁路条目在 core 落账层补价目快照，与 core 本地
+// 调用同口径（九通道统一）——前缀模型剥名命中价目、token 缺失保持未定价。
+func TestUsageReportSnapshotsCost(t *testing.T) {
+	dir := t.TempDir()
+	l, err := usagelog.Open(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	h := New(context.Background(), Config{Key: testKey, Usage: l})
+	usagelog.SetPricesForTest(map[string]usagelog.PriceEntry{"glm-4.6": {InputUSD: 0.10, OutputUSD: 0.40}})
+	t.Cleanup(func() {
+		empty := map[string]usagelog.PriceEntry{}
+		usagelog.SetPricesForTest(empty)
+	})
+	body := `{"entries":[
+		{"uid":"zcode","model":"glm-4.6","mode":"stream","prompt_tokens":1000000,"completion_tokens":0},
+		{"uid":"raccoon","model":"raccoon-glm-4.6","mode":"stream","prompt_tokens":500000,"completion_tokens":250000},
+		{"uid":"qoder","model":"qoder-unknown","mode":"sync","prompt_tokens":-1,"completion_tokens":-1}
+	]}`
+	if w := bridgeRequest(h, "POST", "/internal/v1/usage/reports", body, ""); w.Code != 202 {
+		t.Fatalf("上报被拒：%d %s", w.Code, w.Body)
+	}
+	items, err := l.Query(time.Now().Add(-time.Minute).Unix(), time.Now().Add(time.Minute).Unix())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(items) != 3 {
+		t.Fatalf("落账条数不符：%+v", items)
+	}
+	if items[0].CostUSD == nil || *items[0].CostUSD < 0.099999 || *items[0].CostUSD > 0.100001 {
+		t.Errorf("直名快照不符：%+v", items[0])
+	}
+	if items[1].CostUSD == nil || *items[1].CostUSD < 0.149999 || *items[1].CostUSD > 0.150001 {
+		t.Errorf("前缀剥离命中不符：%+v", items[1])
+	}
+	if items[2].CostUSD != nil {
+		t.Errorf("token 缺失必须保持未定价：%+v", items[2])
+	}
+}
+
 // TestUsageReportMethodAndAuthGate：GET 方法和错误密钥不得触达上报逻辑。
 // 上报端点只注册 POST，方法不匹配落到 mux 的「/」兜底，返回 404（与本包其他端点一致）。
 func TestUsageReportMethodAndAuthGate(t *testing.T) {
