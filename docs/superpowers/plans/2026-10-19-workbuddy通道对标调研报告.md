@@ -165,9 +165,29 @@ pin/粘性交互（现状核对确认天然正确）：严格锁定走 PickByUID
 
 剩余可做的只有「纯文本形态也入哈希摘要」（对齐 panel d- 形态），收益为每请求省一次 O(prompt) 字符串拷贝；派生盐每进程随机、键值本不跨进程稳定，改了无兼容风险但也无实质收益。2026-10-20 拍板判空关闭，不再单独立项。
 
+### §三 #12 落地记录（2026-10-21，积分到期分布）
+
+实现（commit 6e0a76f）：
+- **core 侧**：`extensions/internal/upstream/packages.go` `UserResourcePackages`——复用 `get-user-resource` 既有请求路径与 remain 口径（CycleCapacity 优先回退 Capacity），但逐包透出 `PackageName`/`PackageEndTime`/剩余，不再折叠成快过期桶；到期时间按 `softRateResetLoc`（UTC+8）解析成 RFC3339，解析失败降级「无到期日」不让整账号失败；零余额包剔除。`extensions/internal/bridge/credit_packages.go` `GET /internal/v1/credit-packages`——逐账号汇聚，成功缓存 10 分钟/失败 2 分钟（`refresh=1` 强制回源），3 worker 并发限速，单号失败固定文案入响应、原始错误仅入日志；按最早到期排序、错误条目垫底。
+- **console 侧**：`/admin/credit-packages` 只读代理（管理会话+CSRF，query 全透传）；账号管理 pane 新增「积分到期分布」表——最早到期、包数、分布条（3 天/7 天/30 天/更远四档配色，段宽按账号内最大包剩余归一，悬停 tooltip 逐包明细）；首次进入账号页签自动查询一次（`creditPackagesLoaded` 幂等），手动刷新走 `refresh=1`；登出态重置回未查询。
+
+通道统一性结论（书面考证：仅 core WorkBuddy 适用）：积分包/到期日是 WorkBuddy 上游 billing 的 `get-user-resource` 数据源特有概念；trae 国际版上游无积分体系（订阅档位展示在 traeai 页签），trae 国内版/autoclaw/raccoon 的积分在各自 sidecar 页签内自管（无「包到期」上游字段，autoclaw 积分刷新、raccoon 账单核对均不返回到期时间）；zcode/qoder 是订阅权益到期（sidecar /status 已展示）。到期分布查询走 core 内部凭据直连上游 billing，旁路 sidecar 无对应上游端点，无需也无法统一。
+
+测试：upstream 3 例（逐包拆分升序/零余额剔除/CN 路径零回归/坏到期降级）+ bridge 2 例（聚合与缓存命中计费调用数/无凭据 503）；console go test 全绿，web_test 214 全绿（含新增结构断言：panel 归属 pane、refresh 接线、首次自动加载）。既有 Windows 基线失败（taskrun store.Put）在案除外。
+
+### §三 #9 落地记录（2026-10-21，OpenRouter 价估算）
+
+实现（commit c852d98 + 旁路快照补齐）：
+- **快照语义**：`extensions/internal/usagelog/prices.go`——`RecordAuth` 落账前按当前价目表折算 `cost_usd` 写入 Entry，此后调价只影响新调用，历史账目不漂移；输入/输出 token 任一缺失（负值哨兵）或模型未定价均不折算（缺失≠0，与积分口径同款），`Summary` 增 `Cost`/`CostMissing`。
+- **价目来源**：data 目录 `prices.json`（`Open` 时由 usage 目录推导 `../prices.json`），size/mtime 变化热重载（RecordAuth 热路径代价一次 stat），坏 JSON 沿用上次有效表、文件「从有到无」回落默认表；内置默认表**刻意为空**——启用模型全是内部命名（cn:/trae- 等前缀），OpenRouter 没有同名公布价，编数字即伪造；用户把公布价复制进 prices.json 即生效，键用剥前缀裸名，`priceCandidates` 九通道公共前缀循环剥离（`autoclaw-cn:glm-5.3-flash` 双层前缀可命中 `glm-5.3-flash`）。
+- **console 侧**：调用统计页新增「等价花费」指标卡、通道分布与明细各加花费列（<0.01 给 4 位小数防「$0.00」假零）；全组未定价写「—」，未定价条数进底部说明，不伪造 $0。
+- **旁路统一（九通道口径）**：旁路 usage 上报走 bridge `Usage.Record` 直落、不过 RecordAuth，初版会全部未定价——补 `usage_report.go` 落账层 `CostUSDFor(item.Model, ...)` 快照，旁路条目与 core 本地调用同口径；`TestUsageReportSnapshotsCost` 钉死（直名/前缀剥离/token 缺失三态）。
+
+测试：usagelog 4 例（前缀剥离与折算矩阵/热重载与坏文件降级/落账快照与历史不漂移/JSON 往返）+ bridge 1 例；console go 全绿；web_test 216 全绿（2 条新花费断言 + 6 处列移位索引更新）。生产发版 core:local 22dcb3be4bd4 / console:local 60cffba4e95d，九通道探针全绿（zcode=0 上游验证码挑战在案、trae/traeai data 200 模型 0 属上游账号状态）。
+
 ## 七、待拍板事项
 
-1. P1 三项（#1 #2 #3）是否立项？建议按 1→2→3 独立批次推进，每批走 lab 验证再生产发版。
+1. ~~P1 三项（#1 #2 #3）是否立项？~~ 已全部收尾（#1 补丁 0016、#2 落地记录见上、#3 勘误已有，见 §六）。
 2. ~~限额护栏（#7）做全四条还是简化两条（每日 Token + 保留积分）先行？~~ 已拍板简化两条先行并落地（2026-10-20，见 §三 #7 落地记录）。
 3. 成长任务一键完成（#8）做不做（成本高+风控敏感）？
-4. OpenRouter 价估算（#9）是否纳入后续统计批次？
+4. ~~OpenRouter 价估算（#9）是否纳入后续统计批次？~~ 已落地（2026-10-21，见 §三 #9 落地记录）。
