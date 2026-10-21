@@ -319,6 +319,14 @@ func wrapCore(ctx context.Context, cfg *Config, p *pool.Pool, up *upstream.Clien
 	// 恢复后自动解冻回池，不再等下一次签到或次日 04:00。WB2A_BALANCE_REFRESH_MINUTES
 	// 覆盖周期（分钟），<=0 关闭，默认 5；跟随主 ctx 生命周期。
 	go sch.RunBalanceRefresh(ctx, sch.BalanceRefreshInterval())
+	// 通道周期性轻量探活（issue #15）：用模型目录 GET 做轻量探针，提前发现失效
+	// 凭据。默认关闭；WB2A_PROBE_HOURS>0 启用（间隔小时数，部署建议 6，下限钳
+	// 1h）。失败只写冷却域、绝不喂熔断器（目录口失败不代表对话通道故障），
+	// 详见 scheduler/probe.go。
+	if d := sch.ProbeInterval(); d > 0 {
+		log.Printf("probe: 通道探活启用，间隔 %v", d)
+		go sch.RunProbe(ctx, d)
+	}
 	// 调用统计账本：成功调用的用量观测按天落在数据目录 usage/ 下。
 	// 打不开只降级（不记录、查询回 503），不影响网关服务本身。
 	usage, usageErr := usagelog.Open(filepath.Join(filepath.Dir(cfg.StateFile), "usage"))
