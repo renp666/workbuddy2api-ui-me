@@ -7,7 +7,7 @@ let protocol = 'openai';
 let taskState = {items:[],active_run:null,latest_runs:[]}, taskHistory = [], taskBefore = null, taskStarting = false, taskPollTimer, taskRenderKey, detailController, detailGeneration = 0;
 let usageRange = 'today', usageChannel = 'all', usageGeneration = 0;
 let usagePage = 1, usagePageSize = 50, usageDetailRows = [];
-let zcodeModels = [], zcodeHistory = [], zcodeStatus = null, zcodePollTimer, zcodeBusy = false, zcodeAuthURL = '', zcodeLogoutArmed = false, zcodeProviderTouched = false, zcodePlanTouched = false, zcodeView = 'status', zcodeViewTouched = false, zcodeEnabled = false, zcodeAccounts = null, zcodeAccountBusy = false, zcodeAccountDeleteArmed = '', zcodeAccountMessage = '';
+let zcodeModels = [], zcodeHistory = [], zcodeStatus = null, zcodePollTimer, zcodeBusy = false, zcodeAuthURL = '', zcodeLogoutArmed = false, zcodeProviderTouched = false, zcodePlanTouched = false, zcodeView = 'status', zcodeViewTouched = false, zcodeEnabled = false, zcodeAccounts = null, zcodeAccountBusy = false, zcodeAccountDeleteArmed = '', zcodeAccountMessage = '', zcodeLoginPending = false, zcodeLoginBaseDigest = '';
 let qoderModels = [], qoderHistory = [], qoderStatus = null, qoderPollTimer, qoderBusy = false, qoderAuthURL = '', qoderLogoutArmed = false, qoderControl = false, qoderLoggedIn = false, qoderLoginTimer = null, qoderView = 'status', qoderViewTouched = false, qoderEnabled = false;
 let opencodeModels = [], opencodeHistory = [], opencodeStatus = null, opencodeBusy = false, opencodeView = 'status', opencodeEnabled = false;
 let freellmModels = [], freellmHistory = [], freellmStatus = null, freellmBusy = false, freellmEnabled = false, freellmView = 'status', freellmViewTouched = false;
@@ -66,7 +66,7 @@ function signedOut() {
  csrf = ''; activeRequest?.abort(); clearTimeout(flowTimer); flowID = undefined; history = []; conversation = newConversation(); stopTaskReads(); taskIntents.clear(); taskState={items:[],active_run:null,latest_runs:[]};taskHistory=[];taskBefore=null;taskStarting=false;taskRenderKey=undefined;
  clearMessages($('messages'));$('task-list').replaceChildren();$('task-history-body').replaceChildren();$('task-detail').hidden=true;$('task-accounts').textContent='';$('task-log').textContent=''; $('api-key').value = ''; $('api-key').type = 'password'; $('admin-key').value = ''; $('console-view').hidden = true; $('login-view').hidden = false;
  protocol='openai';$('prompt').value='';$('max-tokens').value='1024';$('usage').textContent='用量将在上游返回后显示';usageGeneration++;workbuddyView='accounts';renderAccess();creditPackagesLoaded=false;$('credit-packages-rows').replaceChildren();$('credit-packages-meta').hidden=true;$('credit-packages-empty').hidden=false;$('credit-packages-empty').textContent='尚未查询。点击「刷新分布」逐账号拉取积分包到期明细（结果缓存 10 分钟）。';
- zcodeModels=[];zcodeHistory=[];zcodeStatus=null;zcodeAuthURL='';zcodeLogoutArmed=false;zcodeBusy=false;zcodeProviderTouched=false;zcodePlanTouched=false;zcodeView='status';zcodeViewTouched=false;zcodeEnabled=false;zcodeAccounts=null;zcodeAccountBusy=false;zcodeAccountDeleteArmed='';zcodeAccountMessage='';clearTimeout(zcodePollTimer);zcodePollTimer=undefined;$('zcode-model').replaceChildren();clearMessages($('zcode-messages'));$('zcode-prompt').value='';$('zcode-usage').textContent='用量将在上游返回后显示';$('zcode-disabled').hidden=true;$('zcode-content').hidden=true;$('zcode-accounts-panel').hidden=true;$('nav-zcode').classList.remove('nav-muted');
+ zcodeModels=[];zcodeHistory=[];zcodeStatus=null;zcodeAuthURL='';zcodeLogoutArmed=false;zcodeBusy=false;zcodeProviderTouched=false;zcodePlanTouched=false;zcodeView='status';zcodeViewTouched=false;zcodeEnabled=false;zcodeAccounts=null;zcodeAccountBusy=false;zcodeAccountDeleteArmed='';zcodeAccountMessage='';zcodeLoginPending=false;zcodeLoginBaseDigest='';clearTimeout(zcodePollTimer);zcodePollTimer=undefined;$('zcode-model').replaceChildren();clearMessages($('zcode-messages'));$('zcode-prompt').value='';$('zcode-usage').textContent='用量将在上游返回后显示';$('zcode-disabled').hidden=true;$('zcode-content').hidden=true;$('zcode-accounts-panel').hidden=true;$('nav-zcode').classList.remove('nav-muted');
  qoderModels=[];qoderHistory=[];qoderStatus=null;qoderEnabled=false;qoderControl=false;qoderLoggedIn=false;qoderAuthURL='';qoderBusy=false;qoderLogoutArmed=false;qoderView='status';qoderViewTouched=false;clearTimeout(qoderPollTimer);qoderPollTimer=undefined;clearTimeout(qoderLoginTimer);qoderLoginTimer=null;$('qoder-model').replaceChildren();clearMessages($('qoder-messages'));$('qoder-prompt').value='';$('qoder-usage').textContent='用量将在上游返回后显示';$('qoder-disabled').hidden=true;$('qoder-content').hidden=true;$('nav-qoder').classList.remove('nav-muted');$('qoder-auth-row').hidden=true;$('qoder-pane-login').hidden=true;$('qoder-login-hint').textContent='';
  opencodeModels=[];opencodeHistory=[];opencodeStatus=null;opencodeEnabled=false;opencodeBusy=false;opencodeView='status';$('opencode-model').replaceChildren();clearMessages($('opencode-messages'));$('opencode-prompt').value='';$('opencode-usage').textContent='用量将在上游返回后显示';$('opencode-disabled').hidden=true;$('opencode-content').hidden=true;$('nav-opencode').classList.remove('nav-muted');$('opencode-health-wrap').hidden=true;$('opencode-health-body').replaceChildren();
  freellmModels=[];freellmHistory=[];freellmStatus=null;freellmEnabled=false;freellmBusy=false;freellmView='status';freellmViewTouched=false;$('freellm-model').replaceChildren();clearMessages($('freellm-messages'));$('freellm-prompt').value='';$('freellm-usage').textContent='用量将在上游返回后显示';$('freellm-disabled').hidden=true;$('freellm-content').hidden=true;$('nav-freellm').classList.remove('nav-muted');ccrStatus=null;ccrEnabled=false;ccrBusy=false;$('ccr-disabled').hidden=true;$('ccr-content').hidden=true;$('nav-ccr').classList.remove('nav-muted');
@@ -1755,7 +1755,9 @@ async function loadZcode(){
 function zcodePageVisible(){return page==='zcode'&&csrf&&!document.hidden;}
 function scheduleZcodePoll(){
  clearTimeout(zcodePollTimer);zcodePollTimer=undefined;
- if(zcodePageVisible()&&zcodeStatus&&zcodeStatus.control&&!zcodeStatus.logged_in)zcodePollTimer=setTimeout(loadZcode,3000);
+ // 未登录时要轮询等登录完成；已登录但正在换账号时同样要轮询——
+ // logged_in 在「A 已登录、正在登录 B」的全程都是 true，只看它会让换账号永远等不到结果。
+ if(zcodePageVisible()&&zcodeStatus&&zcodeStatus.control&&(!zcodeStatus.logged_in||zcodeLoginPending))zcodePollTimer=setTimeout(loadZcode,3000);
 }
 function stopZcodePoll(){clearTimeout(zcodePollTimer);zcodePollTimer=undefined;}
 function renderZcode(status){
@@ -1794,7 +1796,7 @@ function renderZcode(status){
  $('zcode-auth-row').hidden=!zcodeAuthURL;
  if(zcodeAuthURL){$('zcode-auth-link').href=zcodeAuthURL;$('zcode-auth-link').textContent=zcodeAuthURL;}
  // 已登录时的提示要说清两件事：继续登录是换账号，且登录前会自动备份当前凭据。
- $('zcode-login-hint').textContent=!control?'':zcodeAuthURL?'已在新标签页打开授权页面，完成授权后本页每 3 秒自动检查登录结果；若被拦截请用下方链接打开。':loggedIn?'当前已登录一个账号。要继续登录其它账号：选择服务商后点「登录其它账号」，授权前会自动备份当前凭据，不会丢失。':'选择服务商后点击「开始登录」，授权在智谱页面完成，凭据只保存在 GLM 容器内。';
+ $('zcode-login-hint').textContent=!control?'':zcodeLoginPending?'已在新标签页打开授权页面，本页每 3 秒自动检查一次；登录完成后这里会提示你保存账号。若新标签页被拦截，请用下方链接手动打开。':loggedIn?'当前已登录一个账号。要继续登录其它账号：选择服务商后点「登录其它账号」，授权前会自动备份当前凭据，不会丢失。':'选择服务商后点击「开始登录」，授权在智谱页面完成，凭据只保存在 GLM 容器内。';
  $('zcode-login-start').textContent=loggedIn?'登录其它账号':'开始登录';
  $('zcode-view-login').textContent=loggedIn?'⇆ 换账号':'⇆ GLM 登录';
  if(!zcodeProviderTouched&&(status.provider==='zai'||status.provider==='bigmodel'))$('zcode-provider').value=status.provider;
@@ -1861,6 +1863,15 @@ async function zcodeAction(path){
 async function loadZcodeAccounts(){
  if(!zcodeEnabled)return;
  try{zcodeAccounts=await jsonAPI('zcode/accounts');}catch(error){zcodeAccounts=null;}
+ // 换账号的完成判据是「磁盘凭据指纹变了」，不是 logged_in：A 已登录时 logged_in
+ // 从头到尾都是 true，拿它判断永远看不出 B 是否登好。指纹变了才说明新凭据真的落盘。
+ if(zcodeLoginPending&&zcodeAccounts&&zcodeAccounts.available){
+  const cur=zcodeAccounts.current_digest||'';
+  if(cur&&cur!==zcodeLoginBaseDigest){
+   zcodeLoginPending=false;zcodeAuthURL='';
+   zcodeAccountMessage='新账号已登录完成。点「保存当前账号」起个名字，之后就能在列表里随时切换。';
+  }
+ }
  renderZcodeAccounts();
 }
 function zcodeAccountControls(){
@@ -1957,6 +1968,7 @@ $('zcode-account-save').addEventListener('click',async ()=>{
  if(!result)return;
  input.value='';
  zcodeAuthURL='';   // 登录流程到此收尾，授权链接不再需要
+ zcodeLoginPending=false;
  // 新建档案时后端会让新凭据生效（停再起）。这一步必须如实回执：不生效的话
  // 用户以为换成了新账号，实际 /v1 还在花旧账号的额度。
  if(result.apply_error)$('zcode-account-hint').textContent=`已保存档案，但新凭据没能生效：${result.apply_error}。请到「通道状态」手动停用后再启用。`;
@@ -1980,6 +1992,9 @@ $('zcode-login-form').addEventListener('submit',async event=>{
   if(generation!==sessionGeneration){try{authWindow?.close();}catch(_){}return;}
   zcodeAuthURL=result.authorize_url||'';
   if(zcodeAuthURL){
+   // 记下发起前的凭据指纹：轮询发现它变了，就说明这次登录真的完成了。
+   zcodeLoginBaseDigest=(zcodeAccounts&&zcodeAccounts.current_digest)||'';
+   zcodeLoginPending=true;
    if(authWindow&&!authWindow.closed)authWindow.location.href=zcodeAuthURL;
    else try{window.open(zcodeAuthURL,'_blank','noopener');}catch(_){}
   }

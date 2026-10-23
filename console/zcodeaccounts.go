@@ -395,6 +395,10 @@ func (h *server) zcodeAccountsView(dir string) (map[string]any, error) {
 		"active":    activeID,
 		"unfiled":   unfiled,
 		"count":     len(out),
+		// current_digest 是「磁盘上那份凭据」的指纹。换账号时页签记下发起登录前的值，
+		// 轮询发现它变了就说明新账号已经登录完成——这是唯一可靠的判据：logged_in 在
+		// 「A 已登录、正在登录 B」的全程都是 true，用它判断永远看不出变化。
+		"current_digest": curDigest,
 	}, nil
 }
 

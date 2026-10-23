@@ -128,15 +128,18 @@ function taskFixture(fetch, cryptoImpl={randomUUID:()=> '11111111-2222-4333-8444
   const channelRefresh=channelList(readFileSync(__dirname+'/web/app.js','utf8')).filter(c=>c!=='workbuddy').map(c=>[c+'-refresh',c]);
   const railButtons=[['refresh','overview'],...channelRefresh,['ccr-refresh','ccr'],['usage-refresh','usage'],['routes-refresh','routes'],['apikeys-refresh','apikeys']].map(([id,view])=>{const button=get(id);button.dataset.refreshFor=view;return button;});
   const opened=[];
+  const timers=[];
   const ctx=vm.createContext({document:{getElementById:get,querySelectorAll:selector=>selector==='[data-protocol]'?protocolButtons:selector==='[data-refresh-for]'?railButtons:[],createElement:element,hidden:false,handlers:{},addEventListener(name,fn){this.handlers[name]=fn;}},
     location:{origin:'http://console.test'},AbortController,TextDecoder,TextEncoder,Option:function(text,value){return {textContent:text,value};},
     // app.js 的失败分支会 console.error 打完整结论；上下文里没有 console 时，
     // 一旦走到那条分支就是 ReferenceError，会把真正的失败原因盖掉。
     console:testConsole,
-    setInterval(){},clearTimeout(){},setTimeout(){},fetch,crypto:cryptoImpl,navigator:{clipboard:{writeText:async()=>{}}},window:{scrollTo(){},open(url){const w={closed:false,location:{href:url||''},close(){this.closed=true;}};opened.push(w);return w;}}});
+    // setTimeout 只记录不执行：用例需要判断「有没有排下一轮轮询」，比如换账号时
+    // 必须持续轮询，否则授权完成后页面永远发现不了。
+    setInterval(){},clearTimeout(){},setTimeout(fn){timers.push(fn);return timers.length;},fetch,crypto:cryptoImpl,navigator:{clipboard:{writeText:async()=>{}}},window:{scrollTo(){},open(url){const w={closed:false,location:{href:url||''},close(){this.closed=true;}};opened.push(w);return w;}}});
   vm.runInContext(readFileSync(__dirname+'/web/app.js','utf8'),ctx);
   vm.runInContext("csrf='active-csrf';page='workbuddy';workbuddyView='tasks';taskState={items:[{id:'checkin',enabled:true,hours:[9,21],timezone:'Asia/Shanghai',next_at:null}],active_run:null,latest_runs:[]};",ctx);
-  return {ctx,get,opened};
+  return {ctx,get,opened,timers};
 }
 
 test('rapid task activation sends once and an unknown response retries the same intent id', async () => {
@@ -4924,8 +4927,13 @@ function zcodeAccountsFixture(view){
   const posts=[];
   const response=body=>({ok:true,status:200,json:async()=>body});
   const status={enabled:true,control:true,logged_in:true,proxy_running:true,provider:'zai',plan:'start-plan',reachable:true,model_count:1,models:[{id:'glm-5.3-flash'}]};
-  const {ctx,get}=taskFixture((url,options={})=>{
-    if(options.method==='POST'){posts.push({url,body:JSON.parse(options.body||'{}')});return response({ok:true,switched:true,saved:true,deleted:true,renamed:true});}
+  const {ctx,get,timers}=taskFixture((url,options={})=>{
+    if(options.method==='POST'){
+      posts.push({url,body:JSON.parse(options.body||'{}')});
+      // 登录要回一个授权链接：前端只有拿到它才会进入「等待授权完成」状态并开始轮询。
+      if(url==='/admin/zcode/login')return response({authorize_url:'https://chat.z.ai/oauth?state=x'});
+      return response({ok:true,switched:true,saved:true,deleted:true,renamed:true});
+    }
     if(url==='/admin/session')return new Promise(()=>{});
     if(url==='/admin/status')return response({total:0,healthy:0,cooling:0,disabled:0,accounts:[]});
     if(url==='/admin/models')return response({data:[]});
@@ -4934,7 +4942,7 @@ function zcodeAccountsFixture(view){
     throw new Error('unexpected '+url);
   });
   get('realm').querySelector=()=>({disabled:false});
-  return {ctx,get,posts};
+  return {ctx,get,posts,timers};
 }
 // mock 的按钮没有真实事件循环，直接调挂上去的处理器再把微任务排空。
 async function tap(btn){await btn.handlers.click();await flushMicrotasks();}
@@ -5037,4 +5045,31 @@ test('zcode 未登录时仍自动落在登录页',async()=>{
   assert.equal(get('zcode-pane-login').hidden,false,'未登录没落在登录页');
   assert.equal(get('zcode-login-badge').textContent,'未登录');
   assert.equal(get('zcode-login-start').textContent,'开始登录');
+});
+
+test('zcode 换账号：已登录时也要开始轮询，凭据指纹变化后才提示保存',async()=>{
+  const view={available:true,unfiled:false,active:'a1',current_digest:'d1',accounts:[
+    {id:'a1',label:'A 主号',provider:'zai',plan:'start-plan',saved_at:'2026-10-23T10:00:00+08:00',active:true},
+  ]};
+  const {ctx,get,timers}=zcodeAccountsFixture(view);
+  await vm.runInContext("signedIn({csrf:'c',global_enabled:true,zcode_enabled:true})",ctx);
+  vm.runInContext("page='zcode'",ctx);
+  await vm.runInContext('loadZcode()',ctx);
+  await flushMicrotasks();
+  // 已登录、没在换账号：不该空转轮询。
+  const idleTimers=timers.length;
+  assert.equal(vm.runInContext('zcodeLoginPending',ctx),false,'空闲状态却处于等待授权');
+  await get('zcode-login-form').handlers.submit({preventDefault(){}});
+  await flushMicrotasks();
+  // 这里是上一轮的漏洞：logged_in 恒为 true，轮询条件写 !logged_in 就永远不排下一轮，
+  // 用户用 B 授权完页面毫无反应，看起来像「点了没用」。
+  assert.equal(vm.runInContext('zcodeLoginPending',ctx),true,'发起换账号后没有进入等待授权状态');
+  assert.equal(vm.runInContext('zcodeLoginBaseDigest',ctx),'d1','没有记住发起前的凭据指纹');
+  assert.ok(timers.length>idleTimers,'已登录时发起换账号后没有继续轮询，B 登好了也发现不了');
+  // 新账号凭据落盘：磁盘指纹变了。
+  view.current_digest='d2';view.unfiled=true;
+  await vm.runInContext('loadZcodeAccounts()',ctx);
+  await flushMicrotasks();
+  assert.equal(vm.runInContext('zcodeLoginPending',ctx),false,'指纹已变但没有结束等待状态');
+  assert.match(get('zcode-account-hint').textContent,/保存当前账号/,'登录完成后没有提示去保存账号');
 });
