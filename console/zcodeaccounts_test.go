@@ -685,3 +685,56 @@ func TestZcodeAccountsViewMergesLegacyDuplicates(t *testing.T) {
 		t.Fatal("重复档案文件没有被清理")
 	}
 }
+
+// 更早的档案连 user_id 都没记（那时只用文件摘要判身份）。打开页面时要先回填
+// 身份再合并，否则 dedupe 看到一串空值会全部跳过，用户照样看到多个重复账号。
+func TestZcodeAccountsViewBackfillsMissingIdentityThenMerges(t *testing.T) {
+	ctl := &fakeZcodeControl{running: true, provider: "zai"}
+	h, dir := newZcodeAccountsServer(t, ctl)
+	const userID = "bc61b617-6b0f-4bfb-a0cf-e74f0ed0fddc"
+
+	auths := filepath.Join(dir, zcodeAuthsDir)
+	if err := os.MkdirAll(auths, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	mk := func(id, label string, iat int64) zcodeAccount {
+		body := encryptZcodeCredential(t, h, zcodeCredential{
+			APIKey: "8bb5f1aaabbbcc5c0a", Provider: "zai", UserID: userID, JWT: jwtWithIat(iat),
+		})
+		if err := os.WriteFile(filepath.Join(auths, id+".json"), []byte(body), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		// 故意不填 UserID：模拟旧版本写下的档案。
+		return zcodeAccount{ID: id, Label: label, Provider: "zai", SavedAt: "2026-10-23T22:00:00+08:00", Digest: id}
+	}
+	if err := writeZcodeIndex(dir, zcodeAccountIndex{Accounts: []zcodeAccount{
+		mk("old-1", "zai 主号", 1000),
+		mk("old-2", "自动备份 10-23 22:03", 2000),
+	}}); err != nil {
+		t.Fatal(err)
+	}
+	writeCredential(t, dir, encryptZcodeCredential(t, h, zcodeCredential{
+		APIKey: "8bb5f1aaabbbcc5c0a", Provider: "zai", UserID: userID, JWT: jwtWithIat(2000),
+	}))
+
+	view, err := h.zcodeAccountsView(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := view["count"]; got != 1 {
+		t.Fatalf("回填身份后没有合并重复档案：count=%v", got)
+	}
+	if got, _ := view["unfiled"].(bool); got {
+		t.Fatal("回填后当前凭据已能对上档案，unfiled 不该为 true")
+	}
+	if got := view["current_user_id"]; got == "" {
+		t.Fatal("视图没有暴露当前凭据的账号身份")
+	}
+	item := view["accounts"].([]map[string]any)[0]
+	if item["user_id"] == "" {
+		t.Fatal("合并后的档案没有账号身份，界面还是看不出是哪个账号")
+	}
+	if item["api_key_hint"] == "" {
+		t.Fatal("合并后的档案没有 API key 掩码")
+	}
+}

@@ -592,7 +592,12 @@ func (h *server) zcodeAccountsView(dir string) (map[string]any, error) {
 	if err != nil {
 		return nil, err
 	}
-	// 先合并历史遗留的重复档案（同一个账号多条「自动备份」），否则用户看到的
+	// 早期档案没记 userId（那时只用文件摘要）。先回填身份，再谈合并：
+	// 不回填的话 dedupe 看到「都是空 userId」会跳过，用户还是看到 3 个账号。
+	if filled, changed, ferr := h.backfillZcodeIdentities(dir, idx); ferr == nil && changed {
+		idx = filled
+	}
+	// 合并历史遗留的重复档案（同一个账号多条「自动备份」），否则用户看到的
 	// 账号数会比真实账号多。失败不阻塞视图：合并是清理，不是功能前提。
 	if merged, changed, derr := h.dedupeZcodeAccounts(dir, idx); derr == nil && changed {
 		idx = merged
@@ -667,6 +672,41 @@ func maskUserID(userID string) string {
 		return userID
 	}
 	return userID[:8] + "…" + userID[len(userID)-4:]
+}
+
+// backfillZcodeIdentities 给「早期没记 userId 的档案」补上身份。
+//
+// 这些档案是在「只看文件摘要」的版本里建的，索引里没有 user_id，于是 dedupe
+// 看到一串空值会全部跳过，用户依然看到多个重复账号。补法是解密各自的档案文件——
+// 档案就是当时的凭据副本，能解出同一个 userId。解不开的（更早的旧格式）留着不动。
+func (h *server) backfillZcodeIdentities(dir string, idx zcodeAccountIndex) (zcodeAccountIndex, bool, error) {
+	changed := false
+	for i := range idx.Accounts {
+		acc := &idx.Accounts[i]
+		if acc.UserID != "" {
+			continue
+		}
+		cred := h.zcodeReadCredentialIdentity(filepath.Join(dir, zcodeAuthsDir, acc.ID+".json"))
+		if cred == nil || cred.UserID == "" {
+			continue
+		}
+		acc.UserID = cred.UserID
+		acc.APIKeyHint = maskSecret(cred.APIKey)
+		if iat := cred.jwtIssuedAt(); iat > 0 {
+			acc.JWTIat = iat
+		}
+		if acc.Provider == "" {
+			acc.Provider = cred.Provider
+		}
+		changed = true
+	}
+	if !changed {
+		return idx, false, nil
+	}
+	if err := writeZcodeIndex(dir, idx); err != nil {
+		return idx, false, err
+	}
+	return idx, true, nil
 }
 
 // dedupeZcodeAccounts 合并「同一账号的多份档案」。
