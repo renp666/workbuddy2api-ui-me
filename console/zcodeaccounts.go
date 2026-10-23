@@ -110,11 +110,25 @@ func writeZcodeIndex(dir string, idx zcodeAccountIndex) error {
 	return atomicWriteFile(filepath.Join(dir, zcodeAccountsFile), raw, 0o600)
 }
 
+// zcodeProxyUID/GID 是 zcode-proxy 容器里 bun 用户的身份。
+//
+// 为什么必须显式 chown：console 为了能读 sidecar 写的 0600 凭据，以 root 运行
+// （deploy/compose.zcode.yml 的 user: "0:0"），于是它落盘的文件属主也是 root。
+// sidecar 以 uid 1000 运行，读不到 root 的 0600 文件，startProxy 直接报
+// not_logged_in —— 表现为「切换/回滚之后通道再也起不来」，而文件内容其实完好。
+// 所以每一次落盘都要把属主交还给 sidecar。
+const (
+	zcodeProxyUID = 1000
+	zcodeProxyGID = 1000
+)
+
 // atomicWriteFile 写临时文件再 rename。权限统一 0600：凭据与索引都不该给别的用户看。
 func atomicWriteFile(target string, data []byte, mode os.FileMode) error {
 	if err := os.MkdirAll(filepath.Dir(target), 0o700); err != nil {
 		return err
 	}
+	// 目录也交给 sidecar：它只需读 credentials.json，但属主统一能省掉一类难查的 EACCES。
+	_ = os.Chown(filepath.Dir(target), zcodeProxyUID, zcodeProxyGID)
 	tmp, err := os.CreateTemp(filepath.Dir(target), filepath.Base(target)+".tmp-*")
 	if err != nil {
 		return err
@@ -125,6 +139,9 @@ func atomicWriteFile(target string, data []byte, mode os.FileMode) error {
 		tmp.Close()
 		return err
 	}
+	// chown 失败不致命：没有 zcode overlay 时 console 以非 root 运行，此时也没有
+	// sidecar 需要读这个文件，忽略 EPERM 即可。
+	_ = tmp.Chown(zcodeProxyUID, zcodeProxyGID)
 	if err := tmp.Chmod(mode); err != nil {
 		tmp.Close()
 		return err
@@ -322,7 +339,16 @@ func (h *server) zcodeSwitchAccount(ctx context.Context, dir string, id string) 
 			_ = atomicWriteFile(credPath, prevCred, 0o600)
 		}
 		if stopped {
-			_, _ = h.zcodeControl(ctx, map[string]any{"cmd": "startProxy"})
+			resp, err := h.zcodeControl(ctx, map[string]any{"cmd": "startProxy"})
+			if err != nil || !resp.OK {
+				// 回滚也没把通道拉起来时，必须说清楚：否则用户以为只是「切换失败」，
+				// 实际上通道已经停了，/v1 会一直 503，而页面上看不出原因。
+				detail := "控制面不可达"
+				if err == nil {
+					detail = resp.Error
+				}
+				return nil, fmt.Errorf("%s；且回滚未能恢复通道（%s），请到「通道状态」重新启用", reason, detail)
+			}
 		}
 		return nil, errors.New(reason)
 	}

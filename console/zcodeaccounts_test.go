@@ -6,8 +6,10 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
+	"syscall"
 	"testing"
 )
 
@@ -473,5 +475,35 @@ func TestZcodeAccountsSaveReportsApplyFailure(t *testing.T) {
 	}
 	if len(idx.Accounts) != 2 {
 		t.Errorf("档案数 = %d，want 2（重启失败不该回滚档案）", len(idx.Accounts))
+	}
+}
+
+// 凭据文件必须对 sidecar 可读：console 以 root 运行（为了读 sidecar 写的 0600 文件），
+// 它落盘的属主默认也是 root，而 sidecar 是 uid 1000。属主错了的后果不是「写失败」，
+// 而是切换之后 startProxy 报 not_logged_in，通道再也起不来，文件内容却完好无损。
+func TestZcodeWritesGiveOwnershipBackToSidecar(t *testing.T) {
+	if runtime.GOOS != "linux" {
+		t.Skip("chown 语义只在 linux 上可验证")
+	}
+	if os.Geteuid() != 0 {
+		t.Skip("需要 root 才能验证 chown；非 root 环境下 chown 被有意忽略")
+	}
+	dir := t.TempDir()
+	if err := atomicWriteFile(filepath.Join(dir, zcodeCredentialsFile), []byte(`{"encrypted":"x"}`), 0o600); err != nil {
+		t.Fatalf("写入凭据失败: %v", err)
+	}
+	info, err := os.Stat(filepath.Join(dir, zcodeCredentialsFile))
+	if err != nil {
+		t.Fatalf("读取凭据失败: %v", err)
+	}
+	stat, ok := info.Sys().(*syscall.Stat_t)
+	if !ok {
+		t.Skip("当前平台没有 Stat_t")
+	}
+	if int(stat.Uid) != zcodeProxyUID || int(stat.Gid) != zcodeProxyGID {
+		t.Fatalf("凭据属主 = %d:%d，期望 %d:%d：sidecar 读不到这个文件", stat.Uid, stat.Gid, zcodeProxyUID, zcodeProxyGID)
+	}
+	if perm := info.Mode().Perm(); perm != 0o600 {
+		t.Fatalf("凭据权限 = %o，期望 600", perm)
 	}
 }
