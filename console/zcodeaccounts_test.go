@@ -1,6 +1,11 @@
 package main
 
 import (
+	"crypto/aes"
+	"crypto/cipher"
+	"crypto/rand"
+	"crypto/sha256"
+	"encoding/base64"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -505,5 +510,178 @@ func TestZcodeWritesGiveOwnershipBackToSidecar(t *testing.T) {
 	}
 	if perm := info.Mode().Perm(); perm != 0o600 {
 		t.Fatalf("凭据权限 = %o，期望 600", perm)
+	}
+}
+
+// jwtWithIat 造一个只有 payload 有意义的 JWT：console 只解码不验签。
+func jwtWithIat(iat int64) string {
+	payload, _ := json.Marshal(map[string]any{"iat": iat})
+	return "eyJhbGciOiJub25lIn0." + base64.RawURLEncoding.EncodeToString(payload) + ".sig"
+}
+
+// encryptZcodeCredential 按 sidecar 的格式加密凭据（base64(iv12 + AES-GCM)），
+// 让测试走「解密读身份」的真实路径，而不是拿明文 JSON 蒙混过关。
+func encryptZcodeCredential(t *testing.T, h *server, cred zcodeCredential) string {
+	t.Helper()
+	plain, err := json.Marshal(cred)
+	if err != nil {
+		t.Fatal(err)
+	}
+	key := sha256.Sum256([]byte(h.zcodeCredentialSeed()))
+	block, err := aes.NewCipher(key[:])
+	if err != nil {
+		t.Fatal(err)
+	}
+	gcm, err := cipher.NewGCM(block)
+	if err != nil {
+		t.Fatal(err)
+	}
+	iv := make([]byte, gcm.NonceSize())
+	if _, err := rand.Read(iv); err != nil {
+		t.Fatal(err)
+	}
+	blob := gcm.Seal(iv, iv, plain, nil)
+	env, err := json.Marshal(map[string]string{"encrypted": base64.StdEncoding.EncodeToString(blob)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return string(env)
+}
+
+// 同一个账号被重新登录/刷新 token 后，密文变了、摘要变了，但 userId 没变。
+// 早期按摘要判身份，线上因此把一个账号堆成 3 条档案，用户以为有 3 个账号。
+func TestZcodeAccountsRefreshSameUserKeepsOneEntry(t *testing.T) {
+	ctl := &fakeZcodeControl{running: true, provider: "zai"}
+	h, dir := newZcodeAccountsServer(t, ctl)
+	const userID = "bc61b617-6b0f-4bfb-a0cf-e74f0ed0fddc"
+
+	writeCredential(t, dir, encryptZcodeCredential(t, h, zcodeCredential{
+		APIKey: "8bb5f1aaabbbcc5c0a", Provider: "zai", UserID: userID, JWT: jwtWithIat(1000),
+	}))
+	if rec := postJSON(t, h, h.adminZcodeAccountSave, map[string]any{"label": "主号"}); rec.Code != 200 {
+		t.Fatalf("首次保存失败: %d %s", rec.Code, rec.Body.String())
+	}
+
+	// 同一账号的新 token：密文不同 → 摘要不同，但 userId 相同。
+	writeCredential(t, dir, encryptZcodeCredential(t, h, zcodeCredential{
+		APIKey: "8bb5f1aaabbbcc5c0a", Provider: "zai", UserID: userID, JWT: jwtWithIat(2000),
+	}))
+	if rec := postJSON(t, h, h.adminZcodeAccountSave, map[string]any{"label": ""}); rec.Code != 200 {
+		t.Fatalf("二次保存失败: %d %s", rec.Code, rec.Body.String())
+	}
+
+	idx, err := readZcodeIndex(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(idx.Accounts) != 1 {
+		t.Fatalf("同一账号刷新 token 后堆出 %d 条档案，期望 1 条", len(idx.Accounts))
+	}
+	if idx.Accounts[0].JWTIat != 2000 {
+		t.Fatalf("档案没有刷新到最新 token：jwt_iat=%d", idx.Accounts[0].JWTIat)
+	}
+	if idx.Accounts[0].Label != "主号" {
+		t.Fatalf("重复保存把用户起的名字改掉了：%q", idx.Accounts[0].Label)
+	}
+	if idx.Accounts[0].UserID != userID {
+		t.Fatalf("档案没有记下 userId：%q", idx.Accounts[0].UserID)
+	}
+}
+
+// 不同账号必须各自成条，且视图里的 active 按 userId 判定（不能按摘要）。
+func TestZcodeAccountsDistinctUsersStaySeparateAndActiveFollowsUser(t *testing.T) {
+	ctl := &fakeZcodeControl{running: true, provider: "zai"}
+	h, dir := newZcodeAccountsServer(t, ctl)
+
+	writeCredential(t, dir, encryptZcodeCredential(t, h, zcodeCredential{
+		APIKey: "aaaaaaaaaaaabbbb", Provider: "zai", UserID: "user-aaaa-1111", JWT: jwtWithIat(100),
+	}))
+	postJSON(t, h, h.adminZcodeAccountSave, map[string]any{"label": "A"})
+	writeCredential(t, dir, encryptZcodeCredential(t, h, zcodeCredential{
+		APIKey: "ccccccccccccdddd", Provider: "zai", UserID: "user-bbbb-2222", JWT: jwtWithIat(200),
+	}))
+	postJSON(t, h, h.adminZcodeAccountSave, map[string]any{"label": "B"})
+
+	idx, _ := readZcodeIndex(dir)
+	if len(idx.Accounts) != 2 {
+		t.Fatalf("两个不同账号被合并成 %d 条", len(idx.Accounts))
+	}
+	view, err := h.zcodeAccountsView(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := view["count"]; got != 2 {
+		t.Fatalf("count=%v，期望 2", got)
+	}
+	if got, _ := view["unfiled"].(bool); got {
+		t.Fatal("当前凭据已归档，unfiled 不该为 true")
+	}
+	// 当前磁盘上是 B，active 必须是 B 那条。
+	var activeLabel string
+	for _, item := range view["accounts"].([]map[string]any) {
+		if item["active"] == true {
+			activeLabel = item["label"].(string)
+		}
+	}
+	if activeLabel != "B" {
+		t.Fatalf("active 指向 %q，期望 B", activeLabel)
+	}
+}
+
+// 线上事故的复现：同一个 userId 已经堆了多条历史档案，打开页面时必须自动合并，
+// 否则用户看到的账号数永远比真实账号多。
+func TestZcodeAccountsViewMergesLegacyDuplicates(t *testing.T) {
+	ctl := &fakeZcodeControl{running: true, provider: "zai"}
+	h, dir := newZcodeAccountsServer(t, ctl)
+	const userID = "bc61b617-6b0f-4bfb-a0cf-e74f0ed0fddc"
+
+	auths := filepath.Join(dir, zcodeAuthsDir)
+	if err := os.MkdirAll(auths, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	mk := func(id, label string, iat int64) zcodeAccount {
+		body := encryptZcodeCredential(t, h, zcodeCredential{
+			APIKey: "8bb5f1aaabbbcc5c0a", Provider: "zai", UserID: userID, JWT: jwtWithIat(iat),
+		})
+		if err := os.WriteFile(filepath.Join(auths, id+".json"), []byte(body), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		return zcodeAccount{ID: id, Label: label, Provider: "zai", SavedAt: "2026-10-23T22:00:00+08:00",
+			Digest: id, UserID: userID, JWTIat: iat}
+	}
+	idx := zcodeAccountIndex{Active: "dup-2", Accounts: []zcodeAccount{
+		mk("main-1", "zai 主号", 1000),
+		mk("dup-2", "自动备份 10-23 22:03", 2000),
+		mk("dup-3", "自动备份 10-23 22:20", 3000),
+	}}
+	if err := writeZcodeIndex(dir, idx); err != nil {
+		t.Fatal(err)
+	}
+	// 磁盘上的当前凭据是 dup-3 那份。
+	writeCredential(t, dir, encryptZcodeCredential(t, h, zcodeCredential{
+		APIKey: "8bb5f1aaabbbcc5c0a", Provider: "zai", UserID: userID, JWT: jwtWithIat(3000),
+	}))
+
+	view, err := h.zcodeAccountsView(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := view["count"]; got != 1 {
+		t.Fatalf("三条同账号档案没有合并：count=%v", got)
+	}
+	item := view["accounts"].([]map[string]any)[0]
+	if item["label"] != "zai 主号" {
+		t.Fatalf("合并后没保留用户命名的那条：%v", item["label"])
+	}
+	if item["active"] != true {
+		t.Fatal("合并后 active 没落到保留者身上")
+	}
+	// 内容要取最新 token（iat=3000），否则切回去会用过期凭据。
+	merged, _ := readZcodeIndex(dir)
+	if merged.Accounts[0].JWTIat != 3000 {
+		t.Fatalf("合并后没有采用最新 token：jwt_iat=%d", merged.Accounts[0].JWTIat)
+	}
+	if _, err := os.Stat(filepath.Join(auths, "dup-3.json")); !os.IsNotExist(err) {
+		t.Fatal("重复档案文件没有被清理")
 	}
 }

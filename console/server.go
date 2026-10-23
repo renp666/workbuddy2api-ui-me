@@ -36,8 +36,13 @@ type Config struct {
 	// ZCodeDataDir 是 zcode-proxy 持久化目录（runtime/zcode）在 console 侧的挂载点。
 	// 空表示未挂载，账号档案功能整体关闭，页签只保留通道状态与登录。
 	// 目录里的凭据是 sidecar 用容器内恒定密钥加密的 blob：console 只做整文件拷贝，
-	// 不解密、不解析、不比较内容语义，因此换文件即换账号。
+	// 写入时不解密。唯一需要解密的地方是「读账号身份」（凭据里的 userId），
+	// 因为文件摘要会随 token 刷新漂移，撑不住「这是哪个账号」的判断。
 	ZCodeDataDir string
+	// ZCodeHome 是 zcode-proxy 容器里 bun 用户的 HOME，凭据加密种子由它派生
+	// （sha256("{home}-linux-x64")）。空则用镜像默认的 /home/bun。
+	// 只有当 zcode-proxy 镜像改了运行用户时才需要设置。
+	ZCodeHome string
 	// QoderURL is the optional qoder-proxy upstream for qoder-* models; nil disables routing.
 	QoderURL *url.URL
 	// QoderKey replaces Authorization when forwarding to QoderURL.

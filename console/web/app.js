@@ -1890,7 +1890,18 @@ function renderZcodeAccounts(){
  $('zcode-accounts-empty').hidden=accounts.length>0;
  for(const acc of accounts){
   const row=document.createElement('tr');
-  const labelCell=document.createElement('td');labelCell.textContent=acc.label||acc.id;
+  const labelCell=document.createElement('td');
+  // 标签是用户起的名字，账号才是事实：userId 跨 token 刷新稳定，apiKey 掩码用来认人。
+  // 以前只显示标签，用户根本分不清两个「自动备份」是不是同一个账号。
+  const labelText=document.createElement('div');labelText.textContent=acc.label||acc.id;
+  labelCell.append(labelText);
+  const identity=[];
+  if(acc.user_id)identity.push('账号 '+acc.user_id);
+  if(acc.api_key_hint)identity.push('Key '+acc.api_key_hint);
+  if(identity.length){
+   const idLine=document.createElement('div');idLine.className='muted small';idLine.textContent=identity.join(' · ');
+   labelCell.append(idLine);
+  }
   const providerCell=document.createElement('td');providerCell.textContent=acc.provider||'—';
   const planCell=document.createElement('td');planCell.textContent=acc.plan==='coding-plan'?'Coding':acc.plan==='start-plan'?'Start':'—';
   const savedCell=document.createElement('td');savedCell.textContent=formatTaskTime(acc.saved_at);

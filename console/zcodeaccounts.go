@@ -2,8 +2,11 @@ package main
 
 import (
 	"context"
+	"crypto/aes"
+	"crypto/cipher"
 	"crypto/rand"
 	"crypto/sha256"
+	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -31,9 +34,12 @@ import (
 //	<ZCodeDataDir>/auths/<id>.json    账号档案
 //
 // 关键前提：凭据是 sidecar 用「容器内恒定密钥」加密的 blob（store.ts 的
-// sha256(homedir-platform-arch)），同一容器内可直接整文件搬运，console 不需要
-// 解密也不需要重新加密。这也意味着 console 看不到账号是哪个、额度剩多少——
-// 标签由用户自己起，本模块只做文件级切换。
+// sha256(homedir-platform-arch)），同一容器内可直接整文件搬运。
+//
+// console 只解密「读身份」，从不重新加密：解密是为了拿到凭据里的 userId——
+// 它是唯一稳定的账号标识。access token 每次刷新都会让文件内容变（摘要跟着变），
+// 早期拿摘要当身份判据，结果同一个账号刷几次就堆出一串「自动备份」档案。
+// 写回文件时仍然是整份拷贝，加密格式、密钥一律不碰。
 //
 // 生效方式：我们跑的是 android 入口，它没有 serve 面板那条 syncAuthWithDisk 热加载
 // （index.ts 的 startServePanel 才有），凭据只在 startProxy 里 setOAuthCredential。
@@ -48,9 +54,17 @@ type zcodeAccount struct {
 	Provider string `json:"provider,omitempty"`
 	Plan     string `json:"plan,omitempty"`
 	SavedAt  string `json:"saved_at"`
-	// Digest 是凭据文件内容的 sha256 前 16 位，用来判断「当前生效的是哪个档案」。
-	// 用摘要而不是 id 是因为用户可能直接改过 credentials.json（比如手工导入）。
+	// Digest 是凭据文件内容的 sha256 前 16 位。它**不是**账号身份——token 一刷新就变，
+	// 只用来判断「磁盘上这份文件有没有被换过」。账号身份看 UserID。
 	Digest string `json:"digest"`
+	// UserID 是凭据里 Z.AI 的用户标识（OAuth 才有），跨 token 刷新保持不变，
+	// 是判断「两个档案是不是同一个账号」的唯一可靠依据。
+	UserID string `json:"user_id,omitempty"`
+	// APIKeyHint 是凭据里 API key 的掩码（前 6 后 4），同账号的 key 通常不变，
+	// 用来让用户在界面上认人。
+	APIKeyHint string `json:"api_key_hint,omitempty"`
+	// JWTIat 是 start-plan token 的签发时间（Unix 秒），近似「这个账号最近一次登录」。
+	JWTIat int64 `json:"jwt_iat,omitempty"`
 }
 
 // zcodeAccountIndex 是 accounts.json 的结构。Active 记录当前生效档案的 id，
@@ -67,6 +81,9 @@ const (
 	// 自动快照的标签前缀：登录新账号前把「还没归档的当前凭据」留一份，
 	// 避免一次登录把上一个账号永久冲掉。
 	zcodeAutoLabelPrefix = "自动备份 "
+	// zcodeDefaultProxyHome 是 zcode-proxy 镜像里 bun 用户的 HOME。
+	// 凭据加密种子由它派生（见 zcodeCredentialSeed），默认值取自镜像实测。
+	zcodeDefaultProxyHome = "/home/bun"
 )
 
 // errZcodeAccountsOff 表示没有挂载账号目录（WB2A_ZCODE_DATA_DIR 为空）。
@@ -176,6 +193,99 @@ func copyFile(src, dst string) error {
 	return atomicWriteFile(dst, raw, 0o600)
 }
 
+// zcodeCredential 是解密后凭据里我们关心的部分。sidecar 的完整结构还有 secret，
+// 这里不取——console 不需要、也不该持有密钥材料。
+type zcodeCredential struct {
+	APIKey   string `json:"apiKey"`
+	Provider string `json:"provider"`
+	UserID   string `json:"userId"`
+	JWT      string `json:"jwt"`
+}
+
+// zcodeCredentialSeed 复刻 sidecar 的密钥种子 `{homedir}-{platform}-{arch}`（store.ts）。
+//
+// platform/arch 固定写 linux/x64：sidecar 是 linux/amd64 的 bun，而 Node 的
+// process.arch 报的是 "x64" 不是 "amd64"，写错一个字符就解不开。
+// homedir 是镜像里 bun 用户的 /home/bun，可用 WB2A_ZCODE_HOME 覆盖。
+func (h *server) zcodeCredentialSeed() string {
+	home := strings.TrimSpace(h.cfg.ZCodeHome)
+	if home == "" {
+		home = zcodeDefaultProxyHome
+	}
+	return home + "-linux-x64"
+}
+
+// zcodeReadCredentialIdentity 解密凭据读出账号身份。任何一步失败都返回 nil，
+// 调用方降级回「只看文件摘要」的老行为——解不开不该让整个账号功能不可用
+// （比如上游某天换了 KDF，页面还得能用，只是认不出账号是谁）。
+func (h *server) zcodeReadCredentialIdentity(path string) *zcodeCredential {
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		return nil
+	}
+	var env struct {
+		Encrypted string `json:"encrypted"`
+	}
+	if json.Unmarshal(raw, &env) != nil || env.Encrypted == "" {
+		return nil
+	}
+	blob, err := base64.StdEncoding.DecodeString(env.Encrypted)
+	if err != nil || len(blob) < 13 { // 12 字节 IV + 至少 1 字节密文
+		return nil
+	}
+	key := sha256.Sum256([]byte(h.zcodeCredentialSeed()))
+	block, err := aes.NewCipher(key[:])
+	if err != nil {
+		return nil
+	}
+	gcm, err := cipher.NewGCM(block)
+	if err != nil {
+		return nil
+	}
+	plain, err := gcm.Open(nil, blob[:12], blob[12:], nil)
+	if err != nil {
+		return nil
+	}
+	var cred zcodeCredential
+	if json.Unmarshal(plain, &cred) != nil {
+		return nil
+	}
+	if cred.UserID == "" && cred.APIKey == "" {
+		return nil
+	}
+	return &cred
+}
+
+// jwtIssuedAt 取 JWT payload 的 iat（Unix 秒）。只解码不验签——我们只读展示信息。
+func (c *zcodeCredential) jwtIssuedAt() int64 {
+	parts := strings.Split(c.JWT, ".")
+	if len(parts) != 3 {
+		return 0
+	}
+	payload, err := base64.RawURLEncoding.DecodeString(parts[1])
+	if err != nil {
+		return 0
+	}
+	var claims struct {
+		Iat int64 `json:"iat"`
+	}
+	if json.Unmarshal(payload, &claims) != nil {
+		return 0
+	}
+	return claims.Iat
+}
+
+// maskSecret 保留头尾便于认人，中间隐去。太短的值整体隐去，避免「掩码等于明文」。
+func maskSecret(value string) string {
+	if len(value) < 12 {
+		if value == "" {
+			return ""
+		}
+		return "***"
+	}
+	return value[:6] + "…" + value[len(value)-4:]
+}
+
 func newZcodeAccountID() string {
 	buf := make([]byte, 3)
 	_, _ = rand.Read(buf)
@@ -192,7 +302,27 @@ func (idx *zcodeAccountIndex) byID(id string) *zcodeAccount {
 	return nil
 }
 
-// byDigest 按凭据摘要查找档案，用于识别「当前生效的是哪个档案」。
+// byIdentity 按「服务商 + 上游用户标识」查找档案，这是判断「是不是同一个账号」
+// 的唯一可靠依据。userID 为空时返回 nil，调用方回退到摘要判定。
+func (idx *zcodeAccountIndex) byIdentity(provider, userID string) *zcodeAccount {
+	if userID == "" {
+		return nil
+	}
+	for i := range idx.Accounts {
+		if idx.Accounts[i].UserID != userID {
+			continue
+		}
+		// provider 未知时不参与比较，避免旧档案缺这个字段就匹配不上。
+		if provider != "" && idx.Accounts[i].Provider != "" && idx.Accounts[i].Provider != provider {
+			continue
+		}
+		return &idx.Accounts[i]
+	}
+	return nil
+}
+
+// byDigest 按凭据摘要查找档案。摘要会随 token 刷新变化，所以它只能回答
+// 「这份文件归档过没有」，不能回答「这个账号归档过没有」——后者用 byIdentity。
 func (idx *zcodeAccountIndex) byDigest(digest string) *zcodeAccount {
 	if digest == "" {
 		return nil
@@ -215,11 +345,56 @@ func (h *server) zcodeAccountsSnapshot(dir string, idx zcodeAccountIndex, label 
 	if digest == "" {
 		return idx, zcodeAccount{}, false, errors.New("当前没有可保存的凭据")
 	}
-	// 同一份凭据已经归档过就直接返回旧档案，避免同一账号堆出一串重复条目。
-	if existing := idx.byDigest(digest); existing != nil {
-		return idx, *existing, false, nil
+	cred := h.zcodeReadCredentialIdentity(credPath)
+	provider := ""
+	if v, ok := status["provider"].(string); ok {
+		provider = v
+	}
+	if provider == "" && cred != nil {
+		provider = cred.Provider
+	}
+	userID := ""
+	if cred != nil {
+		userID = cred.UserID
 	}
 	label = strings.TrimSpace(label)
+
+	// 同一账号已经归档过：刷新那份档案的内容和时间，不新建条目。
+	// 判据必须是 userId 而不是文件摘要——token 每次刷新都会让摘要变，
+	// 用摘要判身份会让同一个账号堆出一串「自动备份」（线上真发生过：一个账号 3 条）。
+	if userID != "" {
+		if existing := idx.byIdentity(provider, userID); existing != nil {
+			if err := copyFile(credPath, filepath.Join(dir, zcodeAuthsDir, existing.ID+".json")); err != nil {
+				return idx, zcodeAccount{}, false, err
+			}
+			existing.Digest = digest
+			existing.SavedAt = time.Now().Format(time.RFC3339)
+			existing.UserID = userID
+			existing.APIKeyHint = maskSecret(cred.APIKey)
+			if iat := cred.jwtIssuedAt(); iat > 0 {
+				existing.JWTIat = iat
+			}
+			if provider != "" {
+				existing.Provider = provider
+			}
+			if v, ok := status["plan"].(string); ok && v != "" {
+				existing.Plan = v
+			}
+			// 自动备份档案一旦被用户起了名，就升级成正式档案（保留用户起的名字）。
+			if label != "" && strings.HasPrefix(existing.Label, zcodeAutoLabelPrefix) {
+				existing.Label = label
+			}
+			idx.Active = existing.ID
+			if err := writeZcodeIndex(dir, idx); err != nil {
+				return idx, zcodeAccount{}, false, err
+			}
+			return idx, *existing, false, nil
+		}
+	} else if existing := idx.byDigest(digest); existing != nil {
+		// 解不开凭据（上游换了 KDF 之类）时退回摘要判重，宁可少建一条也不要崩。
+		return idx, *existing, false, nil
+	}
+
 	if label == "" {
 		label = "账号 " + time.Now().Format("01-02 15:04")
 	}
@@ -228,9 +403,14 @@ func (h *server) zcodeAccountsSnapshot(dir string, idx zcodeAccountIndex, label 
 		Label:   label,
 		SavedAt: time.Now().Format(time.RFC3339),
 		Digest:  digest,
+		UserID:  userID,
 	}
-	if v, ok := status["provider"].(string); ok {
-		acc.Provider = v
+	if cred != nil {
+		acc.APIKeyHint = maskSecret(cred.APIKey)
+		acc.JWTIat = cred.jwtIssuedAt()
+	}
+	if provider != "" {
+		acc.Provider = provider
 	}
 	if v, ok := status["plan"].(string); ok {
 		acc.Plan = v
@@ -247,10 +427,23 @@ func (h *server) zcodeAccountsSnapshot(dir string, idx zcodeAccountIndex, label 
 }
 
 // autoSnapshotUnfiled 在切换/登录前把「还没归档的当前凭据」留一份。
-// 返回更新后的索引；当前凭据为空或已归档时原样返回。
+// 返回更新后的索引；当前凭据为空、或这个账号已经归档过时原样返回。
 func (h *server) autoSnapshotUnfiled(dir string, idx zcodeAccountIndex, status map[string]any) (zcodeAccountIndex, error) {
-	digest := digestFile(filepath.Join(dir, zcodeCredentialsFile))
-	if digest == "" || idx.byDigest(digest) != nil {
+	credPath := filepath.Join(dir, zcodeCredentialsFile)
+	digest := digestFile(credPath)
+	if digest == "" {
+		return idx, nil
+	}
+	// 先按账号身份判断：token 刷新会让摘要变，但账号没变，不该再留一份备份。
+	if cred := h.zcodeReadCredentialIdentity(credPath); cred != nil && cred.UserID != "" {
+		provider := cred.Provider
+		if v, ok := status["provider"].(string); ok && v != "" {
+			provider = v
+		}
+		if idx.byIdentity(provider, cred.UserID) != nil {
+			return idx, nil
+		}
+	} else if idx.byDigest(digest) != nil {
 		return idx, nil
 	}
 	next, _, _, err := h.zcodeAccountsSnapshot(dir, idx, zcodeAutoLabelPrefix+time.Now().Format("01-02 15:04"), status)
@@ -390,17 +583,34 @@ func (h *server) zcodeSwitchAccount(ctx context.Context, dir string, id string) 
 }
 
 // zcodeAccountsView 组装页签需要的账号列表：每个档案标注是否为当前生效。
-// 判据是凭据摘要而不是索引里的 active——用户手工替换过 credentials.json 时，
-// 索引的 active 会过期，摘要才是事实。
+//
+// 生效判据是「上游 userId」而不是索引里的 active，也不是文件摘要：
+//   - 索引的 active 会过期（用户手工替换过 credentials.json 时）；
+//   - 文件摘要会随 token 刷新变化，同一个账号会被认成不同账号。
 func (h *server) zcodeAccountsView(dir string) (map[string]any, error) {
 	idx, err := readZcodeIndex(dir)
 	if err != nil {
 		return nil, err
 	}
-	curDigest := digestFile(filepath.Join(dir, zcodeCredentialsFile))
+	// 先合并历史遗留的重复档案（同一个账号多条「自动备份」），否则用户看到的
+	// 账号数会比真实账号多。失败不阻塞视图：合并是清理，不是功能前提。
+	if merged, changed, derr := h.dedupeZcodeAccounts(dir, idx); derr == nil && changed {
+		idx = merged
+	}
+
+	credPath := filepath.Join(dir, zcodeCredentialsFile)
+	curDigest := digestFile(credPath)
+	cur := h.zcodeReadCredentialIdentity(credPath)
 	activeID := ""
-	if cur := idx.byDigest(curDigest); cur != nil {
-		activeID = cur.ID
+	if cur != nil && cur.UserID != "" {
+		if acc := idx.byIdentity(cur.Provider, cur.UserID); acc != nil {
+			activeID = acc.ID
+		}
+	}
+	if activeID == "" {
+		if acc := idx.byDigest(curDigest); acc != nil {
+			activeID = acc.ID
+		}
 	}
 	out := make([]map[string]any, 0, len(idx.Accounts))
 	for _, acc := range idx.Accounts {
@@ -411,10 +621,22 @@ func (h *server) zcodeAccountsView(dir string) (map[string]any, error) {
 			"plan":     acc.Plan,
 			"saved_at": acc.SavedAt,
 			"active":   acc.ID == activeID,
+			// 账号身份：userId 是跨 token 刷新稳定的上游用户标识，界面用它区分账号。
+			"user_id":      maskUserID(acc.UserID),
+			"api_key_hint": acc.APIKeyHint,
+			"jwt_iat":      acc.JWTIat,
 		})
 	}
 	// 磁盘上有一份凭据还没归档（比如刚登录完）时 unfiled=true，页签据此提示先保存。
-	unfiled := curDigest != "" && idx.byDigest(curDigest) == nil
+	// 判据同样优先看账号身份：token 刷新后摘要变了，但账号已归档就不该提示「未保存」。
+	unfiled := false
+	if curDigest != "" {
+		if cur != nil && cur.UserID != "" {
+			unfiled = idx.byIdentity(cur.Provider, cur.UserID) == nil
+		} else {
+			unfiled = idx.byDigest(curDigest) == nil
+		}
+	}
 	return map[string]any{
 		"available": true,
 		"accounts":  out,
@@ -425,7 +647,121 @@ func (h *server) zcodeAccountsView(dir string) (map[string]any, error) {
 		// 轮询发现它变了就说明新账号已经登录完成——这是唯一可靠的判据：logged_in 在
 		// 「A 已登录、正在登录 B」的全程都是 true，用它判断永远看不出变化。
 		"current_digest": curDigest,
+		// current_user_id 是当前凭据的账号身份（掩码）。前端据此判断「换回来的是不是
+		// 同一个账号」——只比摘要会在 token 刷新后误判成「换了个新账号」。
+		"current_user_id": maskUserID(func() string {
+			if cur == nil {
+				return ""
+			}
+			return cur.UserID
+		}()),
 	}, nil
+}
+
+// maskUserID 把上游 userId（UUID）掩码成可辨认的短码。
+func maskUserID(userID string) string {
+	if userID == "" {
+		return ""
+	}
+	if len(userID) <= 12 {
+		return userID
+	}
+	return userID[:8] + "…" + userID[len(userID)-4:]
+}
+
+// dedupeZcodeAccounts 合并「同一账号的多份档案」。
+//
+// 背景：早期用文件摘要判断账号身份，而 access token 每次刷新都会重写 credentials.json，
+// 摘要跟着变，于是同一个账号被反复当成「新账号」留档。线上真发生过：一个账号堆出
+// 3 条档案（zai 主号 + 自动备份 ×2），用户以为有 3 个账号。
+//
+// 归并规则：
+//   - 只在 userId 相同且 provider 相同（或任一方为空）时合并；
+//   - 保留「用户命名过」的那条（label 不带自动备份前缀），都是自动备份则留最新的；
+//   - 保留者的凭据内容取组内 JWT 签发时间最新的那份（就是当前有效 token）；
+//   - 其余档案文件删除，索引条目移除。
+func (h *server) dedupeZcodeAccounts(dir string, idx zcodeAccountIndex) (zcodeAccountIndex, bool, error) {
+	groups := make(map[string][]int)
+	var order []string
+	for i, acc := range idx.Accounts {
+		if acc.UserID == "" {
+			continue // 身份未知的档案不参与合并，宁可留着让用户自己判断
+		}
+		key := acc.Provider + "\x00" + acc.UserID
+		if _, ok := groups[key]; !ok {
+			order = append(order, key)
+		}
+		groups[key] = append(groups[key], i)
+	}
+
+	dropped := make(map[int]bool)
+	keepFor := make(map[int]int) // 被删索引 → 保留索引
+	for _, key := range order {
+		members := groups[key]
+		if len(members) < 2 {
+			continue
+		}
+		keep := members[0]
+		for _, i := range members[1:] {
+			keepAcc, candAcc := idx.Accounts[keep], idx.Accounts[i]
+			keepAuto := strings.HasPrefix(keepAcc.Label, zcodeAutoLabelPrefix)
+			candAuto := strings.HasPrefix(candAcc.Label, zcodeAutoLabelPrefix)
+			switch {
+			case keepAuto && !candAuto:
+				keep = i
+			case keepAuto == candAuto && candAcc.SavedAt > keepAcc.SavedAt:
+				keep = i
+			}
+		}
+		// 内容取组内最新（JWT 签发时间最大）的那份：它才是当前可用的 token。
+		newest := members[0]
+		for _, i := range members[1:] {
+			if idx.Accounts[i].JWTIat > idx.Accounts[newest].JWTIat {
+				newest = i
+			}
+		}
+		if newest != keep {
+			from := filepath.Join(dir, zcodeAuthsDir, idx.Accounts[newest].ID+".json")
+			to := filepath.Join(dir, zcodeAuthsDir, idx.Accounts[keep].ID+".json")
+			if _, err := os.Stat(from); err == nil {
+				if err := copyFile(from, to); err != nil {
+					return idx, false, err
+				}
+			}
+			idx.Accounts[keep].Digest = idx.Accounts[newest].Digest
+			idx.Accounts[keep].JWTIat = idx.Accounts[newest].JWTIat
+			idx.Accounts[keep].APIKeyHint = idx.Accounts[newest].APIKeyHint
+			idx.Accounts[keep].SavedAt = idx.Accounts[newest].SavedAt
+		}
+		for _, i := range members {
+			if i == keep {
+				continue
+			}
+			dropped[i] = true
+			keepFor[i] = keep
+			_ = os.Remove(filepath.Join(dir, zcodeAuthsDir, idx.Accounts[i].ID+".json"))
+		}
+	}
+	if len(dropped) == 0 {
+		return idx, false, nil
+	}
+
+	kept := make([]zcodeAccount, 0, len(idx.Accounts)-len(dropped))
+	for i, acc := range idx.Accounts {
+		if dropped[i] {
+			if idx.Active == acc.ID {
+				// active 指向被删的那条时改指保留者，避免索引里留一个不存在的 id。
+				idx.Active = idx.Accounts[keepFor[i]].ID
+			}
+			continue
+		}
+		kept = append(kept, acc)
+	}
+	idx.Accounts = kept
+	if err := writeZcodeIndex(dir, idx); err != nil {
+		return idx, false, err
+	}
+	return idx, true, nil
 }
 
 func (h *server) adminZcodeAccounts(w http.ResponseWriter, r *http.Request) {
