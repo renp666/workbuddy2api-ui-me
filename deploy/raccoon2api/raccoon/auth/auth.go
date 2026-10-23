@@ -6,6 +6,7 @@
 package auth
 
 import (
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -69,16 +70,43 @@ func Parse(raw []byte) (*Auth, error) {
 		return nil, fmt.Errorf("parse_error: missing access_token")
 	}
 	uid := strings.TrimSpace(d.UID)
+	sub, jwtExp := tokenClaims(access)
+	derived := false
+	// DesktopUID 是哨兵值而不是真实账号身份：早期导入会把空 uid 规范化成它再落盘，
+	// 所以文件里显式写着 raccoon-desktop 同样等于「没声明身份」，要一并重新推导。
+	if uid == "" || uid == DesktopUID {
+		// 桌面端 auth.json 只有 access_token / refresh_token / office_identity，不含 uid。
+		// 空 uid 一律落到 DesktopUID，会让所有账号写进同一个 raccoon-desktop.json 并
+		// 互相覆盖——多账号池因此永远只有一行。JWT 的 sub 是上游用户标识（pu-…），
+		// 同一账号恒定、不同账号必不同，用它当 uid 才真的能并存。
+		if sub != "" {
+			uid = sub
+			derived = true
+		}
+	}
 	if uid == "" {
 		uid = DesktopUID
 	}
-	nickname := firstNonEmpty(strings.TrimSpace(d.Nickname), strings.TrimSpace(d.Name), uid)
+	nickname := firstNonEmpty(strings.TrimSpace(d.Nickname), strings.TrimSpace(d.Name))
+	if nickname == "" {
+		nickname = uid
+		if derived {
+			// 派生的 uid 有 42 字符，直接当展示名会把账号表那一列撑开；截短只影响显示。
+			nickname = shortUID(uid)
+		}
+	}
+	// 显式 expires_at 优先；桌面端 auth.json 不带这个字段，就从 JWT 的 exp 补。
+	// 补不上时保持 0（= 不预刷新），行为与旧版一致。
+	exp := normalizeExpiresAt(d.ExpiresAt)
+	if exp == 0 {
+		exp = jwtExp
+	}
 	return &Auth{
 		uid:          uid,
 		nickname:     nickname,
 		accessToken:  access,
 		refreshToken: strings.TrimSpace(d.RefreshToken),
-		expiresAt:    normalizeExpiresAt(d.ExpiresAt),
+		expiresAt:    exp,
 	}, nil
 }
 
@@ -222,14 +250,33 @@ func LoadDir(dir string) ([]*Auth, error) {
 		if err != nil {
 			continue
 		}
-		if a.uid == DesktopUID {
-			// 文件名是更可靠的账号身份来源：避免多个文件都落到固定 UID 互相覆盖。
-			if uid := uidFromFile(f); uid != "" && uid != DesktopUID {
+		// 文件名是持久化的身份来源：Parse 改进后，早期导入的老文件（文件名仍是
+		// raccoon-desktop）能从 JWT 的 sub 解析出真实身份。两者不一致必须收敛，否则
+		// 下次导入同一账号会另存一份，池里出现两条指向同一账号的记录——它们共用
+		// refreshToken，轮换时会把对方踢下线。
+		if uid := uidFromFile(f); uid != "" && uid != a.uid {
+			if uid == DesktopUID && a.uid != DesktopUID {
+				// 历史遗留的 raccoon-desktop.json：把文件迁到新名字。目标已存在时既不
+				// 迁移也不覆盖，两份都留着让用户自己决定删哪个。
+				dst := FilePathFor(dir, a.uid)
+				if _, statErr := os.Stat(dst); os.IsNotExist(statErr) {
+					if renameErr := os.Rename(f, dst); renameErr == nil {
+						f = dst
+					}
+				}
+			} else {
+				// 其余情况文件名优先：它是 uid 已经落盘的形式。
 				a.uid = uid
 				if a.nickname == DesktopUID {
 					a.nickname = uid
 				}
 			}
+		}
+		// 早期版本的自动昵称取 uid 前 12 字符，UUIDv7 下同期账号会撞成同一个名字
+		// （pu-01a1365c-… 与 pu-01a1365c-… 都显示 pu-01a1365c）。认出来就按新口径
+		// 重算；用户手动改过的名字不匹配这个特征，不会被动。
+		if legacy := legacyShortUID(a.uid); a.nickname == legacy && legacy != shortUID(a.uid) {
+			a.nickname = shortUID(a.uid)
 		}
 		a.filePath = f
 		out = append(out, a)
@@ -241,6 +288,71 @@ func uidFromFile(path string) string {
 	base := filepath.Base(path)
 	base = strings.TrimSuffix(base, ".json")
 	return strings.TrimPrefix(base, "raccoon-")
+}
+
+// uidFromToken 从 access_token 的 JWT payload 里取 sub 当账号 ID。
+//
+// 只读不验签：这里取的是身份标签，凭证有效性由上游判定；伪造的 sub 顶多让自己在本机
+// 多占一个文件名，拿不到别人的额度。格式不对就返回空串，由调用方退回 DesktopUID。
+func uidFromToken(token string) string {
+	sub, _ := tokenClaims(token)
+	return sub
+}
+
+// tokenClaims 解出 JWT payload 里的 sub 与 exp。桌面端 auth.json 两个都不带，
+// 不从这里补的话：uid 会全塌到 DesktopUID，expires_at 会停在 0（调度器据此
+// 判定「无需预刷新」，token 到期后账号直接失效、只能重新导入）。
+func tokenClaims(token string) (string, int64) {
+	parts := strings.Split(token, ".")
+	if len(parts) != 3 {
+		return "", 0
+	}
+	payload, err := base64.RawURLEncoding.DecodeString(strings.TrimRight(parts[1], "="))
+	if err != nil {
+		return "", 0
+	}
+	var claims struct {
+		Sub string `json:"sub"`
+		Exp int64  `json:"exp"`
+	}
+	if err := json.Unmarshal(payload, &claims); err != nil {
+		return "", 0
+	}
+	return sanitizeUID(claims.Sub), normalizeExpiresAt(claims.Exp)
+}
+
+// sanitizeUID 把 sub 收敛成可安全落进文件名的字符集（uid 会拼进 raccoon-<uid>.json）。
+func sanitizeUID(s string) string {
+	var b strings.Builder
+	for _, r := range strings.TrimSpace(s) {
+		switch {
+		case r >= 'a' && r <= 'z', r >= 'A' && r <= 'Z', r >= '0' && r <= '9', r == '-', r == '_':
+			b.WriteRune(r)
+		}
+	}
+	return strings.Trim(b.String(), "-_")
+}
+
+// legacyShortUID 是旧版自动昵称的口径（uid 前 12 字符），只用来识别并纠正历史数据。
+func legacyShortUID(uid string) string {
+	if len(uid) <= 12 {
+		return uid
+	}
+	return strings.TrimRight(uid[:12], "-_")
+}
+
+// shortUID 截短派生 uid，只用于默认展示名。
+//
+// 取尾部而不是头部：小浣熊的 sub 是 UUIDv7（pu-<时间戳>-<随机位>），同一时期创建的
+// 账号前缀完全相同，按前缀截会把两个账号显示成同一个名字。末段才是随机位。
+func shortUID(uid string) string {
+	if len(uid) <= 12 {
+		return uid
+	}
+	if i := strings.LastIndex(uid, "-"); i >= 0 && len(uid)-i-1 >= 6 {
+		return uid[i+1:]
+	}
+	return uid[len(uid)-12:]
 }
 
 func firstNonEmpty(vals ...string) string {

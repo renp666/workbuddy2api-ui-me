@@ -195,3 +195,20 @@ func (h *server) adminRaccoonCredits(w http.ResponseWriter, r *http.Request) {
 func (h *server) adminRaccoonUsage(w http.ResponseWriter, r *http.Request) {
 	h.raccoonForward(w, r, "GET", "/admin/api/usage", nil, raccoonCtlTimeout)
 }
+
+// adminRaccoonSchedule 返回排程视图（签到时点、上次执行时间、下次触发）。
+func (h *server) adminRaccoonSchedule(w http.ResponseWriter, r *http.Request) {
+	h.raccoonForward(w, r, "GET", "/admin/api/schedule", nil, raccoonCtlTimeout)
+}
+
+// adminRaccoonScheduleCheckin 手动跑一轮积分链路。小浣熊没有原生签到接口，sidecar 只在
+// 每日固定时点跑「桌面登录奖励 → setting_info 触发 → 账单核对」；容器在那个小时没运行
+// 就会漏掉一整天，所以需要这个「立即跑一次」的入口。逐账号访问上游，用长超时。
+func (h *server) adminRaccoonScheduleCheckin(w http.ResponseWriter, r *http.Request) {
+	h.raccoonForward(w, r, "POST", "/admin/api/schedule/checkin", map[string]any{}, raccoonTaskTimeout)
+}
+
+// adminRaccoonScheduleRefresh 手动跑一轮 token 预刷新（同样逐账号访问上游）。
+func (h *server) adminRaccoonScheduleRefresh(w http.ResponseWriter, r *http.Request) {
+	h.raccoonForward(w, r, "POST", "/admin/api/schedule/refresh", map[string]any{}, raccoonTaskTimeout)
+}

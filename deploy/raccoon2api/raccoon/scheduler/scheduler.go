@@ -7,7 +7,11 @@ package scheduler
 
 import (
 	"context"
+	"encoding/json"
 	"log"
+	"os"
+	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 
@@ -21,6 +25,9 @@ type Config struct {
 	CheckinHour  int
 	RefreshHours []int
 	RefreshSkew  time.Duration
+	// StatePath 持久化「上次签到/刷新时间」。只放内存的话容器一重启就丢，
+	// 界面上的「今日已签到」标识会跟着失真——用户分不清是真没签还是重启忘了。
+	StatePath string
 }
 
 type Scheduler struct {
@@ -40,7 +47,48 @@ func New(cfg Config) *Scheduler {
 	if cfg.RefreshSkew <= 0 {
 		cfg.RefreshSkew = upstream.RefreshMargin
 	}
-	return &Scheduler{cfg: cfg}
+	s := &Scheduler{cfg: cfg}
+	s.loadState()
+	return s
+}
+
+// state 是落盘的排程时间戳。故意只存这两个时间，不含账号信息。
+type state struct {
+	LastCheckin time.Time `json:"last_checkin"`
+	LastRefresh time.Time `json:"last_refresh"`
+}
+
+func (s *Scheduler) loadState() {
+	if s.cfg.StatePath == "" {
+		return
+	}
+	raw, err := os.ReadFile(s.cfg.StatePath)
+	if err != nil {
+		return
+	}
+	var st state
+	if err := json.Unmarshal(raw, &st); err != nil {
+		return
+	}
+	s.lastCheckin, s.lastRefresh = st.LastCheckin, st.LastRefresh
+}
+
+// saveState 尽力而为：写不进去只影响「已签到」标识，不该让签到本身报错。
+func (s *Scheduler) saveState() {
+	if s.cfg.StatePath == "" {
+		return
+	}
+	s.mu.Lock()
+	st := state{LastCheckin: s.lastCheckin, LastRefresh: s.lastRefresh}
+	s.mu.Unlock()
+	if err := os.MkdirAll(filepath.Dir(s.cfg.StatePath), 0o700); err != nil {
+		return
+	}
+	raw, err := json.Marshal(st)
+	if err != nil {
+		return
+	}
+	_ = os.WriteFile(s.cfg.StatePath, raw, 0o600)
 }
 
 // Run 以分钟粒度轮询整点，到点执行对应任务；ctx 取消即退出。
@@ -79,9 +127,9 @@ func (s *Scheduler) RunCheckinNow(ctx context.Context) (int, error) {
 		log.Printf("raccoon 积分链路 %s: %v", uid, err)
 	}
 	for _, st := range s.cfg.Pool.List() {
-		if st.Disabled || !st.Enabled {
-			continue
-		}
+		// 停用只表示「不参与选号」，不该顺带停掉积分维护：用户用「切换」独占某个账号
+		// 时其余账号会被停用，这里若跟着跳过，切一次就丢一批账号的积分有效期——而那
+		// 恰恰是用户最想保住的东西。
 		a := s.cfg.Pool.AuthByUID(st.UID)
 		if a == nil {
 			continue
@@ -122,6 +170,7 @@ func (s *Scheduler) RunCheckinNow(ctx context.Context) (int, error) {
 	s.mu.Lock()
 	s.lastCheckin = time.Now()
 	s.mu.Unlock()
+	s.saveState()
 	return processed, firstErr
 }
 
@@ -130,7 +179,9 @@ func (s *Scheduler) RunRefreshNow(ctx context.Context) (int, error) {
 	var processed int
 	var firstErr error
 	for _, st := range s.cfg.Pool.List() {
-		if st.Disabled {
+		// 同上：停用账号的 token 一样会过期，不预刷新就得重新导入凭证。已确认
+		// token 失效的跳过，否则每天重试一次只会刷屏。
+		if st.Disabled && strings.HasPrefix(st.Reason, "token_expired") {
 			continue
 		}
 		a := s.cfg.Pool.AuthByUID(st.UID)
@@ -151,6 +202,7 @@ func (s *Scheduler) RunRefreshNow(ctx context.Context) (int, error) {
 	s.mu.Lock()
 	s.lastRefresh = time.Now()
 	s.mu.Unlock()
+	s.saveState()
 	return processed, firstErr
 }
 
@@ -172,10 +224,19 @@ func (s *Scheduler) Status() map[string]any {
 	if !s.lastCheckin.IsZero() {
 		out["last_checkin"] = s.lastCheckin.UTC().Format(time.RFC3339)
 	}
+	// 按本地时区判同日：用户问的是「今天签过没」，不是 UTC 的今天。
+	out["checked_today"] = !s.lastCheckin.IsZero() && sameDay(s.lastCheckin, now)
 	if !s.lastRefresh.IsZero() {
 		out["last_refresh"] = s.lastRefresh.UTC().Format(time.RFC3339)
 	}
 	return out
+}
+
+// sameDay 按本地时区比较日期。
+func sameDay(a, b time.Time) bool {
+	ay, am, ad := a.Local().Date()
+	by, bm, bd := b.Local().Date()
+	return ay == by && am == bm && ad == bd
 }
 
 // nextFire 返回到下一个目标整点的时长；时点全部非法时返回一小时（避免忙等）。

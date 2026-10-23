@@ -76,6 +76,7 @@ func main() {
 		CheckinHour:  envInt("RACCOON_CHECKIN_HOUR", 9),
 		RefreshHours: envIntList("RACCOON_REFRESH_HOURS", []int{3}),
 		RefreshSkew:  upstream.RefreshMargin,
+		StatePath:    filepath.Join(dataDir, "state", "schedule.json"),
 	})
 
 	th := server.NewHandler(server.Config{

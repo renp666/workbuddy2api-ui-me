@@ -414,6 +414,11 @@ func NewServer(cfg Config) (http.Handler, error) {
 	h.mux.HandleFunc("POST /admin/raccoon/accounts/refresh", h.withAdmin(h.adminRaccoonAccountsRefresh))
 	h.mux.HandleFunc("GET /admin/raccoon/credits", h.withAdmin(h.adminRaccoonCredits))
 	h.mux.HandleFunc("GET /admin/raccoon/usage", h.withAdmin(h.adminRaccoonUsage))
+	// 排程：小浣熊没有原生签到接口，每日积分靠 sidecar 在固定时点跑三步链路触发。
+	// 容器在那个小时没运行就会漏掉一整天，所以要把「立即跑一次」暴露出来。
+	h.mux.HandleFunc("GET /admin/raccoon/schedule", h.withAdmin(h.adminRaccoonSchedule))
+	h.mux.HandleFunc("POST /admin/raccoon/schedule/checkin", h.withAdmin(h.adminRaccoonScheduleCheckin))
+	h.mux.HandleFunc("POST /admin/raccoon/schedule/refresh", h.withAdmin(h.adminRaccoonScheduleRefresh))
 	h.mux.HandleFunc("GET /admin/ccr", h.withAdmin(h.adminCCRStatus))
 	h.mux.HandleFunc("POST /admin/ccr/gateway", h.withAdmin(h.adminCCRGateway))
 	h.mux.HandleFunc("GET /admin/ccr/link", h.withAdmin(h.adminCCRLink))
