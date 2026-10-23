@@ -3,8 +3,8 @@
 - 症状：生产棱镜网关（7863）间歇性不可用（时好时坏），用户主观报告
 - 开始：2026-10-19
 - 约束：生产环境只读诊断优先；Steps 1-4 禁改业务逻辑；复用项目既有日志 sink（errors-*.jsonl / docker logs / channel-probe.sh）
-- DEBUG_EVIDENCE_DIR: C:\Users\Administrator\AppData\Local\Temp\trae-debug\gateway-intermittent\
-- 环境基线：console:local f6248249ee5e（2026-10-19 新发版，含合并批次改动）/ core:local 807e736bc75b / 8 旁路
+- DEBUG_EVIDENCE_DIR: `<local-debug-dir>`（本机临时目录，不随仓分发）
+- 环境基线：`console:local`（2026-10-19 新发版，含合并批次改动）/ `core:local` / 8 旁路
 
 ## 假设表（可证伪）
 
@@ -21,9 +21,9 @@
 
 1. 网关当前健康：healthz/livez/root 全 200（23ms）、12 容器全 Up 零重启、7863 转发与监听正常 → 排除 H2/H3/H6
 2. 错误账本 10 时 19 败 / 11 时 56 败；core 29 条 upstream_error 的 snippet 全部是网关自产 `circuit_open`「候选链全部熔断」503（11:28-11:45 风暴），非上游真实 5xx
-3. core 日志 429 soft_rate（腾讯 14003 too many requests）：10:02:23、10:15:35（uid=725a93fd）、11:32:28（725a93fd）、11:43:28（80a2b661）——间歇性软限流
-4. core state.json：4 账号中 725a93fd（冷却至 11:42）与 80a2b661（冷却至 12:03）reason 均「429 rate limit」；a7433fa8/fd34954f 未冷却但分别 09:39/10-13 后无成功——deepseek/hy4（global 域）实际可用池仅 2 号
-5. review-usage 24h：成功调用全部走 725a93fd（deepseek 24 次 + hy4 12 次）+ 80a2b661（auto 2 次），错误全为 503（uid=- 池空 9 笔）
+3. core 日志 429 soft_rate（腾讯 14003 too many requests）：10:02:23、10:15:35（uid=acct-A）、11:32:28（acct-A）、11:43:28（acct-B）——间歇性软限流
+4. core state.json：4 账号中 acct-A（冷却至 11:42）与 acct-B（冷却至 12:03）reason 均「429 rate limit」；acct-C/acct-D 未冷却但分别 09:39/10-13 后无成功——deepseek/hy4（global 域）实际可用池仅 2 号
+5. review-usage 24h：成功调用全部走 acct-A（deepseek 24 次 + hy4 12 次）+ acct-B（auto 2 次），错误全为 503（uid=- 池空 9 笔）
 6. server.go:308 中间件链 `observePublicExits(circuitExitGuard(publicRouter))`：circuitExitGuard 在内层，其自产 503 被 observePublicExits 记为 upstream_error（failureCategory(503)，cooldownCategory=true）→ outcomes.add 喂回熔断器 —— **自反馈缺陷实锤**（circuit.go:522-546 + proxy.go:228-265 + errors.go:737-778）
 7. 11:54:32 仍两笔 503 uid=-：冷却到期后主力号 11:43 又吃 429 再冷却，锯齿持续
 

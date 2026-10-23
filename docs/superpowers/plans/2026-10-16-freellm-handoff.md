@@ -189,4 +189,4 @@ python3 deploy/test_compose.py
 
 - 代码：§1.2/§1.3/§1.4 三张表（19 个文件：新增 3、修改 16 含并行会话分离说明见步骤 5）。
 - 分析简报（前序会话产物，`/root/.openclaw-autoclaw/workspace/artifacts/`）：`2026-10-14-FreeLLMAPI分析与棱镜网关接入简报.html`、`2026-10-14-FreeLLMAPI模型质量评估.html`、`2026-10-14-FreeLLMAPI免费池LLM质量评估.html`。
-- 交接文档（本文件）：`freellm-handoff.md`（仓根，随 trae-cn-16models-handoff.md 体例）。
+- 交接文档（本文件）：`docs/superpowers/plans/2026-10-16-freellm-handoff.md`（随同目录既有交接文档体例）。

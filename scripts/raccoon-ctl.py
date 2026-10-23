@@ -7,35 +7,35 @@ r"""棱镜网关 · 小浣熊账号管理 CLI
 用法
 ----
     # 看当前账号池
-    python raccoon-ctl.py list
+    python scripts/raccoon-ctl.py list
 
     # 切换到某个账号（停用其他所有，只留它）
-    python raccoon-ctl.py switch 主号
+    python scripts/raccoon-ctl.py switch 主号
 
     # 恢复「全部启用，由容器自动挑积分最高的」
-    python raccoon-ctl.py all-on
+    python scripts/raccoon-ctl.py all-on
 
     # 单个开关
-    python raccoon-ctl.py off 小号
-    python raccoon-ctl.py on 小号
+    python scripts/raccoon-ctl.py off 小号
+    python scripts/raccoon-ctl.py on 小号
 
     # 加一个账号（不覆盖已有的）
-    python raccoon-ctl.py add --name 主号 --token eyJ... --refresh eyJ...
+    python scripts/raccoon-ctl.py add --name 主号 --token eyJ... --refresh eyJ...
 
     # 批量导入（Raccoon-Daily 登录输出，一行一个：备注|token|refresh_token）
-    python raccoon-ctl.py import tokens.txt
+    python scripts/raccoon-ctl.py import tokens.txt
 
     # 扫描桌面端登录态目录，自动识别、去重、批量导入
-    python raccoon-ctl.py scan --dry-run          # 先预览
-    python raccoon-ctl.py scan                     # 扫 %USERPROFILE%\.box-agent\config
-    python raccoon-ctl.py scan D:\raccoon-backups  # 或扫自己存放导出的目录
+    python scripts/raccoon-ctl.py scan --dry-run          # 先预览
+    python scripts/raccoon-ctl.py scan                     # 扫 %USERPROFILE%\.box-agent\config
+    python scripts/raccoon-ctl.py scan D:\raccoon-backups  # 或扫自己存放导出的目录
 
     # 导出全部账号做备份（目录结构与 scan 兼容，可原样导回）
-    python raccoon-ctl.py export
-    python raccoon-ctl.py export D:\raccoon-backups
+    python scripts/raccoon-ctl.py export
+    python scripts/raccoon-ctl.py export D:\raccoon-backups
 
     # 删除
-    python raccoon-ctl.py rm 小号
+    python scripts/raccoon-ctl.py rm 小号
 
 为什么不用换文件
 ----------------
@@ -74,6 +74,8 @@ import urllib.request
 DEFAULT_BASE = "http://127.0.0.1:7863"
 ACCOUNT_SEP = "&"
 FIELD_SEP = "|"
+# 脚本位于 <项目>/scripts/，默认路径一律相对项目根解析。
+PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 
 # ---------------------------------------------------------------- 控制台客户端
@@ -716,7 +718,7 @@ def cmd_export(_console, args):
     注意：导出的是明文凭据，脚本本身不打印 token，但文件是明文。
     """
     auth_dir = args.auth_dir or os.path.join(
-        os.path.dirname(os.path.abspath(__file__)), "runtime", "raccoon", "auths")
+        PROJECT_ROOT, "runtime", "raccoon", "auths")
     if not os.path.isdir(auth_dir):
         raise SystemExit("凭据目录不存在：%s\n用 --auth-dir 指定。" % auth_dir)
 
@@ -724,8 +726,7 @@ def cmd_export(_console, args):
     if not files:
         raise SystemExit("%s 下没有 raccoon-*.json。" % auth_dir)
 
-    out_root = args.dir or os.path.join(
-        os.path.dirname(os.path.abspath(__file__)), "raccoon-export")
+    out_root = args.dir or os.path.join(PROJECT_ROOT, "raccoon-export")
 
     print("从 %s 读取 %d 个凭据文件" % (auth_dir, len(files)))
     print("导出到 %s\n" % out_root)
@@ -794,7 +795,7 @@ def cmd_export(_console, args):
 
     print("\n完成：导出 %d / 跳过 %d / 失败 %d" % (ok, skip, fail))
     if ok:
-        print("这批文件可以直接用 scan 再导入回来：python raccoon-ctl.py scan %s" % out_root)
+        print("这批文件可以直接用 scan 再导入回来：python scripts/raccoon-ctl.py scan %s" % out_root)
         print("注意：auth.json 里是明文凭据，别提交到仓库、别放网盘。")
     return 0
 
@@ -890,7 +891,7 @@ def main():
     p.set_defaults(func=cmd_checkin)
 
     p = sub.add_parser("export", help="导出全部账号为 <目录>/<昵称>/auth.json 备份")
-    p.add_argument("dir", nargs="?", default="", help="输出目录，默认 ./raccoon-export")
+    p.add_argument("dir", nargs="?", default="", help="输出目录，默认 <项目>/raccoon-export")
     p.add_argument("--auth-dir", default="", help="凭据目录，默认 runtime/raccoon/auths")
     p.add_argument("--force", action="store_true", help="覆盖已存在的导出文件")
     p.set_defaults(func=cmd_export, offline=True)
@@ -903,7 +904,7 @@ def main():
 
     args = parser.parse_args()
 
-    key = find_admin_key(args.key, os.path.dirname(os.path.abspath(__file__)))
+    key = find_admin_key(args.key, PROJECT_ROOT)
     if not key:
         print("找不到管理员密钥。用 --key 指定，或设置 WB2A_ADMIN_KEY，\n"
               "或确认项目里有 runtime/wb2api/keys/keys.json。", file=sys.stderr)

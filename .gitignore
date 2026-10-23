@@ -29,6 +29,7 @@ __pycache__/
 
 # Backups (contains auth tokens)
 backups/
+/raccoon-export/
 
 # IDE
 .idea/
