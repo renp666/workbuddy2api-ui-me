@@ -27,6 +27,16 @@ services:
       - ./runtime/zcode:/data
 
   console:
+    # 账号档案需要 console 读写 zcode-proxy 的凭据文件，而那个文件是 bun 用户写的 0600
+    # （uid 1000），console 默认以 app（uid 10001）运行读不到。两条路：改 zcode 的运行身份
+    # （会碰第三方镜像对 HOME/工作目录的假设，且可能影响凭据加密密钥的派生），或者只让
+    # console 提权。选后者：console 是自研的纯 Go 二进制，以 root 运行没有隐藏依赖，
+    # 也不需要迁移任何已有数据的属主，删掉这一行即可完全回退。
+    #
+    # 副作用：console 此后写入 /app/console-data 的新文件属主是 root。只要本 overlay 保持
+    # 启用就无害（console 一直以 root 读写）；若要停用 zcode 通道并让 console 回到 app 用户，
+    # 先 `docker run --rm -v <repo>/runtime/wb2api/console:/d alpine chown -R 10001:10001 /d`。
+    user: "0:0"
     environment:
       WB2A_ZCODE_URL: http://127.0.0.1:8080
       WB2A_ZCODE_CONTROL_URL: http://127.0.0.1:9090
