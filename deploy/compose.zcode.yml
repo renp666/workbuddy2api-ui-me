@@ -33,6 +33,13 @@ services:
       # The proxy runs with auth.proxyApiKey: null (see deploy/zcode.config.yaml);
       # the shared namespace hop stays unauthenticated on purpose.
       WB2A_ZCODE_KEY: ""
+      # 账号档案（手工轮换）：zcode-proxy 只有一份 credentials.json，登录第二个账号会
+      # 覆盖第一个。console 通过共享这个目录做文件级留档与切换（A 开 B 停），
+      # 不解密凭据——同一容器内加密密钥恒定，整文件搬运即可。
+      WB2A_ZCODE_DATA_DIR: /app/zcode-data
+    volumes:
+      # 与 zcode-proxy 的 /data 是同一个宿主目录：只有共享才能换凭据文件。
+      - ./runtime/zcode:/app/zcode-data
     depends_on:
       core:
         condition: service_started

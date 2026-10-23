@@ -33,6 +33,11 @@ type Config struct {
 	// ZCodeControlURL is the zcode-proxy localhost control API (POST /control).
 	// nil keeps the Zcode tab read-only; set it to drive login/enable/disable/logout in-page.
 	ZCodeControlURL *url.URL
+	// ZCodeDataDir 是 zcode-proxy 持久化目录（runtime/zcode）在 console 侧的挂载点。
+	// 空表示未挂载，账号档案功能整体关闭，页签只保留通道状态与登录。
+	// 目录里的凭据是 sidecar 用容器内恒定密钥加密的 blob：console 只做整文件拷贝，
+	// 不解密、不解析、不比较内容语义，因此换文件即换账号。
+	ZCodeDataDir string
 	// QoderURL is the optional qoder-proxy upstream for qoder-* models; nil disables routing.
 	QoderURL *url.URL
 	// QoderKey replaces Authorization when forwarding to QoderURL.
@@ -338,6 +343,12 @@ func NewServer(cfg Config) (http.Handler, error) {
 	h.mux.HandleFunc("POST /admin/zcode/enable", h.withAdmin(h.adminZcodeEnable))
 	h.mux.HandleFunc("POST /admin/zcode/disable", h.withAdmin(h.adminZcodeDisable))
 	h.mux.HandleFunc("POST /admin/zcode/logout", h.withAdmin(h.adminZcodeLogout))
+	// 账号档案（手工轮换）：zcode-proxy 本身单凭据，多账号由 console 在文件层留档实现。
+	h.mux.HandleFunc("GET /admin/zcode/accounts", h.withAdmin(h.adminZcodeAccounts))
+	h.mux.HandleFunc("POST /admin/zcode/accounts/save", h.withAdmin(h.adminZcodeAccountSave))
+	h.mux.HandleFunc("POST /admin/zcode/accounts/switch", h.withAdmin(h.adminZcodeAccountSwitch))
+	h.mux.HandleFunc("POST /admin/zcode/accounts/delete", h.withAdmin(h.adminZcodeAccountDelete))
+	h.mux.HandleFunc("POST /admin/zcode/accounts/rename", h.withAdmin(h.adminZcodeAccountRename))
 	h.mux.HandleFunc("GET /admin/qoder", h.withAdmin(h.adminQoderStatus))
 	h.mux.HandleFunc("POST /admin/qoder/chat", h.withAdmin(h.adminQoderChat))
 	h.mux.HandleFunc("POST /admin/qoder/login", h.withAdmin(h.adminQoderLoginStart))

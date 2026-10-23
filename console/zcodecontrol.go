@@ -83,6 +83,20 @@ func (h *server) adminZcodeLogin(w http.ResponseWriter, r *http.Request) {
 		adminError(w, 400, "provider 仅支持 zai 或 bigmodel")
 		return
 	}
+	// 登录成功会直接覆盖 credentials.json，而 zcode-proxy 只有这一份凭据。
+	// 先把「还没归档的当前账号」留档，否则一次登录就把上一个账号永久冲掉了。
+	// 留档失败就中止登录：丢凭据不可逆，不值得为了少点一次而冒险。
+	if dir, derr := h.zcodeDataDir(); derr == nil {
+		idx, err := readZcodeIndex(dir)
+		if err != nil {
+			adminError(w, 500, "登录前读取账号档案失败，已中止："+err.Error())
+			return
+		}
+		if _, err := h.autoSnapshotUnfiled(dir, idx, h.zcodeControlStatus(r.Context())); err != nil {
+			adminError(w, 500, "登录前保存当前账号失败，已中止："+err.Error())
+			return
+		}
+	}
 	if status, err := h.zcodeControl(r.Context(), map[string]any{"cmd": "status"}); err == nil && status.OK && status.Provider != "" && status.Provider != in.Provider {
 		resp, err := h.zcodeControl(r.Context(), map[string]any{"cmd": "setConfig", "provider": in.Provider})
 		if err != nil {

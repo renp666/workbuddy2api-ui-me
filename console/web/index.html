@@ -86,7 +86,11 @@
     <article class="panel"><div class="section-title"><h2>通道状态</h2><span class="badge" id="zcode-status-badge">未知</span></div><p id="zcode-status-text" class="muted small" role="status" aria-live="polite">正在读取通道状态…</p>
      <div class="inline-form"><button id="zcode-enable" class="primary" type="button" hidden>启用通道</button><button id="zcode-disable" class="secondary" type="button" hidden>停用通道</button><button id="zcode-logout" class="quiet" type="button" hidden>退出登录</button></div>
      <form id="zcode-config-form" class="inline-form" hidden><label for="zcode-plan">套餐档位</label><select id="zcode-plan"><option value="coding-plan">编码套餐（coding-plan）</option><option value="start-plan">Start Plan（活动/试用额度）</option></select><button id="zcode-config-apply" class="secondary" type="submit">切换档位</button><span class="muted small">切换需通道处于停用状态</span></form>
-     <p id="zcode-accounts-note" class="muted small">单账号通道：一次登录只对应一个账号，不存在多账号选号，因此没有「独锁」；模型停用开关在「GLM 模型」页照常可用。</p></article>
+     <p id="zcode-accounts-note" class="muted small">单账号通道：zcode-proxy 只保存一份凭据，同一时刻只有一个账号生效（A 开 B 停），因此不存在多账号并发时那种「独锁」。登录新账号会覆盖当前账号，所以多账号由控制台留档实现——保存过的账号可随时切回，切换时先停用通道再启用；模型停用开关在「GLM 模型」页照常可用。</p></article>
+    <article class="panel" id="zcode-accounts-panel" hidden><div class="section-title"><h2>账号轮换</h2><span class="muted small">同一时刻只有一个账号生效（A 开 B 停）</span></div>
+     <div class="inline-form"><label for="zcode-account-label">当前账号</label><input id="zcode-account-label" placeholder="如 A 主号" maxlength="40" autocomplete="off"><button id="zcode-account-save" class="secondary" type="button">保存当前账号</button></div>
+     <p id="zcode-account-hint" class="muted small" role="status" aria-live="polite"></p>
+     <div class="table-wrap" id="zcode-accounts-table"><table><thead><tr><th>标签</th><th>服务商</th><th>套餐</th><th>保存时间</th><th>状态</th><th>操作</th></tr></thead><tbody id="zcode-accounts-body"></tbody></table><p id="zcode-accounts-empty" class="empty">还没有保存的账号。登录一个账号后点「保存当前账号」建档，之后就能在账号之间切换。</p></div></article>
     </div>
     <div id="zcode-pane-login" hidden>
     <article id="zcode-login" class="panel"><div class="section-title"><h2>GLM 登录</h2><span class="badge warn" id="zcode-login-badge">未登录</span></div>
@@ -331,10 +335,10 @@
     <div id="raccoon-pane-status">
     <article class="panel"><div class="section-title"><h2>通道状态</h2><span class="badge" id="raccoon-status-badge">未知</span></div><p id="raccoon-status-text" class="muted small" role="status" aria-live="polite">正在读取通道状态…</p>
      <div class="panel table-wrap" id="raccoon-health-wrap" hidden><table><thead><tr><th>字段</th><th>值</th></tr></thead><tbody id="raccoon-health-body"></tbody></table></div></article>
-    <div class="section-title"><h2>账号管理</h2><span class="muted small">状态来自容器 <code>/status</code>；积分需手工刷新</span><button id="raccoon-credits-refresh" class="secondary">↻ 刷新积分</button></div>
+    <div class="section-title"><h2>账号管理</h2><span class="muted small">积分每日 9 点由容器自动签到；那个时段容器没运行就点「立即签到」补跑</span><button id="raccoon-checkin" class="secondary">✓ 立即签到</button><button id="raccoon-credits-refresh" class="secondary">↻ 刷新积分</button></div>
     <div class="metrics"><article><span>账号总数</span><strong id="raccoon-stat-total">—</strong><small>全部已导入账号</small></article><article><span>可用</span><strong id="raccoon-stat-usable">—</strong><small>未停用且未冷却</small></article><article><span>冷却中</span><strong id="raccoon-stat-cooling">—</strong><small>上游限流中</small></article><article><span>已停用</span><strong id="raccoon-stat-disabled">—</strong><small>手动关闭</small></article></div>
     <div class="panel table-wrap"><table><thead><tr><th>账号</th><th>状态</th><th class="num">积分</th><th class="num">成功 / 错误</th><th>有效期</th><th>说明</th><th>操作</th></tr></thead><tbody id="raccoon-accounts-body"></tbody></table><p id="raccoon-accounts-empty" class="empty">还没有账号。到「凭证导入」子页添加。</p></div>
-    <p id="raccoon-accounts-note" class="muted small">多账号池，但这里没有「独锁」：旁路通道由容器自行选号，账号锁定只作用于 WorkBuddy 核心账号池。</p>
+    <p id="raccoon-accounts-note" class="muted small">多账号池：容器按「健康账号里积分最高」自动选号。点「切换」会停用其他账号、只留这一个启用——这就是本通道的独占方式，没有单独的「独锁」按钮（独锁只作用于 WorkBuddy 核心账号池）。</p>
     </div>
     <div id="raccoon-pane-import" hidden>
     <article class="panel"><div class="section-title"><h2>凭证导入</h2></div>

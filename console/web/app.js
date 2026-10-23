@@ -7,7 +7,7 @@ let protocol = 'openai';
 let taskState = {items:[],active_run:null,latest_runs:[]}, taskHistory = [], taskBefore = null, taskStarting = false, taskPollTimer, taskRenderKey, detailController, detailGeneration = 0;
 let usageRange = 'today', usageChannel = 'all', usageGeneration = 0;
 let usagePage = 1, usagePageSize = 50, usageDetailRows = [];
-let zcodeModels = [], zcodeHistory = [], zcodeStatus = null, zcodePollTimer, zcodeBusy = false, zcodeAuthURL = '', zcodeLogoutArmed = false, zcodeProviderTouched = false, zcodePlanTouched = false, zcodeView = 'status', zcodeViewTouched = false, zcodeEnabled = false;
+let zcodeModels = [], zcodeHistory = [], zcodeStatus = null, zcodePollTimer, zcodeBusy = false, zcodeAuthURL = '', zcodeLogoutArmed = false, zcodeProviderTouched = false, zcodePlanTouched = false, zcodeView = 'status', zcodeViewTouched = false, zcodeEnabled = false, zcodeAccounts = null, zcodeAccountBusy = false, zcodeAccountDeleteArmed = '', zcodeAccountMessage = '';
 let qoderModels = [], qoderHistory = [], qoderStatus = null, qoderPollTimer, qoderBusy = false, qoderAuthURL = '', qoderLogoutArmed = false, qoderControl = false, qoderLoggedIn = false, qoderLoginTimer = null, qoderView = 'status', qoderViewTouched = false, qoderEnabled = false;
 let opencodeModels = [], opencodeHistory = [], opencodeStatus = null, opencodeBusy = false, opencodeView = 'status', opencodeEnabled = false;
 let freellmModels = [], freellmHistory = [], freellmStatus = null, freellmBusy = false, freellmEnabled = false, freellmView = 'status', freellmViewTouched = false;
@@ -18,7 +18,7 @@ let traeModels = [], traeHistory = [], traeStatus = null, traeBusy = false, trae
 // traeaiEntitlements：uid → {subscription,error,fast_request_per}，只在点「刷新权益」
 // 之后才有内容；权益（档位）不在 /status 里，容器只在 /admin/traeai/credits 回报。
 let traeaiModels = [], traeaiHistory = [], traeaiStatus = null, traeaiBusy = false, traeaiView = 'status', traeaiEnabled = false, traeaiAccounts = [], traeaiLoginBusy = false, traeaiPollTimer = null, traeaiAuthURL = '', traeaiEntitlements = new Map();
-let raccoonModels = [], raccoonHistory = [], raccoonStatus = null, raccoonBusy = false, raccoonView = 'status', raccoonEnabled = false, raccoonAccounts = [];
+let raccoonModels = [], raccoonHistory = [], raccoonStatus = null, raccoonBusy = false, raccoonView = 'status', raccoonEnabled = false, raccoonAccounts = [], raccoonSchedule = null;
 let routesState = null, routesBusy = false, routesEditing = null, routeTestBusy = false;
 let probeSnapshot = {running:false,done:0,total:0,channels:{}}, probeTarget = '', probeTimer, probeBusy = false;
 // modelsGroupByAccount：core 模型表是否按可用账号分层展示（默认开）。
@@ -66,14 +66,14 @@ function signedOut() {
  csrf = ''; activeRequest?.abort(); clearTimeout(flowTimer); flowID = undefined; history = []; conversation = newConversation(); stopTaskReads(); taskIntents.clear(); taskState={items:[],active_run:null,latest_runs:[]};taskHistory=[];taskBefore=null;taskStarting=false;taskRenderKey=undefined;
  clearMessages($('messages'));$('task-list').replaceChildren();$('task-history-body').replaceChildren();$('task-detail').hidden=true;$('task-accounts').textContent='';$('task-log').textContent=''; $('api-key').value = ''; $('api-key').type = 'password'; $('admin-key').value = ''; $('console-view').hidden = true; $('login-view').hidden = false;
  protocol='openai';$('prompt').value='';$('max-tokens').value='1024';$('usage').textContent='用量将在上游返回后显示';usageGeneration++;workbuddyView='accounts';renderAccess();creditPackagesLoaded=false;$('credit-packages-rows').replaceChildren();$('credit-packages-meta').hidden=true;$('credit-packages-empty').hidden=false;$('credit-packages-empty').textContent='尚未查询。点击「刷新分布」逐账号拉取积分包到期明细（结果缓存 10 分钟）。';
- zcodeModels=[];zcodeHistory=[];zcodeStatus=null;zcodeAuthURL='';zcodeLogoutArmed=false;zcodeBusy=false;zcodeProviderTouched=false;zcodePlanTouched=false;zcodeView='status';zcodeViewTouched=false;zcodeEnabled=false;clearTimeout(zcodePollTimer);zcodePollTimer=undefined;$('zcode-model').replaceChildren();clearMessages($('zcode-messages'));$('zcode-prompt').value='';$('zcode-usage').textContent='用量将在上游返回后显示';$('zcode-disabled').hidden=true;$('zcode-content').hidden=true;$('nav-zcode').classList.remove('nav-muted');
+ zcodeModels=[];zcodeHistory=[];zcodeStatus=null;zcodeAuthURL='';zcodeLogoutArmed=false;zcodeBusy=false;zcodeProviderTouched=false;zcodePlanTouched=false;zcodeView='status';zcodeViewTouched=false;zcodeEnabled=false;zcodeAccounts=null;zcodeAccountBusy=false;zcodeAccountDeleteArmed='';zcodeAccountMessage='';clearTimeout(zcodePollTimer);zcodePollTimer=undefined;$('zcode-model').replaceChildren();clearMessages($('zcode-messages'));$('zcode-prompt').value='';$('zcode-usage').textContent='用量将在上游返回后显示';$('zcode-disabled').hidden=true;$('zcode-content').hidden=true;$('zcode-accounts-panel').hidden=true;$('nav-zcode').classList.remove('nav-muted');
  qoderModels=[];qoderHistory=[];qoderStatus=null;qoderEnabled=false;qoderControl=false;qoderLoggedIn=false;qoderAuthURL='';qoderBusy=false;qoderLogoutArmed=false;qoderView='status';qoderViewTouched=false;clearTimeout(qoderPollTimer);qoderPollTimer=undefined;clearTimeout(qoderLoginTimer);qoderLoginTimer=null;$('qoder-model').replaceChildren();clearMessages($('qoder-messages'));$('qoder-prompt').value='';$('qoder-usage').textContent='用量将在上游返回后显示';$('qoder-disabled').hidden=true;$('qoder-content').hidden=true;$('nav-qoder').classList.remove('nav-muted');$('qoder-auth-row').hidden=true;$('qoder-pane-login').hidden=true;$('qoder-login-hint').textContent='';
  opencodeModels=[];opencodeHistory=[];opencodeStatus=null;opencodeEnabled=false;opencodeBusy=false;opencodeView='status';$('opencode-model').replaceChildren();clearMessages($('opencode-messages'));$('opencode-prompt').value='';$('opencode-usage').textContent='用量将在上游返回后显示';$('opencode-disabled').hidden=true;$('opencode-content').hidden=true;$('nav-opencode').classList.remove('nav-muted');$('opencode-health-wrap').hidden=true;$('opencode-health-body').replaceChildren();
  freellmModels=[];freellmHistory=[];freellmStatus=null;freellmEnabled=false;freellmBusy=false;freellmView='status';freellmViewTouched=false;$('freellm-model').replaceChildren();clearMessages($('freellm-messages'));$('freellm-prompt').value='';$('freellm-usage').textContent='用量将在上游返回后显示';$('freellm-disabled').hidden=true;$('freellm-content').hidden=true;$('nav-freellm').classList.remove('nav-muted');ccrStatus=null;ccrEnabled=false;ccrBusy=false;$('ccr-disabled').hidden=true;$('ccr-content').hidden=true;$('nav-ccr').classList.remove('nav-muted');
  autoclawModels=[];autoclawHistory=[];autoclawStatus=null;autoclawEnabled=false;autoclawBusy=false;autoclawLoginBusy=false;autoclawView='status';autoclawAccounts=[];clearTimeout(autoclawCodeTimer);autoclawCodeTimer=null;$('autoclaw-model').replaceChildren();clearMessages($('autoclaw-messages'));$('autoclaw-prompt').value='';$('autoclaw-usage').textContent='用量将在上游返回后显示';$('autoclaw-disabled').hidden=true;$('autoclaw-content').hidden=true;$('nav-autoclaw').classList.remove('nav-muted');$('autoclaw-health-wrap').hidden=true;$('autoclaw-health-body').replaceChildren();$('autoclaw-accounts-body').replaceChildren();$('autoclaw-phone').value='';$('autoclaw-code').value='';$('autoclaw-oauth-url').value='';$('autoclaw-login-hint').textContent='';$('autoclaw-global-hint').textContent='';const sc=$('autoclaw-sendcode');sc.disabled=false;sc.textContent='发送验证码';
  traeModels=[];traeHistory=[];traeStatus=null;traeEnabled=false;traeBusy=false;traeLoginBusy=false;traeView='status';traeAccounts=[];traeAuthURL='';clearTimeout(traePollTimer);traePollTimer=null;$('trae-model').replaceChildren();clearMessages($('trae-messages'));$('trae-prompt').value='';$('trae-usage').textContent='用量将在上游返回后显示';$('trae-disabled').hidden=true;$('trae-content').hidden=true;$('nav-trae').classList.remove('nav-muted');$('trae-health-wrap').hidden=true;$('trae-health-body').replaceChildren();$('trae-accounts-body').replaceChildren();$('trae-auth-row').hidden=true;$('trae-login-hint').textContent='';$('trae-import-url').value='';$('trae-import-hint').textContent='';$('trae-schedule-body').replaceChildren();$('trae-schedule-hint').textContent='';$('trae-usage-body').replaceChildren();
  traeaiModels=[];traeaiHistory=[];traeaiStatus=null;traeaiEnabled=false;traeaiBusy=false;traeaiLoginBusy=false;traeaiView='status';traeaiAccounts=[];traeaiAuthURL='';traeaiEntitlements=new Map();clearTimeout(traeaiPollTimer);traeaiPollTimer=null;$('traeai-model').replaceChildren();clearMessages($('traeai-messages'));$('traeai-prompt').value='';$('traeai-usage').textContent='用量将在上游返回后显示';$('traeai-disabled').hidden=true;$('traeai-content').hidden=true;$('nav-traeai').classList.remove('nav-muted');$('traeai-health-wrap').hidden=true;$('traeai-health-body').replaceChildren();$('traeai-accounts-body').replaceChildren();$('traeai-auth-row').hidden=true;$('traeai-login-hint').textContent='';$('traeai-import-url').value='';$('traeai-import-hint').textContent='';$('traeai-schedule-body').replaceChildren();$('traeai-schedule-hint').textContent='';$('traeai-usage-body').replaceChildren();$('traeai-edition-note').textContent='';$('traeai-edition-note').hidden=true;
- raccoonModels=[];raccoonHistory=[];raccoonStatus=null;raccoonEnabled=false;raccoonBusy=false;raccoonView='status';raccoonAccounts=[];$('raccoon-model').replaceChildren();clearMessages($('raccoon-messages'));$('raccoon-prompt').value='';$('raccoon-usage').textContent='用量将在上游返回后显示';$('raccoon-disabled').hidden=true;$('raccoon-content').hidden=true;$('nav-raccoon').classList.remove('nav-muted');$('raccoon-health-wrap').hidden=true;$('raccoon-health-body').replaceChildren();$('raccoon-accounts-body').replaceChildren();$('raccoon-import-json').value='';$('raccoon-import-hint').textContent='';
+ raccoonModels=[];raccoonHistory=[];raccoonStatus=null;raccoonEnabled=false;raccoonBusy=false;raccoonView='status';raccoonAccounts=[];raccoonSchedule=null;$('raccoon-model').replaceChildren();clearMessages($('raccoon-messages'));$('raccoon-prompt').value='';$('raccoon-usage').textContent='用量将在上游返回后显示';$('raccoon-disabled').hidden=true;$('raccoon-content').hidden=true;$('nav-raccoon').classList.remove('nav-muted');$('raccoon-health-wrap').hidden=true;$('raccoon-health-body').replaceChildren();$('raccoon-accounts-body').replaceChildren();$('raccoon-import-json').value='';$('raccoon-import-hint').textContent='';
  routesState=null;routesBusy=false;routesEditing=null;routeTestBusy=false;modelSwitchOverrides=new Map();capState=null;capByKeys=new Map();capDim='coding';capCategory='';capFilter='';$('routes-alias-test-progress').hidden=true;$('routes-alias-test-progress').textContent='';$('routes-disabled').hidden=true;$('routes-content').hidden=true;$('routes-alias-body').replaceChildren();$('routes-channels').replaceChildren();$('routes-alias-model').replaceChildren();$('routes-alias-model-custom').value='';$('routes-alias-model-custom').hidden=true;$('routes-alias-editing').hidden=true;$('routes-alias-editing').textContent='';$('routes-example').textContent='';$('routes-alias-name').value='';$('routes-alias-model').value='';$('routes-alias-note').value='';$('routes-auto-fallback').value='';$('cap-filter').value='';
  probeSnapshot={running:false,done:0,total:0,channels:{}};probeTarget='';probeBusy=false;clearTimeout(probeTimer);probeTimer=undefined;for(const n of Object.keys(probeChannelNames)){$('probe-'+n+'-progress').hidden=true;$('probe-'+n+'-progress').textContent='';}
 $('refresh-stamp').hidden=true;$('refresh-stamp').textContent='';
@@ -1749,6 +1749,8 @@ async function loadZcode(){
  if(!csrf)return;
  try{renderZcode(await jsonAPI('zcode'));}
  catch(error){notice(error.message);}
+ // 账号档案单独拉一次：它依赖 console 挂载 runtime/zcode，与通道状态是两条独立的可用性。
+ void loadZcodeAccounts();
 }
 function zcodePageVisible(){return page==='zcode'&&csrf&&!document.hidden;}
 function scheduleZcodePoll(){
@@ -1761,7 +1763,7 @@ function renderZcode(status){
  const enabled=!!status.enabled;
  $('zcode-disabled').hidden=enabled;
  $('zcode-content').hidden=!enabled;
- if(!enabled){stopZcodePoll();return;}
+ if(!enabled){stopZcodePoll();$('zcode-accounts-panel').hidden=true;return;}
  const control=!!status.control,loggedIn=!!status.logged_in,running=!!status.proxy_running;
  if(control&&loggedIn)zcodeAuthURL='';
  const badge=$('zcode-status-badge');
@@ -1839,6 +1841,109 @@ async function zcodeAction(path){
  }catch(error){if(generation===sessionGeneration)notice(error.message);}
  finally{if(generation===sessionGeneration){zcodeBusy=false;zcodeActionControls();}}
 }
+// ---- 账号档案（手工轮换） ----
+// zcode-proxy 只有一份 credentials.json，登录新账号会覆盖当前账号，控制面也没有账号维度
+// 命令（上游 TriDefender/zcode-api 的 store.ts / android/control.ts 都是单凭据）。
+// 所以多账号由控制台在文件层留档：切换 = 把选中的档案覆盖回凭据文件，再让 sidecar
+// 重新读取，实现「A 开 B 停」——同一时刻只有一个账号生效，不并行占额度。
+// 重新读取：状态变量在文件顶部统一声明（与其余 zcode 状态同处），登出时会一并清空。
+async function loadZcodeAccounts(){
+ if(!zcodeEnabled)return;
+ try{zcodeAccounts=await jsonAPI('zcode/accounts');}catch(error){zcodeAccounts=null;}
+ renderZcodeAccounts();
+}
+function zcodeAccountControls(){
+ const busy=zcodeAccountBusy||zcodeBusy;
+ for(const id of ['zcode-account-save','zcode-account-label'])$(id).disabled=busy;
+ for(const button of $('zcode-accounts-body').querySelectorAll('button'))button.disabled=busy;
+}
+function renderZcodeAccounts(){
+ const panel=$('zcode-accounts-panel');
+ if(!panel)return;
+ const available=!!(zcodeAccounts&&zcodeAccounts.available);
+ panel.hidden=!available||!zcodeEnabled;
+ if(panel.hidden)return;
+ const accounts=(zcodeAccounts.accounts||[]).slice();
+ const body=$('zcode-accounts-body');body.replaceChildren();
+ $('zcode-accounts-empty').hidden=accounts.length>0;
+ for(const acc of accounts){
+  const row=document.createElement('tr');
+  const labelCell=document.createElement('td');labelCell.textContent=acc.label||acc.id;
+  const providerCell=document.createElement('td');providerCell.textContent=acc.provider||'—';
+  const planCell=document.createElement('td');planCell.textContent=acc.plan==='coding-plan'?'Coding':acc.plan==='start-plan'?'Start':'—';
+  const savedCell=document.createElement('td');savedCell.textContent=formatTaskTime(acc.saved_at);
+  const stateCell=document.createElement('td');
+  const badge=document.createElement('span');badge.className='badge '+(acc.active?'ok':'idle');badge.textContent=acc.active?'当前生效':'备用';
+  stateCell.append(badge);
+  const actions=document.createElement('td');
+  if(!acc.active){
+   const use=document.createElement('button');use.className='secondary';use.textContent='切换';
+   use.title='先停用当前账号，再用这个账号启用通道';
+   use.addEventListener('click',()=>switchZcodeAccount(acc));
+   actions.append(use);
+  }
+  const rename=document.createElement('button');rename.className='secondary';rename.textContent='改名';
+  rename.addEventListener('click',()=>{
+   // 就地换成输入框，不用 prompt：控制台页面里弹窗会被拦，也不符合本页的编辑习惯。
+   const input=document.createElement('input');
+   input.value=acc.label||'';input.maxLength=40;
+   labelCell.replaceChildren(input);input.focus();input.select();
+   let done=false;
+   const commit=()=>{
+    if(done)return;
+    const next=input.value.trim();
+    if(!next||next===(acc.label||'')){done=true;renderZcodeAccounts();return;}
+    done=true;
+    zcodeAccountAction('zcode/accounts/rename',{id:acc.id,label:next},`已改名为「${next}」`);
+   };
+   input.addEventListener('keydown',event=>{
+    if(event.key==='Enter'){event.preventDefault();commit();}
+    else if(event.key==='Escape'){done=true;renderZcodeAccounts();}
+   });
+   input.addEventListener('blur',commit);
+  });
+  actions.append(rename);
+  if(!acc.active){
+   const remove=document.createElement('button');remove.className='quiet';remove.textContent='删除';
+   remove.addEventListener('click',()=>{
+    if(zcodeAccountDeleteArmed!==acc.id){zcodeAccountDeleteArmed=acc.id;remove.textContent='再次点击确认删除';return;}
+    zcodeAccountDeleteArmed='';deleteZcodeAccount(acc);
+   });
+   actions.append(remove);
+  }
+  row.append(labelCell,providerCell,planCell,savedCell,stateCell,actions);body.append(row);
+ }
+ // unfiled：磁盘上有凭据但不在档案里（刚登录完，或手工替换过文件）。
+ // 操作回执单独存一个变量：loadZcode 里那次不 await 的账号刷新会晚一拍落地，
+ // 直接把文案写进 DOM 会被它冲掉（表现为「点了没反应」）。
+ const hint=$('zcode-account-hint');
+ hint.textContent=zcodeAccountMessage||(zcodeAccounts.unfiled?'当前凭据还没有保存成档案。切换或重新登录前会自动备份一份，但仍建议现在起个名字保存。':'');
+ zcodeAccountControls();
+}
+async function zcodeAccountAction(path,payload,successText){
+ if(zcodeAccountBusy||zcodeBusy)return;
+ const generation=sessionGeneration;zcodeAccountBusy=true;zcodeAccountMessage='';zcodeAccountControls();notice('');
+ try{
+  await jsonAPI(path,payload||{});
+  if(generation!==sessionGeneration)return;
+  await loadZcode();
+  if(generation!==sessionGeneration)return;
+  await loadZcodeAccounts();
+  if(generation===sessionGeneration&&successText){zcodeAccountMessage=successText;renderZcodeAccounts();}
+ }catch(error){if(generation===sessionGeneration)notice(error.message);}
+ finally{if(generation===sessionGeneration){zcodeAccountBusy=false;zcodeAccountControls();}}
+}
+function switchZcodeAccount(acc){
+ return zcodeAccountAction('zcode/accounts/switch',{id:acc.id},`已切换到「${acc.label}」：通道已用这个账号重新启用`);
+}
+function deleteZcodeAccount(acc){
+ return zcodeAccountAction('zcode/accounts/delete',{id:acc.id},`已删除档案「${acc.label}」`);
+}
+$('zcode-account-save').addEventListener('click',()=>{
+ const input=$('zcode-account-label');
+ zcodeAccountAction('zcode/accounts/save',{label:input.value.trim()},'已保存当前账号，之后可随时切回');
+ input.value='';
+});
 runTopRefresh($('zcode-refresh'),loadZcode);
 for(const view of ['status','login','models','chat'])$('zcode-view-'+view).addEventListener('click',()=>{zcodeViewTouched=true;setZcodeView(view);});
 function setZcodeView(view){zcodeView=view;if(zcodeStatus)renderZcode(zcodeStatus);}
@@ -4016,8 +4121,26 @@ $('traeai-form').addEventListener('submit',async event=>{
 // 抛错。小浣熊没有网页登录（桌面登录态依赖宿主 DPAPI），登录环节等价于凭证导入。
 async function loadRaccoon(){
  if(!csrf)return;
- try{renderRaccoon(await jsonAPI('raccoon'));}
+ try{renderRaccoon(await jsonAPI('raccoon'));void loadRaccoonSchedule();}
  catch(error){notice(error.message);}
+}
+// 「今日已签到」来自 sidecar 的排程状态。sidecar 只在每日固定时点跑积分链路，
+// 那个小时容器没运行就漏一整天，所以这个标识是判断「要不要补跑」的唯一依据。
+async function loadRaccoonSchedule(){
+ try{raccoonSchedule=await jsonAPI('raccoon/schedule');}
+ catch{raccoonSchedule=null;}
+ renderCheckinBadge();
+}
+function renderCheckinBadge(){
+ const btn=$('raccoon-checkin');if(!btn)return;
+ const done=!!(raccoonSchedule&&raccoonSchedule.checked_today);
+ btn.textContent=done?'✓ 今日已签到':'✓ 立即签到';
+ btn.classList.toggle('primary',done);
+ btn.classList.toggle('secondary',!done);
+ const last=raccoonSchedule&&raccoonSchedule.last_checkin;
+ btn.title=done&&last
+  ?`上次签到：${new Date(last).toLocaleString('zh-CN',{timeZone:'Asia/Shanghai',hour12:false})}`
+  :'小浣熊没有原生签到接口，点这里立即跑一轮积分链路';
 }
 function renderRaccoon(status){
  raccoonStatus=status;
@@ -4072,7 +4195,7 @@ function raccoonControls(){
  $('raccoon-stop').hidden=!activeRequest;
 }
 function raccoonActionControls(){
- for(const id of ['raccoon-refresh','raccoon-credits-refresh'])$(id).disabled=raccoonBusy;
+ for(const id of ['raccoon-refresh','raccoon-credits-refresh','raccoon-checkin'])$(id).disabled=raccoonBusy;
 }
 function raccoonRecoveryHint(a){
  if(!a.cooling||!a.until)return '';
@@ -4100,6 +4223,10 @@ function renderRaccoonAccounts(list){
   const expires=a.expires_at?new Date(Number(a.expires_at)*1000).toLocaleString('zh-CN',{timeZone:'Asia/Shanghai',hour12:false}):'—';
   const ta=(label,action,cls)=>{const btn=document.createElement('button');btn.className=cls;btn.textContent=label;btn.dataset.raact=action;btn.dataset.uid=a.uid;return btn;};
   const op=document.createElement('td');
+  // 「切换」= 停用其他全部、只留这一个启用。sidecar 的选号规则是「健康账号里挑积分
+  // 最高」，本身没有指定账号的能力，独占是唯一能真正"选中某个账号"的手段。
+  // 只有一个账号时这个按钮没有意义，不渲染。
+  if(raccoonAccounts.length>1)op.append(ta('切换','switch','primary'),' ');
   if(stopped)op.append(ta('启用','enable','secondary'),' ',ta('删除','delete','quiet'));
   else op.append(ta('停用','disable','secondary'),' ',ta('刷新','refresh','quiet'),' ',ta('删除','delete','quiet'));
   // sidecar 只回报失败次数，没有成功计数；成功列留「—」而不是拿 0 充数。
@@ -4111,14 +4238,27 @@ function renderRaccoonAccounts(list){
 async function raccoonAccountAction(action,uid){
  if(raccoonBusy)return;
  const generation=sessionGeneration;
+ const isOff=a=>!!a.disabled||a.enabled===false;
+ const target=raccoonAccounts.find(a=>a.uid===uid);
  if(action==='delete'&&!confirm(`确定删除账号 ${uid}？凭据将从容器中移除，需要重新导入才能恢复。`))return;
+ // 切换是全局动作，确认框要报出「会动几个账号」，否则用户不知道其他账号会被停掉。
+ if(action==='switch'&&target){
+  const others=raccoonAccounts.filter(a=>a.uid!==uid&&!isOff(a));
+  if(others.length&&!confirm(`切换到「${target.nickname||target.uid}」？\n\n将停用另外 ${others.length} 个账号（${others.map(a=>a.nickname||a.uid).join('、')}），可随时重新启用。`))return;
+ }
  raccoonBusy=true;raccoonActionControls();notice('');
  try{
   if(action==='enable'||action==='disable')await jsonAPI('raccoon/accounts/patch',{uid,enabled:action==='enable'});
   else if(action==='delete'){await jsonAPI('raccoon/accounts/delete',{uid});if(generation===sessionGeneration)notice('账号已删除');}
   else if(action==='refresh')await jsonAPI('raccoon/accounts/refresh',{uid});
+  else if(action==='switch'&&target){
+   // 串行 patch：sidecar 的账号表是读-改-写，并发请求会互相覆盖。
+   for(const a of raccoonAccounts){if(a.uid!==uid&&!isOff(a))await jsonAPI('raccoon/accounts/patch',{uid:a.uid,enabled:false});}
+   if(isOff(target))await jsonAPI('raccoon/accounts/patch',{uid,enabled:true});
+  }
   if(generation!==sessionGeneration)return;
   await loadRaccoon();
+  if(action==='switch'&&target&&generation===sessionGeneration)notice(`已切换到「${target.nickname||target.uid}」${target.cooling?'（该账号正在冷却，恢复前仍不会命中）':''}`);
  }catch(error){if(generation===sessionGeneration)notice(error.message);}
  finally{if(generation===sessionGeneration){raccoonBusy=false;raccoonActionControls();}}
 }
@@ -4131,17 +4271,38 @@ runTopRefresh($('raccoon-refresh'),async()=>{
  if(raccoonBusy)return;const generation=sessionGeneration;raccoonBusy=true;raccoonActionControls();
  try{await loadRaccoon();}finally{if(generation===sessionGeneration){raccoonBusy=false;raccoonActionControls();}}
 });
-$('raccoon-credits-refresh').addEventListener('click',async()=>{
- if(raccoonBusy)return;const generation=sessionGeneration;raccoonBusy=true;raccoonActionControls();notice('');
+// 积分不是池状态的一部分：sidecar 只在被问到时才去上游查，所以导入完、刷新页之后
+// 看到的都是「上次采集到的值」，新账号一律 0。silent 用于导入成功后自动补一次，
+// 不抢 notice 也不占用 raccoonBusy。
+async function refreshRaccoonCredits(silent){
+ if(!silent&&raccoonBusy)return;
+ const generation=sessionGeneration;
+ if(!silent){raccoonBusy=true;raccoonActionControls();notice('');}
  try{
   const result=await jsonAPI('raccoon/credits');
   if(generation!==sessionGeneration)return;
   const list=Array.isArray(result.accounts)?result.accounts:[];
   const failed=list.filter(x=>x&&x.error);
-  notice(failed.length?`积分刷新完成，${failed.length} 个账号失败：${failed[0].error}`:`积分已刷新（${list.length} 个账号）`);
+  if(!silent)notice(failed.length?`积分刷新完成，${failed.length} 个账号失败：${failed[0].error}`:`积分已刷新（${list.length} 个账号）`);
   await loadRaccoon();
+ }catch(error){if(!silent&&generation===sessionGeneration)notice(error.message);}
+ finally{if(!silent&&generation===sessionGeneration){raccoonBusy=false;raccoonActionControls();}}
+}
+$('raccoon-credits-refresh').addEventListener('click',()=>refreshRaccoonCredits(false));
+// 小浣熊没有原生签到接口，sidecar 只在每日固定时点跑积分链路。容器那个小时没运行时
+// 当天就漏了，这个按钮用来补跑。逐账号访问上游，会慢。
+$('raccoon-checkin').addEventListener('click',async()=>{
+ if(raccoonBusy)return;
+ const generation=sessionGeneration;raccoonBusy=true;raccoonActionControls();notice('');
+ $('raccoon-checkin').textContent='✓ 签到中…';
+ try{
+  const result=await jsonAPI('raccoon/schedule/checkin',{});
+  if(generation!==sessionGeneration)return;
+  const n=result.processed??result.count;
+  notice(n!=null?`积分链路已跑完（${n} 个账号）`:'积分链路已跑完');
+  await refreshRaccoonCredits(true);
  }catch(error){if(generation===sessionGeneration)notice(error.message);}
- finally{if(generation===sessionGeneration){raccoonBusy=false;raccoonActionControls();}}
+ finally{if(generation===sessionGeneration){raccoonBusy=false;raccoonActionControls();void loadRaccoonSchedule();}}
 });
 $('raccoon-copy-path').addEventListener('click',async()=>{
  try{await navigator.clipboard.writeText('%USERPROFILE%\\.box-agent\\config');notice('路径已复制，粘贴到资源管理器地址栏（Win+E 后 Ctrl+L）回车打开');}
@@ -4174,6 +4335,8 @@ $('raccoon-import-form').addEventListener('submit',async event=>{
   $('raccoon-import-hint').textContent=`已导入 ${result.nickname||result.uid||'账号'}${result.needs_check?'；凭据临近有效期，建议到账号管理点「刷新」核对。':''}`;
   notice('小浣熊凭证导入成功');
   raccoonView='status';await loadRaccoon();
+  // 新账号的积分在池里是初始值 0，不主动查一次用户会以为导入没生效。
+  void refreshRaccoonCredits(true);
  }catch(error){
   if(generation===sessionGeneration)$('raccoon-import-hint').textContent=error.status===409?'该账号已有更新的凭证，未覆盖（409）。':error.message;
  }finally{if(generation===sessionGeneration){raccoonBusy=false;$('raccoon-import').disabled=false;}}

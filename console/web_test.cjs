@@ -118,7 +118,7 @@ function taskFixture(fetch, cryptoImpl={randomUUID:()=> '11111111-2222-4333-8444
   function element(tag='div') {
     return {tagName:tag.toUpperCase(),value:'',type:'',hidden:false,disabled:false,textContent:'',className:'',children:[],dataset:{},handlers:{},classList:{toggled:{},toggle(name,on){this.toggled[name]=on;},add(name){this.toggled[name]=true;},remove(name){delete this.toggled[name];}},
       addEventListener(name,fn){this.handlers[name]=fn;},append(...children){this.children.push(...children);},appendChild(child){this.children.push(child);return child;},
-      replaceChildren(...children){this.children=children;},setAttribute(name,value){this[name]=value;},insertBefore(child){this.children.unshift(child);},querySelector(){return null;},scrollIntoView(){},select(){},focus(){this.focused=true;}};
+      replaceChildren(...children){this.children=children;},setAttribute(name,value){this[name]=value;},insertBefore(child){this.children.unshift(child);},querySelector(){return null;},querySelectorAll(){return [];},scrollIntoView(){},select(){},focus(){this.focused=true;}};
   }
   const get=id=>{if(!elements.has(id))elements.set(id,element());return elements.get(id);};
   const protocolButtons=['access-openai','access-anthropic','chat-openai','chat-anthropic'].map(id=>{const button=get(id);button.dataset.protocol=id.split('-')[1];return button;});
@@ -766,6 +766,8 @@ function zcodeFixture(zcodeStatus) {
     if(url==='/admin/status')return response({total:0,healthy:0,cooling:0,disabled:0,accounts:[]});
     if(url==='/admin/models')return response({data:[]});
     if(url==='/admin/zcode')return response(zcodeStatus);
+    // 账号档案默认不可用：老用例的 console 没有挂载 runtime/zcode，页签此时不该显示账号卡片。
+    if(url==='/admin/zcode/accounts')return response({available:false,accounts:[]});
     throw new Error('unexpected '+url);
   });
   get('realm').querySelector=()=>({disabled:false});
@@ -2167,15 +2169,70 @@ test('raccoon tab renders badge, health rows, accounts, models and select when r
   assert.equal(rows[0].children[2].textContent,'120.00','points column must read the sidecar points field');
   assert.equal(rows[0].children[3].textContent,'— / 1','sidecar has no success counter, success column stays dashed');
   assert.match(rows[0].children[4].textContent,/20\d\d/,'有效期列应显示凭据到期时间');
-  assert.equal(rows[0].children[6].children[0].textContent,'停用');
+  // 多账号时每行首按钮是「切换」（停用其他、独占这一个）；单账号不渲染，
+  // 由下面 soft-disabled 用例守着（那里首按钮直接是「启用」）。
+  // mock 的 append 会把分隔用的空格字符串也塞进 children，取按钮要先跳过它们。
+  const opBtns=row=>row.children[6].children.filter(c=>typeof c!=='string');
+  assert.deepEqual(opBtns(rows[0]).map(b=>b.textContent),['切换','停用','刷新','删除'],'多账号可用行按钮');
   assert.equal(rows[1].children[1].children[0].textContent,'冷却中');
   assert.match(rows[1].children[5].textContent,/触发频控/);
   // mock 的 textContent 不聚合子节点，small 里的恢复提示要单独看孩子。
   assert.match(rows[1].children[5].children[0].textContent,/恢复/,'冷却行缺恢复时间提示');
   assert.equal(rows[2].children[1].children[0].textContent,'已停用');
-  assert.equal(rows[2].children[6].children[0].textContent,'启用','disabled account must offer enable instead of disable');
+  assert.deepEqual(opBtns(rows[2]).map(b=>b.textContent),['切换','启用','删除'],'停用账号必须给「启用」而不是「停用」');
   assert.equal(get('raccoon-models-body').children.length,1,'model table row count');
   assert.deepEqual(get('raccoon-model').children.map(option=>option.value),['raccoon-GLM · X']);
+});
+
+test('raccoon 切换 = 停用其他全部 + 启用目标，且请求串行',async()=>{
+  // sidecar 只按「健康账号里积分最高」挑号，没有指定账号的接口，所以「切换」只能靠
+  // 停用其他账号来达成。这里钉住三点：顺序（先停其他、再启目标）、串行（并发 patch
+  // 会互相覆盖 sidecar 的账号表）、以及停用账号也要能被切过去。
+  const patches=[];
+  const response=body=>({ok:true,status:200,json:async()=>body});
+  const status={enabled:true,reachable:true,model_count:0,models:[],accounts:[
+    {uid:'r1',nickname:'一号',points:120,disabled:false,enabled:true,err_count:0},
+    {uid:'r2',nickname:'二号',points:80,disabled:false,enabled:true,err_count:0},
+    {uid:'r3',nickname:'三号',points:10,disabled:true,enabled:false,err_count:0}]};
+  const {ctx,get}=taskFixture((url,options={})=>{
+    if(url==='/admin/session')return new Promise(()=>{});
+    if(url==='/admin/status')return response({total:0,healthy:0,cooling:0,disabled:0,accounts:[]});
+    if(url==='/admin/models')return response({data:[]});
+    if(url==='/admin/raccoon/accounts/patch'){patches.push(JSON.parse(options.body));return response({ok:true});}
+    if(url==='/admin/raccoon')return response(status);
+    throw new Error('unexpected '+url);
+  });
+  get('realm').querySelector=()=>({disabled:false});
+  vm.runInContext('confirm=()=>true',ctx);
+  await vm.runInContext("signedIn({csrf:'c',global_enabled:true,zcode_enabled:false,qoder_enabled:false,opencode_enabled:false,autoclaw_enabled:false,trae_enabled:false,raccoon_enabled:true})",ctx);
+  await vm.runInContext('loadRaccoon()',ctx);
+  await vm.runInContext("raccoonAccountAction('switch','r3')",ctx);
+  assert.deepEqual(patches,[{uid:'r1',enabled:false},{uid:'r2',enabled:false},{uid:'r3',enabled:true}],
+    '切换必须先停用其他全部账号，再启用目标（目标已停用时也要重新启用）');
+});
+
+test('raccoon 已签到标识跟随排程状态',async()=>{
+  // sidecar 只在每日固定时点跑积分链路，那个小时容器没运行就漏一整天。
+  // 这个标识是用户判断「要不要点立即签到补跑」的唯一依据，不能一直是同一句话。
+  const response=body=>({ok:true,status:200,json:async()=>body});
+  let checked=true;
+  const {ctx,get}=taskFixture(url=>{
+    if(url==='/admin/session')return new Promise(()=>{});
+    if(url==='/admin/status')return response({total:0,healthy:0,cooling:0,disabled:0,accounts:[]});
+    if(url==='/admin/models')return response({data:[]});
+    if(url==='/admin/raccoon/schedule')return response({checked_today:checked,last_checkin:'2026-10-21T01:00:00Z',checkin_hour:9});
+    if(url==='/admin/raccoon')return response({enabled:true,reachable:true,model_count:0,models:[],accounts:[]});
+    throw new Error('unexpected '+url);
+  });
+  get('realm').querySelector=()=>({disabled:false});
+  await vm.runInContext("signedIn({csrf:'c',global_enabled:true,zcode_enabled:false,qoder_enabled:false,opencode_enabled:false,autoclaw_enabled:false,trae_enabled:false,raccoon_enabled:true})",ctx);
+  await vm.runInContext('loadRaccoon()',ctx);
+  // loadRaccoon 里的排程查询是 fire-and-forget，等一拍再断言。
+  await new Promise(r=>setTimeout(r,10));
+  assert.equal(get('raccoon-checkin').textContent,'✓ 今日已签到');
+  checked=false;
+  await vm.runInContext('loadRaccoonSchedule()',ctx);
+  assert.equal(get('raccoon-checkin').textContent,'✓ 立即签到','没签到时应提示补跑');
 });
 
 test('raccoon soft-disabled account shows as stopped and offers enable',async()=>{
@@ -4853,4 +4910,85 @@ test('API 密钥页签：清单渲染、自动生成 Key、整表保存与按标
   assert.ok(!('models' in posts[0].keys.find(k=>k.label==='daily')),'未声明白名单的 Key 不带 models 字段');
   assert.equal(get('apikeys-body').children[0].children[3].children[0].value,'glm-*,cn:good-model,cn:x','保存后按服务端回显重绘白名单');
   assert.equal(get('apikeys-editbar').hidden,true,'保存成功后收起未保存提示');
+});
+
+// ---- zcode 账号轮换（手工 A 开 B 停） ----
+// 上游 zcode-proxy 只有一份 credentials.json，多账号由 console 在文件层留档实现。
+// 前端只负责三件事：展示谁是当前生效、把选中的档案提交切换、提示「当前凭据还没归档」。
+function zcodeAccountsFixture(view){
+  const posts=[];
+  const response=body=>({ok:true,status:200,json:async()=>body});
+  const status={enabled:true,control:true,logged_in:true,proxy_running:true,provider:'zai',plan:'start-plan',reachable:true,model_count:1,models:[{id:'glm-5.3-flash'}]};
+  const {ctx,get}=taskFixture((url,options={})=>{
+    if(options.method==='POST'){posts.push({url,body:JSON.parse(options.body||'{}')});return response({ok:true,switched:true,saved:true,deleted:true,renamed:true});}
+    if(url==='/admin/session')return new Promise(()=>{});
+    if(url==='/admin/status')return response({total:0,healthy:0,cooling:0,disabled:0,accounts:[]});
+    if(url==='/admin/models')return response({data:[]});
+    if(url==='/admin/zcode')return response(status);
+    if(url==='/admin/zcode/accounts')return response(view);
+    throw new Error('unexpected '+url);
+  });
+  get('realm').querySelector=()=>({disabled:false});
+  return {ctx,get,posts};
+}
+// mock 的按钮没有真实事件循环，直接调挂上去的处理器再把微任务排空。
+async function tap(btn){await btn.handlers.click();await flushMicrotasks();}
+const zcodeAccountRows=get=>get('zcode-accounts-body').children;
+const zcodeAccountOps=tr=>tr.children[5].children;
+
+test('zcode 账号列表：标出当前生效，当前行不给切换/删除',async()=>{
+  const view={available:true,unfiled:false,active:'a1',accounts:[
+    {id:'a1',label:'A 主号',provider:'zai',plan:'start-plan',saved_at:'2026-10-23T10:00:00+08:00',active:true},
+    {id:'b2',label:'B 备用',provider:'zai',plan:'coding-plan',saved_at:'2026-10-23T11:00:00+08:00',active:false},
+  ]};
+  const {ctx,get}=zcodeAccountsFixture(view);
+  await vm.runInContext("signedIn({csrf:'c',global_enabled:true,zcode_enabled:true})",ctx);
+  await vm.runInContext('loadZcode()',ctx);
+  await flushMicrotasks();
+  assert.equal(get('zcode-accounts-panel').hidden,false,'账号面板没显示');
+  const rows=zcodeAccountRows(get);
+  assert.equal(rows.length,2,'账号行数');
+  assert.equal(rows[0].children[4].children[0].textContent,'当前生效');
+  assert.equal(rows[1].children[4].children[0].textContent,'备用');
+  // 当前生效的行只能改名：切到自己没有意义，删自己更会丢凭据。
+  assert.deepEqual(zcodeAccountOps(rows[0]).map(b=>b.textContent),['改名']);
+  assert.deepEqual(zcodeAccountOps(rows[1]).map(b=>b.textContent),['切换','改名','删除']);
+  assert.equal(rows[1].children[2].textContent,'Coding','套餐档位没翻译成页面口径');
+});
+
+test('zcode 账号切换：点「切换」提交档案 id，随后重拉状态',async()=>{
+  const view={available:true,unfiled:false,active:'a1',accounts:[
+    {id:'a1',label:'A 主号',provider:'zai',plan:'start-plan',saved_at:'2026-10-23T10:00:00+08:00',active:true},
+    {id:'b2',label:'B 备用',provider:'zai',plan:'coding-plan',saved_at:'2026-10-23T11:00:00+08:00',active:false},
+  ]};
+  const {ctx,get,posts}=zcodeAccountsFixture(view);
+  await vm.runInContext("signedIn({csrf:'c',global_enabled:true,zcode_enabled:true})",ctx);
+  await vm.runInContext('loadZcode()',ctx);
+  await flushMicrotasks();
+  await tap(zcodeAccountOps(zcodeAccountRows(get)[1])[0]);
+  assert.deepEqual(posts,[{url:'/admin/zcode/accounts/switch',body:{id:'b2'}}],'切换请求体不对');
+  assert.match(get('zcode-account-hint').textContent,/已切换到「B 备用」/,'切换后没有回执');
+});
+
+test('zcode 账号保存：把输入框里的标签提交为档案名',async()=>{
+  const view={available:true,unfiled:true,active:'',accounts:[]};
+  const {ctx,get,posts}=zcodeAccountsFixture(view);
+  await vm.runInContext("signedIn({csrf:'c',global_enabled:true,zcode_enabled:true})",ctx);
+  await vm.runInContext('loadZcode()',ctx);
+  await flushMicrotasks();
+  // 未归档时页面要主动提示，否则用户不知道「现在的账号还没留档」。
+  assert.match(get('zcode-account-hint').textContent,/还没有保存成档案/,'未归档提示缺失');
+  assert.equal(get('zcode-accounts-empty').hidden,false,'空列表没有占位说明');
+  get('zcode-account-label').value='A 主号';
+  await tap(get('zcode-account-save'));
+  assert.deepEqual(posts,[{url:'/admin/zcode/accounts/save',body:{label:'A 主号'}}],'保存请求体不对');
+  assert.equal(get('zcode-account-label').value,'','保存后输入框没清空');
+});
+
+test('zcode 账号面板：console 未挂载 runtime/zcode 时整体隐藏',async()=>{
+  const {ctx,get}=zcodeAccountsFixture({available:false,accounts:[]});
+  await vm.runInContext("signedIn({csrf:'c',global_enabled:true,zcode_enabled:true})",ctx);
+  await vm.runInContext('loadZcode()',ctx);
+  await flushMicrotasks();
+  assert.equal(get('zcode-accounts-panel').hidden,true,'没有档案能力却显示了账号面板');
 });
