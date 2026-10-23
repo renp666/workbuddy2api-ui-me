@@ -80,6 +80,47 @@ func TestUsageReportValidatesAndRecords(t *testing.T) {
 	}
 }
 
+// TestUsageReportAcceptsConsoleFieldSet：console 侧 usageReportEntry 是这条上报的
+// 唯一生产者，它发的每个字段这里都必须能解出来。decodeJSON 是严格模式
+// （DisallowUnknownFields），少声明一个字段就会让整批上报 400——曾因 console 补了
+// duration_ms 而 core 未同步，导致全部旁路通道静默进不了调用统计。本用例按 console
+// 当前字段全集构造请求体，字段漂移时在这里失败。
+func TestUsageReportAcceptsConsoleFieldSet(t *testing.T) {
+	dir := t.TempDir()
+	l, err := usagelog.Open(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	h := New(context.Background(), Config{Key: testKey, Usage: l})
+	body := `{"entries":[{
+		"duration_ms":1234,
+		"uid":"opencode",
+		"account":"OpenCode 通道",
+		"model":"opencode-big-pickle",
+		"mode":"stream",
+		"prompt_tokens":11,
+		"completion_tokens":22,
+		"credit":0.5,
+		"has_credit":true,
+		"src":"203.0.113.42",
+		"client":"curl/8.5.0",
+		"api":"chat",
+		"request_id":"0123456789abcdef0123456789abcdef",
+		"key_label":"默认"
+	}]}`
+	w := bridgeRequest(h, "POST", "/internal/v1/usage/reports", body, "")
+	if w.Code != 202 {
+		t.Fatalf("console 字段全集必须被接受：%d %s", w.Code, w.Body)
+	}
+	items, err := l.Query(time.Now().Add(-time.Minute).Unix(), time.Now().Add(time.Minute).Unix())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(items) != 1 || items[0].UID != "opencode" || items[0].Prompt != 11 || items[0].Completion != 22 {
+		t.Fatalf("落账不符：%+v", items)
+	}
+}
+
 // TestUsageReportRemasksSourceAndDropsUnknownAPI：旁路上报的 src/client/api 是外部输入，
 // core 落账前必须自己再收敛一次——地址只留网段（主机位不写盘），协议名只认名单内的值，
 // key_label 同口径清洗（空白/非 ASCII 整体不留）。

@@ -19,6 +19,10 @@ type usageReportBody struct {
 }
 
 type usageReportEntry struct {
+	// DurationMs 是 console 侧旁路捕获的端到端时延。账本 Entry 不落时延（分位聚合
+	// 在 console 错误账本内存完成），这里声明它只为让严格解码接受该字段——漏声明会
+	// 让每一条带 duration_ms 的上报整体 400，旁路通道就全部进不了调用统计。
+	DurationMs int64    `json:"duration_ms"`
 	UID        string   `json:"uid"`
 	Account    string   `json:"account"`
 	Model      string   `json:"model"`
