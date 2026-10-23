@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -102,6 +103,79 @@ func TestCircuitOpenNotFedBack(t *testing.T) {
 	}
 	if nextHits != 0 {
 		t.Fatalf("熔断拦截后仍触达下游 %d 次", nextHits)
+	}
+}
+
+// TestCircuitHalfOpenLeaseNotStolenByExitGuard 回归：观察态（半开）下出口守卫
+// circuitExitGuard 只能只读预判，不得占用唯一的那份试探租约。
+//
+// 事故 2026-10-23：guard 当时按认领模式解析，先替内层占掉租约；内层 handler 再
+// 解析时发现租约已被持有，判定本跳不可用并返回 __circuit_open__。而这条自产
+// 503 被 observePublicExits 明确排除在熔断输入之外（防自反馈），租约永远等不到
+// 结局释放，半开恢复彻底失效，只能干等 probeLeaseTTL（10 分钟）过期。实际表现：
+// glm-5.3-flash 上游 15:15 已恢复（sidecar 连续 200），公共口却一路 503 到 15:29
+// 才靠 observeMaxWait（5 分钟）兜底放行。
+func TestCircuitHalfOpenLeaseNotStolenByExitGuard(t *testing.T) {
+	core, oc := &retryUpstream{}, &retryUpstream{}
+	_, srv := retryFixture(t, core, oc)
+	var clock atomic.Int64
+	clock.Store(time.Now().UnixMilli())
+	now := func() time.Time { return time.UnixMilli(clock.Load()) }
+	srv.outcomes.now = now
+	srv.initCircuits(now)
+	t.Cleanup(func() { close(srv.circuits.stop); <-srv.circuits.done })
+
+	key := routeTarget{channelCore, "cn:bad"}
+	for i := 0; i < 3; i++ {
+		circuitFeed(srv, false, "upstream_error")
+	}
+	circuitWait(t, func() bool { return srv.circuits.blocked(key) })
+
+	// 单跳别名才能触发「候选链全部熔断」：多跳时被挡的那跳会被备用顶替。
+	if err := srv.routes.save([]routeEntry{{Alias: "solo", Channel: channelCore, Model: "cn:bad", Enabled: true}}, ""); err != nil {
+		t.Fatal(err)
+	}
+	srv.circuits.mu.RLock()
+	cooldown := time.Duration(srv.circuits.states[key].CooldownMs) * time.Millisecond
+	srv.circuits.mu.RUnlock()
+	clock.Add(cooldown.Milliseconds())
+	srv.circuits.sweep()
+	srv.circuits.notify()
+	circuitWait(t, func() bool { return srv.circuits.observing(key) })
+	// apply 可能在观察态回写配置，重新钉住单跳别名再发请求。
+	if err := srv.routes.save([]routeEntry{{Alias: "solo", Channel: channelCore, Model: "cn:bad", Enabled: true}}, ""); err != nil {
+		t.Fatal(err)
+	}
+
+	innerHits := 0
+	next := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// 模拟内层 publicRouter：真正要发请求的一方，租约应由它认领。
+		decision, _, _, ok := srv.resolveAliasChain(r.Context(), "solo", true)
+		if ok && decision.RoutedModel == "__circuit_open__" {
+			w.Header().Set(headerPrismCircuitOpen, "1")
+			writeJSON(w, http.StatusServiceUnavailable, map[string]any{"error": map[string]string{"type": "circuit_open", "message": "候选链全部熔断，请稍后重试"}})
+			return
+		}
+		innerHits++
+		w.WriteHeader(http.StatusOK)
+	})
+	wrapped := srv.observePublicExits(srv.circuitExitGuard(next))
+	call := func() *httptest.ResponseRecorder {
+		rec := httptest.NewRecorder()
+		body := `{"model":"solo","messages":[{"role":"user","content":"hi"}]}`
+		wrapped.ServeHTTP(rec, httptest.NewRequest("POST", "/v1/chat/completions", strings.NewReader(body)))
+		return rec
+	}
+
+	if rec := call(); rec.Code != http.StatusOK || innerHits != 1 {
+		t.Fatalf("半开态首个请求被守卫自锁：code=%d body=%s innerHits=%d", rec.Code, rec.Body.String(), innerHits)
+	}
+	// 租约已被内层认领，并发的第二发仍要挡——试探并发 = 1 的语义不能放宽。
+	if rec := call(); rec.Code != http.StatusServiceUnavailable || !strings.Contains(rec.Body.String(), "circuit_open") {
+		t.Fatalf("租约持有期间应继续拦截：code=%d body=%s", rec.Code, rec.Body.String())
+	}
+	if innerHits != 1 {
+		t.Fatalf("租约持有期间不应再触达内层：innerHits=%d", innerHits)
 	}
 }
 

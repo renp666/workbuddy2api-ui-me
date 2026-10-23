@@ -910,15 +910,21 @@ type routeDecision struct {
 //  3. auto → 在全部通道的探测结论里挑最优；完全没有结论时回退核心通道。
 //
 // 路由功能未启用（未配置可写配置文件）时一律返回 false，出口与现状完全一致。
+//
+// 本函数只服务出口守卫 circuitExitGuard 的「预判」，因此走只读探视：它拿到的
+// 结论只用于决定要不要当场回 503，绝不能占用半开试探租约。详见 routeGate。
 func (h *server) resolveAlias(ctx context.Context, model string) (routeDecision, bool) {
-	decision, _, _, ok := h.resolveAliasChain(ctx, model)
+	decision, _, _, ok := h.resolveAliasChain(ctx, model, false)
 	return decision, ok
 }
 
 // resolveAliasChain 是 resolveAlias 的带链版本：别名命中时额外返回完整候选链
 // （已选跳在链首、其余按原链序跟随）与各跳在原链中的下标，供请求内重试逐跳尝试。
 // auto 与未命中场景没有候选链（链为 nil），调用方按单跳处理。
-func (h *server) resolveAliasChain(ctx context.Context, model string) (routeDecision, []routeTarget, []int, bool) {
+//
+// claimLease 决定观察态（半开）的跳要不要当场认领试探租约：真正要发请求的
+// 调用方传 true；只做预判的出口守卫传 false。
+func (h *server) resolveAliasChain(ctx context.Context, model string, claimLease bool) (routeDecision, []routeTarget, []int, bool) {
 	if h.routes == nil || model == "" {
 		return routeDecision{}, nil, nil, false
 	}
@@ -929,7 +935,7 @@ func (h *server) resolveAliasChain(ctx context.Context, model string) (routeDeci
 	if !ok {
 		return routeDecision{}, nil, nil, false
 	}
-	decision, chain, indexes := h.resolveEntryChain(ctx, entry)
+	decision, chain, indexes := h.resolveEntryChain(ctx, entry, claimLease)
 	return decision, chain, indexes, true
 }
 
@@ -938,14 +944,14 @@ func (h *server) resolveAliasChain(ctx context.Context, model string) (routeDeci
 // priority 恒取链首，不看探测结论——这是「我就要这条链路」的显式表达，不能被
 // 探测抖动改变。health 才引入探测结论，且只在链内比较，不会跳到链外。
 func (h *server) resolveEntry(ctx context.Context, entry routeEntry) routeDecision {
-	decision, _, _ := h.resolveEntryChain(ctx, entry)
+	decision, _, _ := h.resolveEntryChain(ctx, entry, true)
 	return decision
 }
 
 // resolveEntryChain 在 resolveEntry 的结论之上返回完整候选链：已选跳在链首，其余
 // 按原链序跟随，indexes 记录各跳在原链中的下标（0=主目标）。熔断跳与观察态
 // （半开，试探并发=1）跳已被过滤；候选链全部不可用时返回 __circuit_open__ 决策与空链。
-func (h *server) resolveEntryChain(ctx context.Context, entry routeEntry) (routeDecision, []routeTarget, []int) {
+func (h *server) resolveEntryChain(ctx context.Context, entry routeEntry, claimLease bool) (routeDecision, []routeTarget, []int) {
 	if h.circuits != nil && !circuitProtected(entry) {
 		entry = h.circuits.originalEntry(entry)
 	}
@@ -958,9 +964,9 @@ func (h *server) resolveEntryChain(ctx context.Context, entry routeEntry) (route
 		filtered := make([]routeTarget, 0, len(chain))
 		filteredIndexes := make([]int, 0, len(chain))
 		for i, target := range chain {
-			// routeGate：熔断跳拒绝；观察态（半开）跳仅在无在途试探租约时放行并
-			// 认领租约，其余请求视该跳不可用，试探并发 = 1。
-			if h.circuits.routeGate(target) {
+			// routeGate：熔断跳拒绝；观察态（半开）跳仅在无在途试探租约时放行，
+			// claimLease 为真时当场认领租约，其余请求视该跳不可用，试探并发 = 1。
+			if h.circuits.routeGate(target, claimLease) {
 				filtered = append(filtered, target)
 				filteredIndexes = append(filteredIndexes, indexes[i])
 			}

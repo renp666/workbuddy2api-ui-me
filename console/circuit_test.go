@@ -539,13 +539,13 @@ func TestCircuitProbeConcurrency(t *testing.T) {
 	if d := h.resolveEntry(context.Background(), e); d.RoutedModel != "cn:backup" {
 		t.Fatalf("租约持有期间应推到备用: %+v", d)
 	}
-	if h.circuits.routeGate(key) {
+	if h.circuits.routeGate(key, true) {
 		t.Fatal("租约持有期间 routeGate 应拒绝")
 	}
 	// 试探结局（失败）释放租约并立即回熔断；熔断态一律拒绝。
 	circuitFeed(h, false, "upstream_error")
 	circuitWait(t, func() bool { return h.circuits.blocked(key) })
-	if h.circuits.routeGate(key) {
+	if h.circuits.routeGate(key, true) {
 		t.Fatal("熔断态应拒绝")
 	}
 	// 再次到期进观察态后不试探：观察窗口耗尽自动完全恢复，旧租约不再拦截。
@@ -556,7 +556,7 @@ func TestCircuitProbeConcurrency(t *testing.T) {
 	advance(observeMaxWait + time.Minute)
 	h.circuits.sweep()
 	h.circuits.notify()
-	if !h.circuits.routeGate(key) {
+	if !h.circuits.routeGate(key, true) {
 		t.Fatal("自动恢复后应全量放行")
 	}
 	h.circuits.mu.RLock()

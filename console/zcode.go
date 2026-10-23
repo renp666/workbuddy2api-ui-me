@@ -123,7 +123,7 @@ func (h *server) publicRouter(core *httputil.ReverseProxy) http.HandlerFunc {
 			// 时 envelope.Model 不变，出口行为与没有该功能时完全一致。
 			// 有效候选链 ≥2 跳时进入请求内重试（§九 9.2）：链序已按选路结论排好，
 			// 只在首字节前换跳；单跳别名与 auto 维持既有单跳直发，行为零变化。
-			if decision, chain, indexes, ok := h.resolveAliasChain(r.Context(), envelope.Model); ok {
+			if decision, chain, indexes, ok := h.resolveAliasChain(r.Context(), envelope.Model, true); ok {
 				if len(chain) >= 2 {
 					h.serveAliasChain(w, r, deps, decision, chain, indexes, body, envelope.Stream)
 					return

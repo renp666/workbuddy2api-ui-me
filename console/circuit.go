@@ -280,7 +280,16 @@ func (c *circuitBreaker) unavailable(t routeTarget) bool {
 // 熔断态拒绝；观察态仅在无在途试探租约时放行并当场认领租约——同一
 // (channel, 原生模型) 试探并发 = 1，其余请求在本调用内视该跳不可用，
 // 不放大试探流量。
-func (c *circuitBreaker) routeGate(t routeTarget) bool {
+//
+// claim=false 是只读探视，判定口径与认领模式逐字相同，只是不占用租约。
+// 出口守卫（circuitExitGuard）必须在真正处理请求之前预判「整链是否熔断」，
+// 它若按认领模式解析，就会先替内层占掉唯一的那份试探租约；内层 handler 再
+// 解析时发现租约已被持有，只能判定本跳不可用并返回 __circuit_open__。而这条
+// 自产 503 又被 observePublicExits 明确排除在熔断输入之外（防自反馈），于是
+// 租约永远等不到结局释放，半开恢复彻底失效，只能干等 probeLeaseTTL 过期。
+// 事故 2026-10-23：glm-5.3-flash 上游 15:15 已恢复（sidecar 连续 200），
+// 公共口却一路 503 到 15:29 才靠 observeMaxWait 兜底放行。
+func (c *circuitBreaker) routeGate(t routeTarget, claim bool) bool {
 	key := circuitKey(t)
 	c.mu.RLock()
 	state := c.states[key]
@@ -303,6 +312,9 @@ func (c *circuitBreaker) routeGate(t routeTarget) bool {
 	}
 	if start, ok := c.probes[key]; ok && c.now().Sub(time.UnixMilli(start)) < probeLeaseTTL {
 		return false
+	}
+	if !claim {
+		return true
 	}
 	c.probes[key] = c.now().UnixMilli()
 	return true
