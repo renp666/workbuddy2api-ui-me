@@ -74,6 +74,19 @@ func (f *fakeZcodeControl) handler() http.HandlerFunc {
 	}
 }
 
+// sawSince 只看 from 之后的命令。保存新建档案时会顺带重启通道，全局 saw 会把
+// 「保存时的重启」算进「切换时的重启」，断言就失去意义了。
+func sawSince(ctl *fakeZcodeControl, from int, cmd string) bool {
+	ctl.mu.Lock()
+	defer ctl.mu.Unlock()
+	for _, c := range ctl.cmds[from:] {
+		if c == cmd {
+			return true
+		}
+	}
+	return false
+}
+
 func (f *fakeZcodeControl) saw(cmd string) bool {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -229,7 +242,7 @@ func TestZcodeAccountsSwitchAlreadyActiveIsNoop(t *testing.T) {
 	if out["already_active"] != true {
 		t.Errorf("应返回 already_active=true，得到 %v", out)
 	}
-	if ctl.saw("stopProxy") || ctl.saw("startProxy") {
+	if sawSince(ctl, before, "stopProxy") || sawSince(ctl, before, "startProxy") {
 		t.Errorf("同一账号不应重启通道，命令 = %v", ctl.cmds[before:])
 	}
 }
@@ -386,5 +399,79 @@ func TestZcodeAccountsUnavailableWithoutDir(t *testing.T) {
 	// 写入类端点应明确拒绝，而不是静默成功。
 	if rec := postJSON(t, h, h.adminZcodeAccountSave, map[string]string{"label": "x"}); rec.Code != 409 {
 		t.Errorf("保存应返回 409，得到 %d", rec.Code)
+	}
+}
+
+// 首个档案是「给当前在用的账号起名字」，磁盘凭据就是内存里那份——不该为此中断通道。
+func TestZcodeAccountsSaveFirstAccountDoesNotRestart(t *testing.T) {
+	ctl := &fakeZcodeControl{running: true, provider: "zai"}
+	h, dir := newZcodeAccountsServer(t, ctl)
+	writeCredential(t, dir, `{"encrypted":"AAA"}`)
+
+	rec := postJSON(t, h, h.adminZcodeAccountSave, map[string]string{"label": "A"})
+	if rec.Code != 200 {
+		t.Fatalf("保存: %d %s", rec.Code, rec.Body)
+	}
+	var out map[string]any
+	_ = json.Unmarshal(rec.Body.Bytes(), &out)
+	if out["applied"] != false {
+		t.Errorf("首个档案不应重启通道，applied = %v", out["applied"])
+	}
+	if ctl.saw("stopProxy") {
+		t.Errorf("首个档案不该停用通道，命令 = %v", ctl.cmds)
+	}
+}
+
+// 新增档案意味着磁盘刚被一次新登录覆盖过，而 sidecar 内存里还是旧账号（android 入口
+// 没有热加载）。此时必须停再起，否则用户以为换成了新账号、/v1 还在花旧账号的额度。
+func TestZcodeAccountsSaveNewAccountRestartsProxy(t *testing.T) {
+	ctl := &fakeZcodeControl{running: true, provider: "zai"}
+	h, dir := newZcodeAccountsServer(t, ctl)
+
+	writeCredential(t, dir, `{"encrypted":"AAA"}`)
+	postJSON(t, h, h.adminZcodeAccountSave, map[string]string{"label": "A"})
+
+	writeCredential(t, dir, `{"encrypted":"BBB"}`)
+	rec := postJSON(t, h, h.adminZcodeAccountSave, map[string]string{"label": "B"})
+	if rec.Code != 200 {
+		t.Fatalf("保存 B: %d %s", rec.Code, rec.Body)
+	}
+	var out map[string]any
+	_ = json.Unmarshal(rec.Body.Bytes(), &out)
+	if out["applied"] != true {
+		t.Errorf("新增档案应让新凭据生效，applied = %v（%v）", out["applied"], out["apply_error"])
+	}
+	if !ctl.saw("stopProxy") || !ctl.saw("startProxy") {
+		t.Errorf("新增档案应停再起，命令 = %v", ctl.cmds)
+	}
+}
+
+// 重启失败时档案仍要留下，并如实回报 apply_error——不能悄悄假装成功。
+func TestZcodeAccountsSaveReportsApplyFailure(t *testing.T) {
+	ctl := &fakeZcodeControl{running: true, provider: "zai"}
+	h, dir := newZcodeAccountsServer(t, ctl)
+
+	writeCredential(t, dir, `{"encrypted":"AAA"}`)
+	postJSON(t, h, h.adminZcodeAccountSave, map[string]string{"label": "A"})
+
+	writeCredential(t, dir, `{"encrypted":"BBB"}`)
+	ctl.mu.Lock()
+	ctl.failStart = true
+	ctl.mu.Unlock()
+	rec := postJSON(t, h, h.adminZcodeAccountSave, map[string]string{"label": "B"})
+	if rec.Code != 200 {
+		t.Fatalf("保存应仍成功（档案已落盘）: %d %s", rec.Code, rec.Body)
+	}
+	var out map[string]any
+	_ = json.Unmarshal(rec.Body.Bytes(), &out)
+	if out["applied"] != false || out["apply_error"] == nil {
+		t.Errorf("重启失败要如实回报，得到 applied=%v apply_error=%v", out["applied"], out["apply_error"])
+	}
+	idx, err := readZcodeIndex(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(idx.Accounts) != 2 {
+		t.Errorf("档案数 = %d，want 2（重启失败不该回滚档案）", len(idx.Accounts))
 	}
 }

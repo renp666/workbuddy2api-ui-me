@@ -870,7 +870,12 @@ test('zcode enable action posts the command and the running state reveals the pa
   vm.runInContext("page='zcode'",ctx);
   await vm.runInContext('loadZcode()',ctx);
   assert.equal(get('zcode-enable').hidden,false,'enable button missing in logged-in idle state');
-  assert.equal(get('zcode-view-login').hidden,true,'login tab offered after login');
+  // 已登录也必须留着登录入口：多账号轮换的第一步就是「登录另一个账号」。
+  // 早先这里是 hidden=true（单账号时代已登录就没必要再登录），结果是登了 A 之后
+  // 整条「换账号」的入口消失，用户根本无法添加账号 B。
+  assert.equal(get('zcode-view-login').hidden,false,'logged-in tab hid the login entry, so a second account cannot be added');
+  assert.equal(get('zcode-view-login').textContent,'⇆ 换账号','logged-in tab still reads GLM 登录');
+  assert.equal(get('zcode-login-badge').textContent,'已登录','login card claims 未登录 while a credential exists');
   assert.equal(vm.runInContext('zcodePollTimer',ctx),undefined,'idle logged-in tab polled status');
   await get('zcode-enable').handlers.click();
   assert.deepEqual(requests.map(item=>item.url),['/admin/zcode/enable']);
@@ -4991,4 +4996,45 @@ test('zcode 账号面板：console 未挂载 runtime/zcode 时整体隐藏',asyn
   await vm.runInContext('loadZcode()',ctx);
   await flushMicrotasks();
   assert.equal(get('zcode-accounts-panel').hidden,true,'没有档案能力却显示了账号面板');
+});
+
+// 已登录状态下也要能登录其它账号——这是多账号轮换的第一步。
+// 早先「GLM 登录」子页签的可见性是 control && !logged_in，一旦登了 A 入口就整条消失，
+// 用户根本无法添加账号 B；同时 renderZcode 里有 `if(control&&loggedIn) zcodeAuthURL=''`，
+// 会把刚拿到的授权链接在下一轮轮询里清掉（表现为「点了登录没反应」）。
+test('zcode 已登录也能换账号：入口可见且授权链接不被轮询清掉',async()=>{
+  const {ctx,get}=controlFixture([
+    {enabled:true,control:true,logged_in:true,proxy_running:true,provider:'zai',plan:'start-plan',reachable:true,model_count:1,models:[{id:'glm-5.3-flash'}]},
+  ]);
+  await vm.runInContext("signedIn({csrf:'c',global_enabled:true,zcode_enabled:true})",ctx);
+  vm.runInContext("page='zcode'",ctx);
+  await vm.runInContext('loadZcode()',ctx);
+
+  assert.equal(get('zcode-view-login').hidden,false,'已登录时换账号入口被隐藏了');
+  assert.equal(get('zcode-view-login').textContent,'⇆ 换账号');
+  assert.equal(get('zcode-login-badge').textContent,'已登录','登录卡片谎称未登录');
+
+  get('zcode-provider').value='zai';
+  await get('zcode-login-form').handlers.submit({preventDefault(){}});
+  assert.equal(vm.runInContext('zcodeAuthURL',ctx),'https://bigmodel.cn/oauth?state=x','没拿到授权链接');
+  assert.equal(get('zcode-auth-row').hidden,false,'授权链接行被隐藏');
+  assert.equal(get('zcode-login-start').textContent,'登录其它账号');
+
+  // 模拟下一轮 3 秒轮询：已登录状态下链接必须留着，否则用户没法打开授权页。
+  await vm.runInContext('loadZcode()',ctx);
+  assert.equal(vm.runInContext('zcodeAuthURL',ctx),'https://bigmodel.cn/oauth?state=x','轮询把授权链接清掉了');
+  assert.equal(get('zcode-auth-row').hidden,false,'轮询后授权链接行消失');
+});
+
+// 未登录时仍要自动落在登录页——换账号入口常驻不能把首次登录的引导弄丢。
+test('zcode 未登录时仍自动落在登录页',async()=>{
+  const {ctx,get}=controlFixture([
+    {enabled:true,control:true,logged_in:false,proxy_running:false,provider:'zai',reachable:false,model_count:0,models:[]},
+  ]);
+  await vm.runInContext("signedIn({csrf:'c',global_enabled:true,zcode_enabled:true})",ctx);
+  vm.runInContext("page='zcode'",ctx);
+  await vm.runInContext('loadZcode()',ctx);
+  assert.equal(get('zcode-pane-login').hidden,false,'未登录没落在登录页');
+  assert.equal(get('zcode-login-badge').textContent,'未登录');
+  assert.equal(get('zcode-login-start').textContent,'开始登录');
 });

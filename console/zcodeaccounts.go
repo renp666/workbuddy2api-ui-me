@@ -190,15 +190,17 @@ func (idx *zcodeAccountIndex) byDigest(digest string) *zcodeAccount {
 
 // zcodeAccountsSnapshot 把当前凭据存为新档案。label 为空时用时间戳兜底。
 // 调用方需保证当前凭据存在（否则存一份空档案毫无意义）。
-func (h *server) zcodeAccountsSnapshot(dir string, idx zcodeAccountIndex, label string, status map[string]any) (zcodeAccountIndex, zcodeAccount, error) {
+// created 表示这次是否真的新建了档案：同一份凭据重复保存返回 false，调用方据此判断
+// 「磁盘上是不是刚换了新账号」。
+func (h *server) zcodeAccountsSnapshot(dir string, idx zcodeAccountIndex, label string, status map[string]any) (zcodeAccountIndex, zcodeAccount, bool, error) {
 	credPath := filepath.Join(dir, zcodeCredentialsFile)
 	digest := digestFile(credPath)
 	if digest == "" {
-		return idx, zcodeAccount{}, errors.New("当前没有可保存的凭据")
+		return idx, zcodeAccount{}, false, errors.New("当前没有可保存的凭据")
 	}
 	// 同一份凭据已经归档过就直接返回旧档案，避免同一账号堆出一串重复条目。
 	if existing := idx.byDigest(digest); existing != nil {
-		return idx, *existing, nil
+		return idx, *existing, false, nil
 	}
 	label = strings.TrimSpace(label)
 	if label == "" {
@@ -217,14 +219,14 @@ func (h *server) zcodeAccountsSnapshot(dir string, idx zcodeAccountIndex, label 
 		acc.Plan = v
 	}
 	if err := copyFile(credPath, filepath.Join(dir, zcodeAuthsDir, acc.ID+".json")); err != nil {
-		return idx, zcodeAccount{}, err
+		return idx, zcodeAccount{}, false, err
 	}
 	idx.Accounts = append(idx.Accounts, acc)
 	idx.Active = acc.ID
 	if err := writeZcodeIndex(dir, idx); err != nil {
-		return idx, zcodeAccount{}, err
+		return idx, zcodeAccount{}, false, err
 	}
-	return idx, acc, nil
+	return idx, acc, true, nil
 }
 
 // autoSnapshotUnfiled 在切换/登录前把「还没归档的当前凭据」留一份。
@@ -234,8 +236,25 @@ func (h *server) autoSnapshotUnfiled(dir string, idx zcodeAccountIndex, status m
 	if digest == "" || idx.byDigest(digest) != nil {
 		return idx, nil
 	}
-	next, _, err := h.zcodeAccountsSnapshot(dir, idx, zcodeAutoLabelPrefix+time.Now().Format("01-02 15:04"), status)
+	next, _, _, err := h.zcodeAccountsSnapshot(dir, idx, zcodeAutoLabelPrefix+time.Now().Format("01-02 15:04"), status)
 	return next, err
+}
+
+// zcodeRestartProxy 让 sidecar 重新读取磁盘凭据。
+// android 入口没有 serve 面板那条 syncAuthWithDisk 热加载，凭据只在 startProxy 里注入，
+// 所以换完文件必须停再起；否则磁盘是新账号、内存还是旧账号，/v1 继续花旧账号的额度。
+func (h *server) zcodeRestartProxy(ctx context.Context) error {
+	if resp, err := h.zcodeControl(ctx, map[string]any{"cmd": "stopProxy"}); err != nil {
+		return errControlUnreachable
+	} else if !resp.OK && resp.Error != "not_running" {
+		return fmt.Errorf("停用通道失败: %s", resp.Error)
+	}
+	if resp, err := h.zcodeControl(ctx, map[string]any{"cmd": "startProxy"}); err != nil {
+		return errControlUnreachable
+	} else if !resp.OK {
+		return fmt.Errorf("重新启用通道失败: %s", resp.Error)
+	}
+	return nil
 }
 
 // zcodeSwitchAccount 执行「A 开 B 停」：同一时刻只有一份凭据生效。
@@ -395,6 +414,10 @@ func (h *server) adminZcodeAccounts(w http.ResponseWriter, r *http.Request) {
 
 // adminZcodeAccountSave 把当前生效的凭据存为一条档案。
 // 这是「登录完新账号 → 起个名字存下来」的那一步，也是轮换的前提。
+//
+// 新建档案时顺带让新凭据生效：登录是直接覆盖 credentials.json 的，而 sidecar 内存里
+// 还是旧账号（android 入口无热加载）。不重启的话，用户以为已经换成新账号，实际 /v1
+// 还在花旧账号的额度——这种「看起来成功了」的不一致比直接报错更糟。
 func (h *server) adminZcodeAccountSave(w http.ResponseWriter, r *http.Request) {
 	dir, err := h.zcodeDataDir()
 	if err != nil {
@@ -412,12 +435,27 @@ func (h *server) adminZcodeAccountSave(w http.ResponseWriter, r *http.Request) {
 		adminError(w, 500, err.Error())
 		return
 	}
-	idx, acc, err := h.zcodeAccountsSnapshot(dir, idx, in.Label, h.zcodeControlStatus(r.Context()))
+	status := h.zcodeControlStatus(r.Context())
+	// 第一个档案是「给当前正在用的账号起个名字」：磁盘凭据就是内存里那份，重启纯属多余中断。
+	// 之后每新增一个档案，才意味着磁盘刚被一次新登录覆盖过。
+	firstAccount := len(idx.Accounts) == 0
+	idx, acc, created, err := h.zcodeAccountsSnapshot(dir, idx, in.Label, status)
 	if err != nil {
 		adminError(w, 400, err.Error())
 		return
 	}
-	writeJSON(w, 200, map[string]any{"saved": true, "account": acc})
+	out := map[string]any{"saved": true, "account": acc, "applied": false}
+	if created && !firstAccount {
+		if running, _ := status["proxy_running"].(bool); running {
+			if err := h.zcodeRestartProxy(r.Context()); err != nil {
+				// 档案已经存好了，重启失败不回滚——凭据在磁盘上是对的，用户可以手动停用再启用。
+				out["apply_error"] = err.Error()
+			} else {
+				out["applied"] = true
+			}
+		}
+	}
+	writeJSON(w, 200, out)
 }
 
 func (h *server) adminZcodeAccountSwitch(w http.ResponseWriter, r *http.Request) {

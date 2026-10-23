@@ -1765,7 +1765,9 @@ function renderZcode(status){
  $('zcode-content').hidden=!enabled;
  if(!enabled){stopZcodePoll();$('zcode-accounts-panel').hidden=true;return;}
  const control=!!status.control,loggedIn=!!status.logged_in,running=!!status.proxy_running;
- if(control&&loggedIn)zcodeAuthURL='';
+ // 注意：不能因为「已登录」就清掉 zcodeAuthURL。已登录状态下再登录是换账号的正常操作，
+ // 清掉会让刚拿到的授权链接在下一轮轮询里消失（表现为「点了登录没反应」）。
+ // 授权链接只在重新发起登录、或保存完新账号时清空。
  const badge=$('zcode-status-badge');
  if(!control){
   badge.textContent=status.reachable?'在线':'不可达';
@@ -1782,25 +1784,34 @@ function renderZcode(status){
   badge.textContent='已登录 · 未启用';badge.className='badge idle';
   $('zcode-status-text').textContent='凭据已保存，点击「启用通道」开始服务。';
  }
- $('zcode-login-badge').textContent='未登录';
+ // 已登录时这里也要说真话：badge 之前硬编码「未登录」，换账号时会误导。
+ $('zcode-login-badge').textContent=loggedIn?'已登录':'未登录';
+ $('zcode-login-badge').className='badge '+(loggedIn?'ok':'warn');
  $('zcode-enable').hidden=!control||!loggedIn||running;
  $('zcode-disable').hidden=!control||!running;
  $('zcode-logout').hidden=!control||!loggedIn;
  $('zcode-logout').textContent=zcodeLogoutArmed?'再次点击确认退出':'退出登录';
  $('zcode-auth-row').hidden=!zcodeAuthURL;
  if(zcodeAuthURL){$('zcode-auth-link').href=zcodeAuthURL;$('zcode-auth-link').textContent=zcodeAuthURL;}
- $('zcode-login-hint').textContent=!control||loggedIn?'':zcodeAuthURL?'已在新标签页打开授权页面，完成授权后本页每 3 秒自动检查登录结果；若被拦截请用下方链接打开。':'选择服务商后点击「开始登录」，授权在智谱页面完成，凭据只保存在 GLM 容器内。';
+ // 已登录时的提示要说清两件事：继续登录是换账号，且登录前会自动备份当前凭据。
+ $('zcode-login-hint').textContent=!control?'':zcodeAuthURL?'已在新标签页打开授权页面，完成授权后本页每 3 秒自动检查登录结果；若被拦截请用下方链接打开。':loggedIn?'当前已登录一个账号。要继续登录其它账号：选择服务商后点「登录其它账号」，授权前会自动备份当前凭据，不会丢失。':'选择服务商后点击「开始登录」，授权在智谱页面完成，凭据只保存在 GLM 容器内。';
+ $('zcode-login-start').textContent=loggedIn?'登录其它账号':'开始登录';
+ $('zcode-view-login').textContent=loggedIn?'⇆ 换账号':'⇆ GLM 登录';
  if(!zcodeProviderTouched&&(status.provider==='zai'||status.provider==='bigmodel'))$('zcode-provider').value=status.provider;
  const plan=(status.plan==='coding-plan'||status.plan==='start-plan')?status.plan:'';
  if(!zcodePlanTouched&&plan)$('zcode-plan').value=plan;
  $('zcode-config-form').hidden=!control||running;
- const loginTab=control&&!loggedIn;
+ // canLogin 只看控制面是否可用：已登录也要能进来换账号（单账号时代只有未登录才显示，
+ // 那样一旦登了 A，「登录其它账号」的入口就整条消失了）。
+ // loginFirst 只用于「首次进来该落在哪一页」：未登录时自动打开登录页，已登录时留在状态页。
+ const canLogin=control;
+ const loginFirst=control&&!loggedIn;
  const dataTab=control?running:status.reachable;
- if(loginTab&&!zcodeViewTouched)zcodeView='login';
- if(zcodeView==='login'&&!loginTab)zcodeView='status';
+ if(loginFirst&&!zcodeViewTouched)zcodeView='login';
+ if(zcodeView==='login'&&!canLogin)zcodeView='status';
  if((zcodeView==='models'||zcodeView==='chat')&&!dataTab)zcodeView='status';
  $('zcode-view-status').hidden=false;
- $('zcode-view-login').hidden=!loginTab;
+ $('zcode-view-login').hidden=!canLogin;
  $('zcode-view-models').hidden=!dataTab;
  $('zcode-view-chat').hidden=!dataTab;
  for(const view of ['status','login','models','chat']){
@@ -1921,16 +1932,17 @@ function renderZcodeAccounts(){
  zcodeAccountControls();
 }
 async function zcodeAccountAction(path,payload,successText){
- if(zcodeAccountBusy||zcodeBusy)return;
+ if(zcodeAccountBusy||zcodeBusy)return null;
  const generation=sessionGeneration;zcodeAccountBusy=true;zcodeAccountMessage='';zcodeAccountControls();notice('');
  try{
-  await jsonAPI(path,payload||{});
-  if(generation!==sessionGeneration)return;
+  const result=await jsonAPI(path,payload||{});
+  if(generation!==sessionGeneration)return null;
   await loadZcode();
-  if(generation!==sessionGeneration)return;
+  if(generation!==sessionGeneration)return null;
   await loadZcodeAccounts();
   if(generation===sessionGeneration&&successText){zcodeAccountMessage=successText;renderZcodeAccounts();}
- }catch(error){if(generation===sessionGeneration)notice(error.message);}
+  return result;
+ }catch(error){if(generation===sessionGeneration)notice(error.message);return null;}
  finally{if(generation===sessionGeneration){zcodeAccountBusy=false;zcodeAccountControls();}}
 }
 function switchZcodeAccount(acc){
@@ -1939,10 +1951,18 @@ function switchZcodeAccount(acc){
 function deleteZcodeAccount(acc){
  return zcodeAccountAction('zcode/accounts/delete',{id:acc.id},`已删除档案「${acc.label}」`);
 }
-$('zcode-account-save').addEventListener('click',()=>{
+$('zcode-account-save').addEventListener('click',async ()=>{
  const input=$('zcode-account-label');
- zcodeAccountAction('zcode/accounts/save',{label:input.value.trim()},'已保存当前账号，之后可随时切回');
+ const result=await zcodeAccountAction('zcode/accounts/save',{label:input.value.trim()},null);
+ if(!result)return;
  input.value='';
+ zcodeAuthURL='';   // 登录流程到此收尾，授权链接不再需要
+ // 新建档案时后端会让新凭据生效（停再起）。这一步必须如实回执：不生效的话
+ // 用户以为换成了新账号，实际 /v1 还在花旧账号的额度。
+ if(result.apply_error)$('zcode-account-hint').textContent=`已保存档案，但新凭据没能生效：${result.apply_error}。请到「通道状态」手动停用后再启用。`;
+ else if(result.applied)$('zcode-account-hint').textContent='已保存，并已用这个账号重新启用通道。';
+ else $('zcode-account-hint').textContent='已保存当前账号，之后可随时切回。';
+ if(zcodeStatus)renderZcode(zcodeStatus);
 });
 runTopRefresh($('zcode-refresh'),loadZcode);
 for(const view of ['status','login','models','chat'])$('zcode-view-'+view).addEventListener('click',()=>{zcodeViewTouched=true;setZcodeView(view);});
@@ -1952,6 +1972,7 @@ $('zcode-login-form').addEventListener('submit',async event=>{
  event.preventDefault();if(zcodeBusy)return;
  const generation=sessionGeneration;zcodeBusy=true;zcodeActionControls();notice('');
  zcodeProviderTouched=true;
+ zcodeAuthURL='';   // 重新发起时丢掉上一轮的授权链接，避免点到过期的 state
  let authWindow=null;
  try{authWindow=window.open('about:blank','_blank');if(authWindow)authWindow.opener=null;}catch(_){authWindow=null;}
  try{
